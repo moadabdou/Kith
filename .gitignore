@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+
+node_modules/
+dist/
+.vite/
+
+_build/
+deps/
+erl_crash.dump
+
+/api/api
+
+*.log
+.DS_Store

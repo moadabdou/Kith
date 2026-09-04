@@ -14,6 +14,7 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/moadabdou/Kith/api/pkg/snowflake"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -32,6 +33,18 @@ func main() {
 
 	port := envOr("PORT", "8080")
 	databaseURL := os.Getenv("DATABASE_URL")
+
+	nodeID, err := snowflake.Parse(envOr("SNOWFLAKE_NODE_ID", "1"))
+	if err != nil {
+		slog.Error("invalid SNOWFLAKE_NODE_ID", "error", err)
+		os.Exit(1)
+	}
+	node, err := snowflake.NewNode(nodeID)
+	if err != nil {
+		slog.Error("invalid SNOWFLAKE_NODE_ID", "node_id", nodeID, "error", err)
+		os.Exit(1)
+	}
+	_ = node // used by auth/guilds packages from #4 onward
 
 	var db *sql.DB
 	if databaseURL != "" {

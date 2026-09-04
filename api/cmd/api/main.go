@@ -14,8 +14,10 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/moadabdou/Kith/api/internal/auth"
+	"github.com/moadabdou/Kith/api/internal/events"
 	"github.com/moadabdou/Kith/api/internal/guilds"
 	"github.com/moadabdou/Kith/api/internal/httpx"
+	"github.com/moadabdou/Kith/api/internal/messages"
 	"github.com/moadabdou/Kith/api/internal/users"
 	"github.com/moadabdou/Kith/api/pkg/snowflake"
 	"github.com/prometheus/client_golang/prometheus"
@@ -73,6 +75,9 @@ func main() {
 	authHandler := &auth.Handler{Svc: authSvc}
 	usersHandler := &users.Handler{DB: db}
 	guildsHandler := &guilds.Handler{Svc: guilds.NewService(db, node)}
+	// Phase 0: no-op publisher. Phase 1: Redis/NATS behind the same call site.
+	var publisher events.Publisher = events.NoopPublisher{}
+	messagesHandler := &messages.Handler{Svc: messages.NewService(db, node, publisher)}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
@@ -104,6 +109,16 @@ func main() {
 	// invites
 	mux.Handle("POST /api/invites", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.CreateInvite)))
 	mux.Handle("POST /api/invites/{code}/join", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.JoinInvite)))
+
+	// messages — the hot path (rate limiting wraps Send in #7)
+	mux.Handle("POST /api/guilds/{id}/channels/{cid}/messages",
+		auth.RequireAuth(jwt, http.HandlerFunc(messagesHandler.Send)))
+	mux.Handle("GET /api/guilds/{id}/channels/{cid}/messages",
+		auth.RequireAuth(jwt, http.HandlerFunc(messagesHandler.List)))
+	mux.Handle("PATCH /api/channels/{cid}/messages/{mid}",
+		auth.RequireAuth(jwt, http.HandlerFunc(messagesHandler.Edit)))
+	mux.Handle("DELETE /api/channels/{cid}/messages/{mid}",
+		auth.RequireAuth(jwt, http.HandlerFunc(messagesHandler.Delete)))
 
 	srv := &http.Server{
 		Addr:              ":" + port,

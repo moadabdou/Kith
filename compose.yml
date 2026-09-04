@@ -59,6 +59,7 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       DATABASE_URL: postgres://${POSTGRES_USER:-discord}:${POSTGRES_PASSWORD:-discord}@postgres:5432/${POSTGRES_DB:-discord}?sslmode=disable
       SNOWFLAKE_NODE_ID: ${SNOWFLAKE_NODE_ID:-1}
+      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me}
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:

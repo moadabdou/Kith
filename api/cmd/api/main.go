@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -14,6 +13,9 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/moadabdou/Kith/api/internal/auth"
+	"github.com/moadabdou/Kith/api/internal/httpx"
+	"github.com/moadabdou/Kith/api/internal/users"
 	"github.com/moadabdou/Kith/api/pkg/snowflake"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -27,14 +29,28 @@ var httpRequestsTotal = prometheus.NewCounterVec(
 	[]string{"method", "path", "code"},
 )
 
+const (
+	accessTokenTTL  = 15 * time.Minute
+	refreshTokenTTL = 30 * 24 * time.Hour
+)
+
 func main() {
 	initLogger(envOr("LOG_LEVEL", "info"))
 	prometheus.MustRegister(httpRequestsTotal)
 
 	port := envOr("PORT", "8080")
 	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		slog.Error("DATABASE_URL is required")
+		os.Exit(1)
+	}
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" {
+		slog.Error("JWT_SECRET is required")
+		os.Exit(1)
+	}
 
-	nodeID, err := snowflake.Parse(envOr("SNOWFLAKE_NODE_ID", "1"))
+	nodeID, err := strconv.ParseInt(envOr("SNOWFLAKE_NODE_ID", "1"), 10, 64)
 	if err != nil {
 		slog.Error("invalid SNOWFLAKE_NODE_ID", "error", err)
 		os.Exit(1)
@@ -44,23 +60,27 @@ func main() {
 		slog.Error("invalid SNOWFLAKE_NODE_ID", "node_id", nodeID, "error", err)
 		os.Exit(1)
 	}
-	_ = node // used by auth/guilds packages from #4 onward
 
-	var db *sql.DB
-	if databaseURL != "" {
-		var err error
-		db, err = sql.Open("pgx", databaseURL)
-		if err != nil {
-			slog.Error("failed to open database", "error", err)
-			os.Exit(1)
-		}
+	db, err := sql.Open("pgx", databaseURL)
+	if err != nil {
+		slog.Error("failed to open database", "error", err)
+		os.Exit(1)
 	}
+
+	jwt := auth.NewJWTManager([]byte(jwtSecret), accessTokenTTL)
+	authSvc := auth.NewService(db, node, jwt, refreshTokenTTL)
+	authHandler := &auth.Handler{Svc: authSvc}
+	usersHandler := &users.Handler{DB: db}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
 	mux.HandleFunc("GET /readyz", readyHandler(db))
 	mux.Handle("GET /metrics", promhttp.Handler())
 	mux.HandleFunc("GET /api/ping", handlePing)
+	mux.HandleFunc("POST /api/auth/register", authHandler.Register)
+	mux.HandleFunc("POST /api/auth/login", authHandler.Login)
+	mux.HandleFunc("POST /api/auth/refresh", authHandler.Refresh)
+	mux.Handle("GET /api/users/@me", auth.RequireAuth(jwt, http.HandlerFunc(usersHandler.Me)))
 
 	srv := &http.Server{
 		Addr:              ":" + port,
@@ -95,22 +115,18 @@ func handleHealthz(w http.ResponseWriter, r *http.Request) {
 
 func readyHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if db == nil {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "no database configured"})
-			return
-		}
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
 		if err := db.PingContext(ctx); err != nil {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "database unreachable"})
+			httpx.JSON(w, http.StatusServiceUnavailable, map[string]string{"status": "database unreachable"})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ready"})
 	}
 }
 
 func handlePing(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"service": "api", "status": "ok"})
+	httpx.JSON(w, http.StatusOK, map[string]string{"service": "api", "status": "ok"})
 }
 
 type statusWriter struct {
@@ -129,12 +145,6 @@ func instrument(next http.Handler) http.Handler {
 		next.ServeHTTP(sw, r)
 		httpRequestsTotal.WithLabelValues(r.Method, r.URL.Path, strconv.Itoa(sw.status)).Inc()
 	})
-}
-
-func writeJSON(w http.ResponseWriter, status int, body any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(body)
 }
 
 func envOr(key, fallback string) string {

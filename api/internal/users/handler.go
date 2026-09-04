@@ -8,6 +8,7 @@ import (
 
 	"github.com/moadabdou/Kith/api/internal/auth"
 	"github.com/moadabdou/Kith/api/internal/httpx"
+	"github.com/moadabdou/Kith/api/pkg/errs"
 )
 
 // Handler serves user endpoints.
@@ -19,7 +20,7 @@ type Handler struct {
 func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserIDFrom(r.Context())
 	if !ok {
-		httpx.Error(w, http.StatusUnauthorized, 0, "401: Unauthorized")
+		errs.Write(w, errs.Unauthorized())
 		return
 	}
 	var resp struct {
@@ -34,11 +35,11 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 		FROM users WHERE id = $1`, uid,
 	).Scan(&resp.ID, &resp.Username, &resp.Discriminator, &resp.Email, &resp.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		httpx.Error(w, http.StatusUnauthorized, 0, "401: Unauthorized")
+		errs.Write(w, errs.Unauthorized())
 		return
 	}
 	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, 0, "Internal Server Error")
+		errs.Write(w, errs.Internal())
 		return
 	}
 	httpx.JSON(w, http.StatusOK, resp)

@@ -9,19 +9,8 @@ import (
 
 	"github.com/moadabdou/Kith/api/internal/auth"
 	"github.com/moadabdou/Kith/api/internal/httpx"
+	"github.com/moadabdou/Kith/api/pkg/errs"
 	"github.com/moadabdou/Kith/api/pkg/snowflake"
-)
-
-// Discord error codes — the registry moves to pkg/errs in #8.
-const (
-	codeUnknownChannel     = 10003
-	codeUnknownGuild       = 10004
-	codeUnknownInvite      = 10006
-	codeUnknownMember      = 10007
-	codeUnknownUser        = 10013
-	codeMissingAccess      = 50001
-	codeMissingPermissions = 50013
-	codeInvalidFormBody    = 50035
 )
 
 const (
@@ -35,24 +24,30 @@ type Handler struct {
 	Svc *Service
 }
 
+// formBody is a 400/50035 with a plain message (path params etc.).
+func formBody(msg string) *errs.Error {
+	return &errs.Error{Status: http.StatusBadRequest, Code: errs.CodeInvalidFormBody, Message: msg}
+}
+
+// writeErr maps service errors to the shared Discord envelope (pkg/errs).
 func (h *Handler) writeErr(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrUnknownGuild):
-		httpx.Error(w, http.StatusNotFound, codeUnknownGuild, "Unknown Guild")
+		errs.Write(w, errs.UnknownGuild())
 	case errors.Is(err, ErrUnknownChannel):
-		httpx.Error(w, http.StatusNotFound, codeUnknownChannel, "Unknown Channel")
+		errs.Write(w, errs.UnknownChannel())
 	case errors.Is(err, ErrUnknownInvite):
-		httpx.Error(w, http.StatusNotFound, codeUnknownInvite, "Unknown Invite")
+		errs.Write(w, errs.UnknownInvite())
 	case errors.Is(err, ErrUnknownMember):
-		httpx.Error(w, http.StatusNotFound, codeUnknownMember, "Unknown Member")
+		errs.Write(w, errs.UnknownMember())
 	case errors.Is(err, ErrUnknownUser):
-		httpx.Error(w, http.StatusNotFound, codeUnknownUser, "Unknown User")
+		errs.Write(w, errs.UnknownUser())
 	case errors.Is(err, ErrMissingAccess):
-		httpx.Error(w, http.StatusForbidden, codeMissingAccess, "Missing Access")
+		errs.Write(w, errs.MissingAccess())
 	case errors.Is(err, ErrMissingPermissions):
-		httpx.Error(w, http.StatusForbidden, codeMissingPermissions, "Missing Permissions")
+		errs.Write(w, errs.MissingPermissions())
 	default:
-		httpx.Error(w, http.StatusInternalServerError, 0, "Internal Server Error")
+		errs.Write(w, errs.Internal())
 	}
 }
 
@@ -77,11 +72,11 @@ func (h *Handler) CreateGuild(w http.ResponseWriter, r *http.Request) {
 		Name string `json:"name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body")
+		errs.Write(w, formBody("Invalid Form Body"))
 		return
 	}
 	if name := strings.TrimSpace(req.Name); len(name) < 2 || len(name) > 100 {
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body: name must be 2-100 chars")
+		errs.Write(w, formBody("Invalid Form Body: name must be 2-100 chars"))
 		return
 	}
 	g, err := h.Svc.CreateGuild(r.Context(), mustUser(r), strings.TrimSpace(req.Name))
@@ -96,7 +91,7 @@ func (h *Handler) CreateGuild(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetGuild(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r, "id")
 	if !ok {
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body: bad guild id")
+		errs.Write(w, formBody("Invalid Form Body: bad guild id"))
 		return
 	}
 	g, err := h.Svc.GetGuild(r.Context(), mustUser(r), id)
@@ -111,14 +106,14 @@ func (h *Handler) GetGuild(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) UpdateGuild(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r, "id")
 	if !ok {
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body: bad guild id")
+		errs.Write(w, formBody("Invalid Form Body: bad guild id"))
 		return
 	}
 	var req struct {
 		Name *string `json:"name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body")
+		errs.Write(w, formBody("Invalid Form Body"))
 		return
 	}
 	if req.Name == nil {
@@ -132,7 +127,7 @@ func (h *Handler) UpdateGuild(w http.ResponseWriter, r *http.Request) {
 	}
 	name := strings.TrimSpace(*req.Name)
 	if len(name) < 2 || len(name) > 100 {
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body: name must be 2-100 chars")
+		errs.Write(w, formBody("Invalid Form Body: name must be 2-100 chars"))
 		return
 	}
 	g, err := h.Svc.UpdateGuild(r.Context(), mustUser(r), id, name)
@@ -159,7 +154,7 @@ func (h *Handler) MyGuilds(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ListChannels(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r, "id")
 	if !ok {
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body: bad guild id")
+		errs.Write(w, formBody("Invalid Form Body: bad guild id"))
 		return
 	}
 	channels, err := h.Svc.ListChannels(r.Context(), mustUser(r), id)
@@ -174,7 +169,7 @@ func (h *Handler) ListChannels(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) CreateChannel(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r, "id")
 	if !ok {
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body: bad guild id")
+		errs.Write(w, formBody("Invalid Form Body: bad guild id"))
 		return
 	}
 	var req struct {
@@ -184,16 +179,16 @@ func (h *Handler) CreateChannel(w http.ResponseWriter, r *http.Request) {
 		ParentID *string `json:"parent_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body")
+		errs.Write(w, formBody("Invalid Form Body"))
 		return
 	}
 	if req.Type != 0 && req.Type != 2 {
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body: type must be 0 (text) or 2 (voice)")
+		errs.Write(w, formBody("Invalid Form Body: type must be 0 (text) or 2 (voice)"))
 		return
 	}
 	name := strings.TrimSpace(req.Name)
 	if name == "" || len(name) > 100 {
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body: name must be 1-100 chars")
+		errs.Write(w, formBody("Invalid Form Body: name must be 1-100 chars"))
 		return
 	}
 	var position int32
@@ -204,7 +199,7 @@ func (h *Handler) CreateChannel(w http.ResponseWriter, r *http.Request) {
 	if req.ParentID != nil {
 		pid, err := snowflake.Parse(*req.ParentID)
 		if err != nil || pid == 0 {
-			httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body: bad parent_id")
+			errs.Write(w, formBody("Invalid Form Body: bad parent_id"))
 			return
 		}
 		parentID = &pid
@@ -221,12 +216,12 @@ func (h *Handler) CreateChannel(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) UpdateChannel(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r, "id")
 	if !ok {
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body: bad guild id")
+		errs.Write(w, formBody("Invalid Form Body: bad guild id"))
 		return
 	}
 	cid, ok := pathID(r, "cid")
 	if !ok {
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body: bad channel id")
+		errs.Write(w, formBody("Invalid Form Body: bad channel id"))
 		return
 	}
 	var req struct {
@@ -235,14 +230,14 @@ func (h *Handler) UpdateChannel(w http.ResponseWriter, r *http.Request) {
 		ParentID *string `json:"parent_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body")
+		errs.Write(w, formBody("Invalid Form Body"))
 		return
 	}
 	var name *string
 	if req.Name != nil {
 		n := strings.TrimSpace(*req.Name)
 		if n == "" || len(n) > 100 {
-			httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body: name must be 1-100 chars")
+			errs.Write(w, formBody("Invalid Form Body: name must be 1-100 chars"))
 			return
 		}
 		name = &n
@@ -256,7 +251,7 @@ func (h *Handler) UpdateChannel(w http.ResponseWriter, r *http.Request) {
 	if req.ParentID != nil {
 		pid, err := snowflake.Parse(*req.ParentID)
 		if err != nil || pid == 0 {
-			httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body: bad parent_id")
+			errs.Write(w, formBody("Invalid Form Body: bad parent_id"))
 			return
 		}
 		parentID = &pid
@@ -273,12 +268,12 @@ func (h *Handler) UpdateChannel(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) DeleteChannel(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r, "id")
 	if !ok {
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body: bad guild id")
+		errs.Write(w, formBody("Invalid Form Body: bad guild id"))
 		return
 	}
 	cid, ok := pathID(r, "cid")
 	if !ok {
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body: bad channel id")
+		errs.Write(w, formBody("Invalid Form Body: bad channel id"))
 		return
 	}
 	if err := h.Svc.DeleteChannel(r.Context(), mustUser(r), id, cid); err != nil {
@@ -294,7 +289,7 @@ func (h *Handler) DeleteChannel(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ListMembers(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r, "id")
 	if !ok {
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body: bad guild id")
+		errs.Write(w, formBody("Invalid Form Body: bad guild id"))
 		return
 	}
 	members, err := h.Svc.ListMembers(r.Context(), mustUser(r), id)
@@ -309,12 +304,12 @@ func (h *Handler) ListMembers(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) AddMember(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r, "id")
 	if !ok {
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body: bad guild id")
+		errs.Write(w, formBody("Invalid Form Body: bad guild id"))
 		return
 	}
 	uid, ok := pathID(r, "uid")
 	if !ok {
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body: bad user id")
+		errs.Write(w, formBody("Invalid Form Body: bad user id"))
 		return
 	}
 	if err := h.Svc.AddMember(r.Context(), mustUser(r), id, uid); err != nil {
@@ -328,12 +323,12 @@ func (h *Handler) AddMember(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) RemoveMember(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r, "id")
 	if !ok {
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body: bad guild id")
+		errs.Write(w, formBody("Invalid Form Body: bad guild id"))
 		return
 	}
 	uid, ok := pathID(r, "uid")
 	if !ok {
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body: bad user id")
+		errs.Write(w, formBody("Invalid Form Body: bad user id"))
 		return
 	}
 	if err := h.Svc.RemoveMember(r.Context(), mustUser(r), id, uid); err != nil {
@@ -353,18 +348,18 @@ func (h *Handler) CreateInvite(w http.ResponseWriter, r *http.Request) {
 		MaxUses   *int   `json:"max_uses"` // 0 = unlimited; default 0
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body")
+		errs.Write(w, formBody("Invalid Form Body"))
 		return
 	}
 	channelID, err := snowflake.Parse(req.ChannelID)
 	if err != nil || channelID == 0 {
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body: bad channel_id")
+		errs.Write(w, formBody("Invalid Form Body: bad channel_id"))
 		return
 	}
 	maxAge := defaultInviteAgeSec
 	if req.MaxAge != nil {
 		if *req.MaxAge < 0 || *req.MaxAge > maxInviteAgeSec {
-			httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body: max_age must be 0-604800 seconds")
+			errs.Write(w, formBody("Invalid Form Body: max_age must be 0-604800 seconds"))
 			return
 		}
 		maxAge = *req.MaxAge
@@ -372,7 +367,7 @@ func (h *Handler) CreateInvite(w http.ResponseWriter, r *http.Request) {
 	maxUses := 0
 	if req.MaxUses != nil {
 		if *req.MaxUses < 0 || *req.MaxUses > maxInviteUses {
-			httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body: max_uses must be 0-100")
+			errs.Write(w, formBody("Invalid Form Body: max_uses must be 0-100"))
 			return
 		}
 		maxUses = *req.MaxUses
@@ -390,7 +385,7 @@ func (h *Handler) CreateInvite(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) JoinInvite(w http.ResponseWriter, r *http.Request) {
 	code := r.PathValue("code")
 	if code == "" || len(code) > 32 {
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body: bad invite code")
+		errs.Write(w, formBody("Invalid Form Body: bad invite code"))
 		return
 	}
 	g, err := h.Svc.JoinInvite(r.Context(), mustUser(r), code)

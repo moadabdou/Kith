@@ -101,8 +101,8 @@ func (l *Limiter) Middleware(key func(r *http.Request) string, bucketName string
 			w.Header().Set(HeaderRetryAfter, strconv.Itoa(int(res.ResetAfter.Seconds())+1))
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusTooManyRequests)
-			fmt.Fprintf(w, `{"code": %d, "message": "You are being rate limited, try again in %.0f seconds."}`,
-				ErrCodeRateLimited, res.ResetAfter.Seconds())
+			fmt.Fprintf(w, `{"message": %q, "retry_after": %.3f, "global": false, "code": %d}`,
+				"You are being rate limited.", res.ResetAfter.Seconds(), ErrCodeRateLimited)
 			return
 		}
 		next.ServeHTTP(w, r)

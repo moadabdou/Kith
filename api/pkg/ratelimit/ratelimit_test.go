@@ -78,9 +78,9 @@ func TestMiddlewareHeadersAnd429(t *testing.T) {
 			t.Fatalf("req %d: status %d, want 200", i+1, rec.Code)
 		}
 		assertHeaders(t, rec.Header(), map[string]string{
-			HeaderLimit:      "2",
-			HeaderRemaining:  strconv.Itoa(1 - i),
-			HeaderBucket:     "test-bucket",
+			HeaderLimit:     "2",
+			HeaderRemaining: strconv.Itoa(1 - i),
+			HeaderBucket:    "test-bucket",
 		})
 		if rec.Header().Get(HeaderRetryAfter) != "" {
 			t.Error("Retry-After must not be set on success")
@@ -106,14 +106,22 @@ func TestMiddlewareHeadersAnd429(t *testing.T) {
 		t.Errorf("Retry-After = %q, want positive seconds", retry)
 	}
 	var body struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
+		Code       int     `json:"code"`
+		Message    string  `json:"message"`
+		RetryAfter float64 `json:"retry_after"`
+		Global     bool    `json:"global"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("429 body not JSON: %v", err)
 	}
 	if body.Code != ErrCodeRateLimited || body.Message == "" {
 		t.Errorf("429 body = %+v", body)
+	}
+	if body.RetryAfter <= 0 {
+		t.Errorf("retry_after = %f, want positive", body.RetryAfter)
+	}
+	if body.Global {
+		t.Error("per-route bucket must report global: false")
 	}
 	if calls != 2 {
 		t.Errorf("next called %d times, want 2", calls)

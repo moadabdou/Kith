@@ -7,17 +7,8 @@ import (
 
 	"github.com/moadabdou/Kith/api/internal/auth"
 	"github.com/moadabdou/Kith/api/internal/httpx"
+	"github.com/moadabdou/Kith/api/pkg/errs"
 	"github.com/moadabdou/Kith/api/pkg/snowflake"
-)
-
-// Discord error codes — registry moves to pkg/errs in #8.
-const (
-	codeUnknownChannel  = 10003
-	codeUnknownMessage  = 10008
-	codeMissingAccess   = 50001
-	codeMissingPerms    = 50013
-	codeInvalidFormBody = 50035
-	codeCannotEditOther = 50005
 )
 
 const (
@@ -30,22 +21,28 @@ type Handler struct {
 	Svc *Service
 }
 
+// formBody is a 400/50035 with a plain message.
+func formBody(msg string) *errs.Error {
+	return &errs.Error{Status: http.StatusBadRequest, Code: errs.CodeInvalidFormBody, Message: msg}
+}
+
 func (h *Handler) writeErr(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrUnknownChannel):
-		httpx.Error(w, http.StatusNotFound, codeUnknownChannel, "Unknown Channel")
+		errs.Write(w, errs.UnknownChannel())
 	case errors.Is(err, ErrUnknownMessage):
-		httpx.Error(w, http.StatusNotFound, codeUnknownMessage, "Unknown Message")
+		errs.Write(w, errs.UnknownMessage())
 	case errors.Is(err, ErrMissingAccess):
-		httpx.Error(w, http.StatusForbidden, codeMissingAccess, "Missing Access")
+		errs.Write(w, errs.MissingAccess())
 	case errors.Is(err, ErrNotAuthor):
-		httpx.Error(w, http.StatusForbidden, codeCannotEditOther, "Cannot edit a message authored by another user")
+		errs.Write(w, errs.CannotEditOther())
 	case errors.Is(err, ErrEditWindowOver):
-		httpx.Error(w, http.StatusForbidden, codeMissingPerms, "The edit window for this message has passed")
+		errs.Write(w, &errs.Error{Status: http.StatusForbidden, Code: errs.CodeMissingPerms,
+			Message: "The edit window for this message has passed"})
 	case errors.Is(err, ErrContentRequired):
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body: content is required")
+		errs.Write(w, formBody("Invalid Form Body: content is required"))
 	default:
-		httpx.Error(w, http.StatusInternalServerError, 0, "Internal Server Error")
+		errs.Write(w, errs.Internal())
 	}
 }
 
@@ -59,19 +56,18 @@ func mustUser(r *http.Request) int64 {
 func (h *Handler) Send(w http.ResponseWriter, r *http.Request) {
 	cid, ok := pathID(r, "cid")
 	if !ok {
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body: bad channel id")
+		errs.Write(w, formBody("Invalid Form Body: bad channel id"))
 		return
 	}
 	var req struct {
 		Content string `json:"content"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body")
+		errs.Write(w, formBody("Invalid Form Body"))
 		return
 	}
-	if req.Content == "" || len(req.Content) > maxContentLen {
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody,
-			"Invalid Form Body: content must be 1-4000 chars")
+	if e := validateContent(req.Content); e != nil {
+		errs.Write(w, e)
 		return
 	}
 	m, err := h.Svc.Send(r.Context(), mustUser(r), cid, req.Content)
@@ -87,7 +83,7 @@ func (h *Handler) Send(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	cid, ok := pathID(r, "cid")
 	if !ok {
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body: bad channel id")
+		errs.Write(w, formBody("Invalid Form Body: bad channel id"))
 		return
 	}
 	var before int64
@@ -95,7 +91,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		var err error
 		before, err = snowflake.Parse(b)
 		if err != nil || before <= 0 {
-			httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body: bad before cursor")
+			errs.Write(w, formBody("Invalid Form Body: bad before cursor"))
 			return
 		}
 	}
@@ -104,7 +100,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		var err error
 		limit, err = parseLimit(l)
 		if err != nil {
-			httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body: limit must be 1-100")
+			errs.Write(w, formBody("Invalid Form Body: limit must be 1-100"))
 			return
 		}
 	}
@@ -120,24 +116,23 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) Edit(w http.ResponseWriter, r *http.Request) {
 	cid, ok := pathID(r, "cid")
 	if !ok {
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body: bad channel id")
+		errs.Write(w, formBody("Invalid Form Body: bad channel id"))
 		return
 	}
 	mid, ok := pathID(r, "mid")
 	if !ok {
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body: bad message id")
+		errs.Write(w, formBody("Invalid Form Body: bad message id"))
 		return
 	}
 	var req struct {
 		Content string `json:"content"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body")
+		errs.Write(w, formBody("Invalid Form Body"))
 		return
 	}
-	if req.Content == "" || len(req.Content) > maxContentLen {
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody,
-			"Invalid Form Body: content must be 1-4000 chars")
+	if e := validateContent(req.Content); e != nil {
+		errs.Write(w, e)
 		return
 	}
 	m, err := h.Svc.Edit(r.Context(), mustUser(r), cid, mid, req.Content)
@@ -152,12 +147,12 @@ func (h *Handler) Edit(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	cid, ok := pathID(r, "cid")
 	if !ok {
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body: bad channel id")
+		errs.Write(w, formBody("Invalid Form Body: bad channel id"))
 		return
 	}
 	mid, ok := pathID(r, "mid")
 	if !ok {
-		httpx.Error(w, http.StatusBadRequest, codeInvalidFormBody, "Invalid Form Body: bad message id")
+		errs.Write(w, formBody("Invalid Form Body: bad message id"))
 		return
 	}
 	if err := h.Svc.Delete(r.Context(), mustUser(r), cid, mid); err != nil {
@@ -173,6 +168,16 @@ func pathID(r *http.Request, key string) (int64, bool) {
 		return 0, false
 	}
 	return id, true
+}
+
+// validateContent centralizes message-content validation in Discord's
+// 50035 field-detail shape.
+func validateContent(content string) *errs.Error {
+	v := errs.NewValidator()
+	v.Check("content", content != "", errs.CodeRequired, "This field is required")
+	v.Check("content", len(content) <= maxContentLen, errs.CodeBadLength,
+		"Must be between 1 and 4000 in length.")
+	return v.Err()
 }
 
 func parseLimit(s string) (int, error) {

@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/moadabdou/Kith/api/internal/httpx"
+	"github.com/moadabdou/Kith/api/pkg/errs"
 )
 
 type ctxKey int
@@ -27,12 +27,12 @@ func RequireAuth(m *JWTManager, next http.Handler) http.Handler {
 		header := r.Header.Get("Authorization")
 		token, ok := strings.CutPrefix(header, "Bearer ")
 		if !ok || token == "" {
-			httpx.Error(w, http.StatusUnauthorized, 0, "401: Unauthorized")
+			errs.Write(w, errs.Unauthorized())
 			return
 		}
 		uid, err := m.Verify(token)
 		if err != nil {
-			httpx.Error(w, http.StatusUnauthorized, 0, "401: Unauthorized")
+			errs.Write(w, errs.Unauthorized())
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userIDKey, uid)))

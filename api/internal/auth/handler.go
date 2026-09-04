@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/moadabdou/Kith/api/internal/httpx"
+	"github.com/moadabdou/Kith/api/pkg/errs"
 )
 
 var usernameRe = regexp.MustCompile(`^[a-z0-9._]{3,32}$`)
@@ -44,19 +45,20 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		httpx.Error(w, http.StatusBadRequest, 50035, "Invalid Form Body")
+		errs.Write(w, invalidJSON())
 		return
 	}
-	if err := validateRegister(req.Username, req.Email, req.Password); err != "" {
-		httpx.Error(w, http.StatusBadRequest, 50035, "Invalid Form Body: "+err)
+	if e := validateRegister(req.Username, req.Email, req.Password); e != nil {
+		errs.Write(w, e)
 		return
 	}
 	u, err := h.Svc.Register(r.Context(), req.Username, req.Email, req.Password)
 	switch {
 	case err == ErrDuplicate:
-		httpx.Error(w, http.StatusConflict, 0, "Username or email already taken")
+		errs.Write(w, &errs.Error{Status: http.StatusConflict, Code: 0,
+			Message: "Username or email already taken"})
 	case err != nil:
-		httpx.Error(w, http.StatusInternalServerError, 0, "Internal Server Error")
+		errs.Write(w, errs.Internal())
 	default:
 		httpx.JSON(w, http.StatusCreated, toUserResponse(u))
 	}
@@ -68,17 +70,24 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		Login    string `json:"login"`
 		Password string `json:"password"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Login == "" || req.Password == "" {
-		httpx.Error(w, http.StatusBadRequest, 50035, "Invalid Form Body")
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errs.Write(w, invalidJSON())
+		return
+	}
+	v := errs.NewValidator()
+	v.Check("login", req.Login != "", errs.CodeRequired, "This field is required")
+	v.Check("password", req.Password != "", errs.CodeRequired, "This field is required")
+	if e := v.Err(); e != nil {
+		errs.Write(w, e)
 		return
 	}
 	u, refresh, err := h.Svc.Login(r.Context(), req.Login, req.Password)
 	if err == ErrInvalidCredentials {
-		httpx.Error(w, http.StatusUnauthorized, 0, "401: Unauthorized")
+		errs.Write(w, errs.Unauthorized())
 		return
 	}
 	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, 0, "Internal Server Error")
+		errs.Write(w, errs.Internal())
 		return
 	}
 	h.writeTokenPair(w, http.StatusOK, u.ID, refresh, u)
@@ -89,17 +98,23 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		RefreshToken string `json:"refresh_token"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.RefreshToken == "" {
-		httpx.Error(w, http.StatusBadRequest, 50035, "Invalid Form Body")
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errs.Write(w, invalidJSON())
+		return
+	}
+	v := errs.NewValidator()
+	v.Check("refresh_token", req.RefreshToken != "", errs.CodeRequired, "This field is required")
+	if e := v.Err(); e != nil {
+		errs.Write(w, e)
 		return
 	}
 	uid, newRefresh, err := h.Svc.Refresh(r.Context(), req.RefreshToken)
 	if err == ErrInvalidRefresh {
-		httpx.Error(w, http.StatusUnauthorized, 0, "401: Unauthorized")
+		errs.Write(w, errs.Unauthorized())
 		return
 	}
 	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, 0, "Internal Server Error")
+		errs.Write(w, errs.Internal())
 		return
 	}
 	h.writeTokenPair(w, http.StatusOK, uid, newRefresh, nil)
@@ -108,7 +123,7 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) writeTokenPair(w http.ResponseWriter, status int, uid int64, refresh string, u *User) {
 	token, err := h.Svc.JWT().Issue(uid)
 	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, 0, "Internal Server Error")
+		errs.Write(w, errs.Internal())
 		return
 	}
 	resp := map[string]any{
@@ -122,19 +137,26 @@ func (h *Handler) writeTokenPair(w http.ResponseWriter, status int, uid int64, r
 	httpx.JSON(w, status, resp)
 }
 
-func validateRegister(username, email, password string) string {
-	switch {
-	case !usernameRe.MatchString(username):
-		return "username must be 3-32 chars of a-z, 0-9, ., _"
-	case len(email) > 254 || !validEmail(email):
-		return "invalid email"
-	case len(password) < 8 || len(password) > 128:
-		return "password must be 8-128 chars"
-	}
-	return ""
+// validateRegister centralizes register validation; failures are reported
+// per-field in Discord's 50035 shape.
+func validateRegister(username, email, password string) *errs.Error {
+	v := errs.NewValidator()
+	v.Check("username", usernameRe.MatchString(username), errs.CodeBadLength,
+		"Must be between 3 and 32 in length; only a-z, 0-9, '.', '_'.")
+	v.Check("email", len(email) <= 254 && validEmail(email), errs.CodeEmailInvalid,
+		"Not a valid email address.")
+	v.Check("password", len(password) >= 8 && len(password) <= 128, errs.CodeBadLength,
+		"Must be between 8 and 128 in length.")
+	return v.Err()
 }
 
 func validEmail(email string) bool {
 	addr, err := mail.ParseAddress(email)
 	return err == nil && addr.Address == email
+}
+
+func invalidJSON() *errs.Error {
+	return errs.InvalidFormBody(map[string][]errs.Detail{
+		"_body": {{Code: errs.CodeInvalidType, Message: "Malformed JSON body."}},
+	})
 }

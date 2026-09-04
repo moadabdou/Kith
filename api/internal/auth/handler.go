@@ -45,7 +45,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		errs.Write(w, invalidJSON())
+		errs.Write(w, errs.InvalidJSON())
 		return
 	}
 	if e := validateRegister(req.Username, req.Email, req.Password); e != nil {
@@ -71,7 +71,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		errs.Write(w, invalidJSON())
+		errs.Write(w, errs.InvalidJSON())
 		return
 	}
 	v := errs.NewValidator()
@@ -99,7 +99,7 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 		RefreshToken string `json:"refresh_token"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		errs.Write(w, invalidJSON())
+		errs.Write(w, errs.InvalidJSON())
 		return
 	}
 	v := errs.NewValidator()
@@ -153,10 +153,4 @@ func validateRegister(username, email, password string) *errs.Error {
 func validEmail(email string) bool {
 	addr, err := mail.ParseAddress(email)
 	return err == nil && addr.Address == email
-}
-
-func invalidJSON() *errs.Error {
-	return errs.InvalidFormBody(map[string][]errs.Detail{
-		"_body": {{Code: errs.CodeInvalidType, Message: "Malformed JSON body."}},
-	})
 }

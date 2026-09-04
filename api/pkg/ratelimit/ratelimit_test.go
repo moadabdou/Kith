@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/moadabdou/Kith/api/pkg/errs"
 )
 
 func TestBucketAllowsLimitThenBlocks(t *testing.T) {
@@ -114,7 +116,7 @@ func TestMiddlewareHeadersAnd429(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("429 body not JSON: %v", err)
 	}
-	if body.Code != ErrCodeRateLimited || body.Message == "" {
+	if body.Code != errs.CodeRateLimited || body.Message == "" {
 		t.Errorf("429 body = %+v", body)
 	}
 	if body.RetryAfter <= 0 {

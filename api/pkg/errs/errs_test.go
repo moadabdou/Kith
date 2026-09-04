@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -101,5 +102,71 @@ func TestErrorImplementsError(t *testing.T) {
 	var err error = MissingAccess()
 	if err.Error() != "Missing Access" {
 		t.Errorf("Error() = %q", err.Error())
+	}
+}
+
+func TestFormBody(t *testing.T) {
+	e := FormBody("Invalid Form Body: bad guild id")
+	if e.Status != http.StatusBadRequest || e.Code != 50035 || e.Message == "" {
+		t.Errorf("FormBody = %+v", e)
+	}
+	if e.Fields != nil {
+		t.Error("FormBody must not carry field detail")
+	}
+}
+
+func TestInvalidJSON(t *testing.T) {
+	rec := httptest.NewRecorder()
+	Write(rec, InvalidJSON())
+	var env struct {
+		Code   int `json:"code"`
+		Errors map[string]struct {
+			Errors []Detail `json:"_errors"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatalf("body not JSON: %v", err)
+	}
+	if env.Code != 50035 {
+		t.Errorf("code = %d, want 50035", env.Code)
+	}
+	bd, ok := env.Errors["_body"]
+	if !ok || len(bd.Errors) != 1 || bd.Errors[0].Code != CodeInvalidType {
+		t.Errorf("_body detail = %+v", env.Errors)
+	}
+}
+
+func TestRateLimited(t *testing.T) {
+	rec := httptest.NewRecorder()
+	Write(rec, RateLimited(4.2, false))
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Errorf("status = %d, want 429", rec.Code)
+	}
+	var env struct {
+		Code       int     `json:"code"`
+		Message    string  `json:"message"`
+		RetryAfter float64 `json:"retry_after"`
+		Global     bool    `json:"global"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatalf("body not JSON: %v", err)
+	}
+	if env.Code != 29001 || env.Message != "You are being rate limited." {
+		t.Errorf("envelope = %+v", env)
+	}
+	if env.RetryAfter != 4.2 {
+		t.Errorf("retry_after = %f, want 4.2", env.RetryAfter)
+	}
+	if env.Global {
+		t.Error("global must render false (per-route bucket), not be omitted")
+	}
+
+	// Non-429 errors must not carry retry_after/global.
+	rec = httptest.NewRecorder()
+	Write(rec, MissingAccess())
+	if rec.Body.String() == "" || strings.Contains(rec.Body.String(), "retry_after") ||
+		strings.Contains(rec.Body.String(), "global") {
+		t.Errorf("plain error leaked rate-limit keys: %s", rec.Body.String())
 	}
 }

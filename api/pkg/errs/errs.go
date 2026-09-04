@@ -37,7 +37,7 @@ const (
 )
 
 // Error is an API error: Discord code + HTTP status + message, with
-// optional per-field validation detail (50035).
+// optional per-field validation detail (50035) and rate-limit detail (429).
 type Error struct {
 	Status  int
 	Code    int
@@ -46,6 +46,11 @@ type Error struct {
 	// Fields maps a JSON field name to its validation failures. Only set
 	// by InvalidFormBody. Wire-nested as Discord does: field → _errors.
 	Fields map[string][]Detail
+
+	// RetryAfter (429 only): seconds until the bucket resets.
+	RetryAfter *float64
+	// Global (429 only): whether this is the global (not per-route) limit.
+	Global *bool
 }
 
 // Detail is one validation failure for one field.
@@ -58,9 +63,11 @@ func (e *Error) Error() string { return e.Message }
 
 // envelope is the wire shape (lowercase keys omitted when empty).
 type envelope struct {
-	Code    int                    `json:"code"`
-	Message string                 `json:"message"`
-	Errors  map[string]fieldErrors `json:"errors,omitempty"`
+	Code       int                    `json:"code"`
+	Message    string                 `json:"message"`
+	Errors     map[string]fieldErrors `json:"errors,omitempty"`
+	RetryAfter *float64               `json:"retry_after,omitempty"`
+	Global     *bool                  `json:"global,omitempty"`
 }
 
 type fieldErrors struct {
@@ -68,8 +75,10 @@ type fieldErrors struct {
 }
 
 // Write renders e as the Discord error envelope with its HTTP status.
+// This package owns every error envelope on the wire — handlers never
+// hand-roll error JSON.
 func Write(w http.ResponseWriter, e *Error) {
-	env := envelope{Code: e.Code, Message: e.Message}
+	env := envelope{Code: e.Code, Message: e.Message, RetryAfter: e.RetryAfter, Global: e.Global}
 	if len(e.Fields) > 0 {
 		env.Errors = make(map[string]fieldErrors, len(e.Fields))
 		for field, details := range e.Fields {
@@ -126,5 +135,30 @@ func InvalidFormBody(fields map[string][]Detail) *Error {
 		Code:    CodeInvalidFormBody,
 		Message: "Invalid Form Body",
 		Fields:  fields,
+	}
+}
+
+// FormBody is a plain-message 50035 — for path/query param problems and
+// other bad requests without per-field detail.
+func FormBody(msg string) *Error {
+	return &Error{Status: http.StatusBadRequest, Code: CodeInvalidFormBody, Message: msg}
+}
+
+// InvalidJSON is the 50035 returned when a request body fails to decode.
+func InvalidJSON() *Error {
+	return InvalidFormBody(map[string][]Detail{
+		"_body": {{Code: CodeInvalidType, Message: "Malformed JSON body."}},
+	})
+}
+
+// RateLimited builds Discord's 429 body: retry_after seconds and whether
+// the limit is the global one (false for per-route buckets).
+func RateLimited(retryAfterSec float64, global bool) *Error {
+	return &Error{
+		Status:     http.StatusTooManyRequests,
+		Code:       CodeRateLimited,
+		Message:    "You are being rate limited.",
+		RetryAfter: &retryAfterSec,
+		Global:     &global,
 	}
 }

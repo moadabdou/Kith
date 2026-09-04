@@ -10,21 +10,21 @@
 package ratelimit
 
 import (
-	"fmt"
 	"net/http"
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/moadabdou/Kith/api/pkg/errs"
 )
 
 // Headers set on every response passing through the limiter.
 const (
-	HeaderLimit        = "X-RateLimit-Limit"
-	HeaderRemaining    = "X-RateLimit-Remaining"
-	HeaderResetAfter   = "X-RateLimit-Reset-After"
-	HeaderBucket       = "X-RateLimit-Bucket"
-	HeaderRetryAfter   = "Retry-After"
-	ErrCodeRateLimited = 29001 // Discord's generic "You are being rate limited"
+	HeaderLimit      = "X-RateLimit-Limit"
+	HeaderRemaining  = "X-RateLimit-Remaining"
+	HeaderResetAfter = "X-RateLimit-Reset-After"
+	HeaderBucket     = "X-RateLimit-Bucket"
+	HeaderRetryAfter = "Retry-After"
 )
 
 // Limiter is a fixed-window counter per key. Windows feel cruder than a
@@ -93,16 +93,14 @@ func (l *Limiter) Take(key string) Result {
 // Middleware wraps next with rate limiting. key extracts the bucket key
 // from the request (e.g. "user:channel"); bucketName identifies the route
 // bucket for the X-RateLimit-Bucket header (Discord hashes the route).
+// The 429 body is Discord's shape, rendered by pkg/errs.
 func (l *Limiter) Middleware(key func(r *http.Request) string, bucketName string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		res := l.Take(key(r))
 		setHeaders(w, bucketName, res)
 		if !res.Allowed {
 			w.Header().Set(HeaderRetryAfter, strconv.Itoa(int(res.ResetAfter.Seconds())+1))
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusTooManyRequests)
-			fmt.Fprintf(w, `{"message": %q, "retry_after": %.3f, "global": false, "code": %d}`,
-				"You are being rate limited.", res.ResetAfter.Seconds(), ErrCodeRateLimited)
+			errs.Write(w, errs.RateLimited(res.ResetAfter.Seconds(), false))
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -113,6 +111,6 @@ func setHeaders(w http.ResponseWriter, bucketName string, res Result) {
 	h := w.Header()
 	h.Set(HeaderLimit, strconv.Itoa(res.Limit))
 	h.Set(HeaderRemaining, strconv.Itoa(res.Remaining))
-	h.Set(HeaderResetAfter, fmt.Sprintf("%.3f", res.ResetAfter.Seconds()))
+	h.Set(HeaderResetAfter, strconv.FormatFloat(res.ResetAfter.Seconds(), 'f', 3, 64))
 	h.Set(HeaderBucket, bucketName)
 }

@@ -21,11 +21,6 @@ type Handler struct {
 	Svc *Service
 }
 
-// formBody is a 400/50035 with a plain message.
-func formBody(msg string) *errs.Error {
-	return &errs.Error{Status: http.StatusBadRequest, Code: errs.CodeInvalidFormBody, Message: msg}
-}
-
 func (h *Handler) writeErr(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrUnknownChannel):
@@ -40,7 +35,7 @@ func (h *Handler) writeErr(w http.ResponseWriter, err error) {
 		errs.Write(w, &errs.Error{Status: http.StatusForbidden, Code: errs.CodeMissingPerms,
 			Message: "The edit window for this message has passed"})
 	case errors.Is(err, ErrContentRequired):
-		errs.Write(w, formBody("Invalid Form Body: content is required"))
+		errs.Write(w, errs.FormBody("Invalid Form Body: content is required"))
 	default:
 		errs.Write(w, errs.Internal())
 	}
@@ -56,14 +51,14 @@ func mustUser(r *http.Request) int64 {
 func (h *Handler) Send(w http.ResponseWriter, r *http.Request) {
 	cid, ok := pathID(r, "cid")
 	if !ok {
-		errs.Write(w, formBody("Invalid Form Body: bad channel id"))
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad channel id"))
 		return
 	}
 	var req struct {
 		Content string `json:"content"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		errs.Write(w, formBody("Invalid Form Body"))
+		errs.Write(w, errs.InvalidJSON())
 		return
 	}
 	if e := validateContent(req.Content); e != nil {
@@ -83,7 +78,7 @@ func (h *Handler) Send(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	cid, ok := pathID(r, "cid")
 	if !ok {
-		errs.Write(w, formBody("Invalid Form Body: bad channel id"))
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad channel id"))
 		return
 	}
 	var before int64
@@ -91,7 +86,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		var err error
 		before, err = snowflake.Parse(b)
 		if err != nil || before <= 0 {
-			errs.Write(w, formBody("Invalid Form Body: bad before cursor"))
+			errs.Write(w, errs.FormBody("Invalid Form Body: bad before cursor"))
 			return
 		}
 	}
@@ -100,7 +95,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		var err error
 		limit, err = parseLimit(l)
 		if err != nil {
-			errs.Write(w, formBody("Invalid Form Body: limit must be 1-100"))
+			errs.Write(w, errs.FormBody("Invalid Form Body: limit must be 1-100"))
 			return
 		}
 	}
@@ -116,19 +111,19 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) Edit(w http.ResponseWriter, r *http.Request) {
 	cid, ok := pathID(r, "cid")
 	if !ok {
-		errs.Write(w, formBody("Invalid Form Body: bad channel id"))
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad channel id"))
 		return
 	}
 	mid, ok := pathID(r, "mid")
 	if !ok {
-		errs.Write(w, formBody("Invalid Form Body: bad message id"))
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad message id"))
 		return
 	}
 	var req struct {
 		Content string `json:"content"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		errs.Write(w, formBody("Invalid Form Body"))
+		errs.Write(w, errs.InvalidJSON())
 		return
 	}
 	if e := validateContent(req.Content); e != nil {
@@ -147,12 +142,12 @@ func (h *Handler) Edit(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	cid, ok := pathID(r, "cid")
 	if !ok {
-		errs.Write(w, formBody("Invalid Form Body: bad channel id"))
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad channel id"))
 		return
 	}
 	mid, ok := pathID(r, "mid")
 	if !ok {
-		errs.Write(w, formBody("Invalid Form Body: bad message id"))
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad message id"))
 		return
 	}
 	if err := h.Svc.Delete(r.Context(), mustUser(r), cid, mid); err != nil {

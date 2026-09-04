@@ -14,6 +14,7 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/moadabdou/Kith/api/internal/auth"
+	"github.com/moadabdou/Kith/api/internal/guilds"
 	"github.com/moadabdou/Kith/api/internal/httpx"
 	"github.com/moadabdou/Kith/api/internal/users"
 	"github.com/moadabdou/Kith/api/pkg/snowflake"
@@ -71,6 +72,7 @@ func main() {
 	authSvc := auth.NewService(db, node, jwt, refreshTokenTTL)
 	authHandler := &auth.Handler{Svc: authSvc}
 	usersHandler := &users.Handler{DB: db}
+	guildsHandler := &guilds.Handler{Svc: guilds.NewService(db, node)}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
@@ -81,6 +83,27 @@ func main() {
 	mux.HandleFunc("POST /api/auth/login", authHandler.Login)
 	mux.HandleFunc("POST /api/auth/refresh", authHandler.Refresh)
 	mux.Handle("GET /api/users/@me", auth.RequireAuth(jwt, http.HandlerFunc(usersHandler.Me)))
+	mux.Handle("GET /api/users/@me/guilds", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.MyGuilds)))
+
+	// guilds
+	mux.Handle("POST /api/guilds", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.CreateGuild)))
+	mux.Handle("GET /api/guilds/{id}", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.GetGuild)))
+	mux.Handle("PATCH /api/guilds/{id}", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.UpdateGuild)))
+
+	// channels
+	mux.Handle("GET /api/guilds/{id}/channels", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.ListChannels)))
+	mux.Handle("POST /api/guilds/{id}/channels", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.CreateChannel)))
+	mux.Handle("PATCH /api/guilds/{id}/channels/{cid}", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.UpdateChannel)))
+	mux.Handle("DELETE /api/guilds/{id}/channels/{cid}", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.DeleteChannel)))
+
+	// members
+	mux.Handle("GET /api/guilds/{id}/members", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.ListMembers)))
+	mux.Handle("PUT /api/guilds/{id}/members/{uid}", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.AddMember)))
+	mux.Handle("DELETE /api/guilds/{id}/members/{uid}", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.RemoveMember)))
+
+	// invites
+	mux.Handle("POST /api/invites", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.CreateInvite)))
+	mux.Handle("POST /api/invites/{code}/join", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.JoinInvite)))
 
 	srv := &http.Server{
 		Addr:              ":" + port,

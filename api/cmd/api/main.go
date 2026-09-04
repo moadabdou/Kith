@@ -19,6 +19,7 @@ import (
 	"github.com/moadabdou/Kith/api/internal/httpx"
 	"github.com/moadabdou/Kith/api/internal/messages"
 	"github.com/moadabdou/Kith/api/internal/users"
+	"github.com/moadabdou/Kith/api/pkg/ratelimit"
 	"github.com/moadabdou/Kith/api/pkg/snowflake"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -110,9 +111,20 @@ func main() {
 	mux.Handle("POST /api/invites", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.CreateInvite)))
 	mux.Handle("POST /api/invites/{code}/join", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.JoinInvite)))
 
-	// messages — the hot path (rate limiting wraps Send in #7)
+	// messages — the hot path.
+	// POST /messages rate limit: 5/5s per (user, channel), Discord's model
+	// (plan/02 §5). In-memory now; Redis swap stays behind the same
+	// middleware interface in Phase 1.
+	msgLimiter := ratelimit.NewLimiter(5, 5*time.Second)
 	mux.Handle("POST /api/guilds/{id}/channels/{cid}/messages",
-		auth.RequireAuth(jwt, http.HandlerFunc(messagesHandler.Send)))
+		auth.RequireAuth(jwt, msgLimiter.Middleware(
+			func(r *http.Request) string {
+				// Inside RequireAuth: user id is on the context.
+				uid, _ := auth.UserIDFrom(r.Context())
+				return strconv.FormatInt(uid, 10) + ":" + r.PathValue("cid")
+			},
+			"post-messages",
+			http.HandlerFunc(messagesHandler.Send))))
 	mux.Handle("GET /api/guilds/{id}/channels/{cid}/messages",
 		auth.RequireAuth(jwt, http.HandlerFunc(messagesHandler.List)))
 	mux.Handle("PATCH /api/channels/{cid}/messages/{mid}",

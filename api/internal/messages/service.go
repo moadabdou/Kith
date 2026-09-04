@@ -260,15 +260,15 @@ func (s *Service) insertMessage(ctx context.Context, tx *sql.Tx, id, userID, cha
 	err := tx.QueryRowContext(ctx, `
 		INSERT INTO messages (id, channel_id, author_id, content)
 		VALUES ($1, $2, $3, $4)
-		RETURNING id::text, channel_id::text, created_at`,
+		RETURNING id::text, channel_id::text, author_id::text, created_at`,
 		id, channelID, userID, content,
-	).Scan(&m.ID, &m.ChannelID, &m.CreatedAt)
+	).Scan(&m.ID, &m.ChannelID, &m.Author.ID, &m.CreatedAt)
 	if err != nil {
 		// FK violation = channel (or user) doesn't exist.
 		return nil, ErrUnknownChannel
 	}
 	m.Content = content
-	if err := s.fillAuthor(ctx, tx, &m, userID); err != nil {
+	if err := s.fillAuthor(ctx, tx, &m); err != nil {
 		return nil, err
 	}
 	return &m, nil
@@ -285,11 +285,17 @@ func (s *Service) fillMessage(ctx context.Context, m *Message) error {
 		&m.Content, &m.CreatedAt, &m.EditedAt)
 }
 
-func (s *Service) fillAuthor(ctx context.Context, q queryer, m *Message, userID int64) error {
+// fillAuthor completes m.Author's display fields from the users table,
+// keyed by the message's own author id — the DB row is the source of truth.
+func (s *Service) fillAuthor(ctx context.Context, q queryer, m *Message) error {
+	authorID, err := strconv.ParseInt(m.Author.ID, 10, 64)
+	if err != nil {
+		return err
+	}
 	return q.QueryRowContext(ctx, `
-		SELECT id::text, username, to_char(discriminator, 'FM0000')
-		FROM users WHERE id = $1`, userID,
-	).Scan(&m.Author.ID, &m.Author.Username, &m.Author.Discriminator)
+		SELECT username, to_char(discriminator, 'FM0000')
+		FROM users WHERE id = $1`, authorID,
+	).Scan(&m.Author.Username, &m.Author.Discriminator)
 }
 
 type queryer interface {

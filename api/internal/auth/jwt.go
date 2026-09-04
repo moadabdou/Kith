@@ -40,7 +40,7 @@ func (m *JWTManager) Issue(userID int64) (string, error) {
 func (m *JWTManager) Verify(token string) (int64, error) {
 	parsed, err := jwt.ParseWithClaims(token, &jwt.RegisteredClaims{}, func(*jwt.Token) (any, error) {
 		return m.secret, nil
-	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}), jwt.WithExpirationRequired())
 	if err != nil || !parsed.Valid {
 		return 0, ErrInvalidToken
 	}

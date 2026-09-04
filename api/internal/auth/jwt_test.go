@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
 func TestJWTRoundTrip(t *testing.T) {
@@ -43,6 +45,20 @@ func TestJWTGarbage(t *testing.T) {
 		if _, err := m.Verify(bad); err == nil {
 			t.Errorf("Verify(%q) should fail", bad)
 		}
+	}
+}
+
+func TestJWTExpirationRequired(t *testing.T) {
+	// Defense-in-depth: even a correctly-signed token without an exp claim
+	// must be rejected (Verify enforces exp via WithExpirationRequired).
+	now := time.Now()
+	claims := jwt.RegisteredClaims{Subject: "1", IssuedAt: jwt.NewNumericDate(now)}
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte("secret"))
+	if err != nil {
+		t.Fatalf("signing token without exp: %v", err)
+	}
+	if _, err := NewJWTManager([]byte("secret"), time.Minute).Verify(token); err == nil {
+		t.Fatal("token without exp claim must not verify")
 	}
 }
 

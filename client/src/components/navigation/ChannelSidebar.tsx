@@ -1,4 +1,4 @@
-import { Hash, LogOut, Plus, Volume2 } from 'lucide-react'
+import { Hash, LogOut, Plus, UserPlus, Volume2 } from 'lucide-react'
 import { useAuth } from '../../context/useAuth'
 import type { Channel, Guild } from '../../types'
 
@@ -8,6 +8,7 @@ interface ChannelSidebarProps {
   selectedChannelId: string | null
   onSelectChannel: (channelId: string) => void
   onOpenCreateChannelModal: () => void
+  onOpenInviteModal: () => void
 }
 
 export function ChannelSidebar({
@@ -16,6 +17,7 @@ export function ChannelSidebar({
   selectedChannelId,
   onSelectChannel,
   onOpenCreateChannelModal,
+  onOpenInviteModal,
 }: ChannelSidebarProps) {
   const { user, logout } = useAuth()
 
@@ -29,6 +31,25 @@ export function ChannelSidebar({
         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {currentGuild?.name ?? 'Select a Server'}
         </span>
+        {currentGuild && (
+          <button
+            type="button"
+            onClick={onOpenInviteModal}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: 'var(--text-muted)',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              padding: 4,
+              borderRadius: 4,
+            }}
+            title="Invite People"
+          >
+            <UserPlus size={18} />
+          </button>
+        )}
       </div>
 
       {/* Channels List */}

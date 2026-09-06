@@ -127,6 +127,21 @@ class ApiClient {
       body: JSON.stringify({ content }),
     })
   }
+
+  // ── Invites ────────────────────────────────────────
+  async createInvite(channelId: string, maxAge = 86400, maxUses = 0): Promise<import('./types').Invite> {
+    return this.request<import('./types').Invite>('/invites', {
+      method: 'POST',
+      body: JSON.stringify({ channel_id: channelId, max_age: maxAge, max_uses: maxUses }),
+    })
+  }
+
+  async joinInvite(code: string): Promise<Guild> {
+    const cleanCode = code.trim().replace(/^.*\/join\//, '').replace(/^.*\/invites?\//, '')
+    return this.request<Guild>(`/invites/${encodeURIComponent(cleanCode)}/join`, {
+      method: 'POST',
+    })
+  }
 }
 
 export const api = new ApiClient()

@@ -4,6 +4,7 @@ import { AuthView } from './components/auth/AuthView'
 import { ChatArea } from './components/chat/ChatArea'
 import { CreateChannelModal } from './components/modals/CreateChannelModal'
 import { CreateGuildModal } from './components/modals/CreateGuildModal'
+import { InviteModal } from './components/modals/InviteModal'
 import { ChannelSidebar } from './components/navigation/ChannelSidebar'
 import { ServerSidebar } from './components/navigation/ServerSidebar'
 import { AuthProvider } from './context/AuthContext'
@@ -19,6 +20,7 @@ function Dashboard() {
 
   const [isGuildModalOpen, setIsGuildModalOpen] = useState(false)
   const [isChannelModalOpen, setIsChannelModalOpen] = useState(false)
+  const [isInviteModalOpen, setIsInviteModalOpen] = useState(false)
 
   // Fetch guilds when user is authenticated
   useEffect(() => {
@@ -64,6 +66,42 @@ function Dashboard() {
     setGuilds((prev) => [...prev, newGuild])
     setSelectedGuildId(newGuild.id)
   }
+
+  const handleJoinGuild = async (code: string) => {
+    const joinedGuild = await api.joinInvite(code)
+    setGuilds((prev) => {
+      if (prev.some((g) => g.id === joinedGuild.id)) return prev
+      return [...prev, joinedGuild]
+    })
+    setSelectedGuildId(joinedGuild.id)
+  }
+
+  // Detect ?invite=XYZ query param to auto-join
+  useEffect(() => {
+    if (!user) return
+    const urlParams = new URLSearchParams(window.location.search)
+    const inviteParam = urlParams.get('invite')
+    if (!inviteParam) return
+
+    let active = true
+    api.joinInvite(inviteParam)
+      .then((joinedGuild) => {
+        if (!active) return
+        setGuilds((prev) => {
+          if (prev.some((g) => g.id === joinedGuild.id)) return prev
+          return [...prev, joinedGuild]
+        })
+        setSelectedGuildId(joinedGuild.id)
+        window.history.replaceState({}, document.title, window.location.pathname)
+      })
+      .catch((err) => {
+        if (active) console.error('Failed to join via invite URL:', err)
+      })
+
+    return () => {
+      active = false
+    }
+  }, [user])
 
   const handleCreateChannel = async (name: string) => {
     if (!selectedGuildId) return
@@ -116,6 +154,7 @@ function Dashboard() {
         selectedChannelId={selectedChannelId}
         onSelectChannel={(id) => setSelectedChannelId(id)}
         onOpenCreateChannelModal={() => setIsChannelModalOpen(true)}
+        onOpenInviteModal={() => setIsInviteModalOpen(true)}
       />
 
       {/* Main Chat Area */}
@@ -129,12 +168,20 @@ function Dashboard() {
         isOpen={isGuildModalOpen}
         onClose={() => setIsGuildModalOpen(false)}
         onCreate={handleCreateGuild}
+        onJoin={handleJoinGuild}
       />
 
       <CreateChannelModal
         isOpen={isChannelModalOpen}
         onClose={() => setIsChannelModalOpen(false)}
         onCreate={handleCreateChannel}
+      />
+
+      <InviteModal
+        isOpen={isInviteModalOpen}
+        onClose={() => setIsInviteModalOpen(false)}
+        guild={currentGuild}
+        channel={currentChannel ?? channels[0] ?? null}
       />
     </div>
   )

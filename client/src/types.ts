@@ -45,6 +45,23 @@ export interface Message {
   edited_timestamp?: string | null
 }
 
+export interface Invite {
+  code: string
+  guild: {
+    id: string
+    name: string
+  }
+  channel: {
+    id: string
+    name: string
+    type: number
+  }
+  inviter: AuthorRef
+  uses: number
+  max_uses: number
+  expires_at: string | null
+}
+
 export interface ApiError {
   code?: number
   message: string

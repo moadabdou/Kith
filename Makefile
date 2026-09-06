@@ -24,4 +24,7 @@ gateway-test:
 	docker build --target test -t kith-gateway-test gateway
 	docker run --rm -e PORT=0 kith-gateway-test
 
-.PHONY: migrate-up migrate-down migrate-force psql gateway-test
+smoke:
+	./scripts/smoke.sh
+
+.PHONY: migrate-up migrate-down migrate-force psql gateway-test smoke

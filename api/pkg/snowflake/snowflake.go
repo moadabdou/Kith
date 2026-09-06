@@ -38,7 +38,7 @@ var ErrClockMovedBackwards = errors.New("snowflake: clock moved backwards")
 // Node generates snowflake IDs for one node id (0–1023).
 type Node struct {
 	nodeID int64
-	state  atomic.Int64 // packed: timestamp<<20 | sequence
+	state  atomic.Int64 // packed: timestamp<<timeShift | sequence
 	now    func() time.Time
 }
 
@@ -64,10 +64,11 @@ func (n *Node) Generate() (int64, error) {
 			seq = 0
 		case now == last:
 			if seq == MaxSeq {
-				// Exhausted 4096 IDs this ms — wait for the next ms.
-				next := last + 1
-				n.state.Store(next<<timeShift | 0)
-				sleepUntil(next)
+				// Exhausted 4096 IDs this ms — wait for the clock to tick.
+				// Do not advance n.state ahead of physical time: concurrent
+				// callers reading n.state would see now < last and falsely
+				// trigger ErrClockMovedBackwards.
+				sleepUntil(last + 1)
 				continue
 			}
 			seq++

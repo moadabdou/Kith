@@ -27,4 +27,7 @@ gateway-test:
 smoke:
 	./scripts/smoke.sh
 
-.PHONY: migrate-up migrate-down migrate-force psql gateway-test smoke
+chaos-phase0:
+	./scripts/chaos/phase0_kill_api.sh
+
+.PHONY: migrate-up migrate-down migrate-force psql gateway-test smoke chaos-phase0

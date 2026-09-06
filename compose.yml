@@ -147,6 +147,7 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
     volumes:
       - ./deploy/provisioning/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./deploy/provisioning/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
       - grafana-data:/var/lib/grafana
     ports:
       - "127.0.0.1:3000:3000"

@@ -33,6 +33,15 @@ var httpRequestsTotal = prometheus.NewCounterVec(
 	[]string{"method", "path", "code"},
 )
 
+var httpRequestDuration = prometheus.NewHistogramVec(
+	prometheus.HistogramOpts{
+		Name:    "api_http_request_duration_seconds",
+		Help:    "HTTP request latency in seconds, labeled by method and path.",
+		Buckets: prometheus.DefBuckets,
+	},
+	[]string{"method", "path"},
+)
+
 const (
 	accessTokenTTL  = 15 * time.Minute
 	refreshTokenTTL = 30 * 24 * time.Hour
@@ -40,7 +49,7 @@ const (
 
 func main() {
 	initLogger(envOr("LOG_LEVEL", "info"))
-	prometheus.MustRegister(httpRequestsTotal)
+	prometheus.MustRegister(httpRequestsTotal, httpRequestDuration)
 
 	port := envOr("PORT", "8080")
 	databaseURL := os.Getenv("DATABASE_URL")
@@ -191,9 +200,12 @@ func (w *statusWriter) WriteHeader(code int) {
 
 func instrument(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(sw, r)
+		duration := time.Since(start).Seconds()
 		httpRequestsTotal.WithLabelValues(r.Method, r.URL.Path, strconv.Itoa(sw.status)).Inc()
+		httpRequestDuration.WithLabelValues(r.Method, r.URL.Path).Observe(duration)
 	})
 }
 

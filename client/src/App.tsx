@@ -11,6 +11,28 @@ import { AuthProvider } from './context/AuthContext'
 import { useAuth } from './context/useAuth'
 import type { Channel, Guild } from './types'
 
+function getInviteCodeFromUrl(): string | null {
+  if (typeof window === 'undefined') return null
+  // 1. Path format: /join/:code or /invite/:code
+  const pathMatch = window.location.pathname.match(/^\/(?:join|invite)\/([^/?#]+)/)
+  if (pathMatch && pathMatch[1]) {
+    return decodeURIComponent(pathMatch[1])
+  }
+  // 2. Query param format: ?invite=:code or ?code=:code
+  const urlParams = new URLSearchParams(window.location.search)
+  const param = urlParams.get('invite') || urlParams.get('code')
+  if (param) {
+    return param.trim()
+  }
+  return null
+}
+
+// Preserve invite code immediately on load so it survives auth redirect
+const initialInvite = getInviteCodeFromUrl()
+if (initialInvite && typeof window !== 'undefined') {
+  sessionStorage.setItem('kith_pending_invite', initialInvite)
+}
+
 function Dashboard() {
   const { user, loading } = useAuth()
   const [guilds, setGuilds] = useState<Guild[]>([])
@@ -21,6 +43,7 @@ function Dashboard() {
   const [isGuildModalOpen, setIsGuildModalOpen] = useState(false)
   const [isChannelModalOpen, setIsChannelModalOpen] = useState(false)
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false)
+  const [inviteFeedback, setInviteFeedback] = useState<{ message: string; isError?: boolean } | null>(null)
 
   // Fetch guilds when user is authenticated
   useEffect(() => {
@@ -68,23 +91,34 @@ function Dashboard() {
   }
 
   const handleJoinGuild = async (code: string) => {
-    const joinedGuild = await api.joinInvite(code)
-    setGuilds((prev) => {
-      if (prev.some((g) => g.id === joinedGuild.id)) return prev
-      return [...prev, joinedGuild]
-    })
-    setSelectedGuildId(joinedGuild.id)
+    try {
+      const joinedGuild = await api.joinInvite(code)
+      setGuilds((prev) => {
+        if (prev.some((g) => g.id === joinedGuild.id)) return prev
+        return [...prev, joinedGuild]
+      })
+      setSelectedGuildId(joinedGuild.id)
+      setInviteFeedback({ message: `Successfully joined ${joinedGuild.name}!` })
+      setTimeout(() => setInviteFeedback(null), 4000)
+    } catch (err: any) {
+      setInviteFeedback({ message: err.message || 'Failed to join server', isError: true })
+      setTimeout(() => setInviteFeedback(null), 5000)
+      throw err
+    }
   }
 
-  // Detect ?invite=XYZ query param to auto-join
+  // Auto-join if arriving via invite URL or pending invite in session
   useEffect(() => {
     if (!user) return
-    const urlParams = new URLSearchParams(window.location.search)
-    const inviteParam = urlParams.get('invite')
-    if (!inviteParam) return
+
+    const pendingCode = getInviteCodeFromUrl() || sessionStorage.getItem('kith_pending_invite')
+    if (!pendingCode) return
+
+    sessionStorage.removeItem('kith_pending_invite')
+    window.history.replaceState({}, document.title, '/')
 
     let active = true
-    api.joinInvite(inviteParam)
+    api.joinInvite(pendingCode)
       .then((joinedGuild) => {
         if (!active) return
         setGuilds((prev) => {
@@ -92,10 +126,18 @@ function Dashboard() {
           return [...prev, joinedGuild]
         })
         setSelectedGuildId(joinedGuild.id)
-        window.history.replaceState({}, document.title, window.location.pathname)
+        setInviteFeedback({ message: `Successfully joined ${joinedGuild.name}!` })
+        setTimeout(() => setInviteFeedback(null), 4000)
       })
       .catch((err) => {
-        if (active) console.error('Failed to join via invite URL:', err)
+        if (active) {
+          console.error('Failed to join via invite URL:', err)
+          setInviteFeedback({
+            message: err.message || 'Failed to join server. Invite code may be invalid or expired.',
+            isError: true,
+          })
+          setTimeout(() => setInviteFeedback(null), 5000)
+        }
       })
 
     return () => {
@@ -139,6 +181,29 @@ function Dashboard() {
 
   return (
     <div className="app-container">
+      {inviteFeedback && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 20,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            backgroundColor: inviteFeedback.isError ? '#da373c' : '#23a55a',
+            color: 'white',
+            padding: '10px 24px',
+            borderRadius: 8,
+            boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
+            zIndex: 99999,
+            fontWeight: 600,
+            fontSize: 14,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+          }}
+        >
+          {inviteFeedback.message}
+        </div>
+      )}
       {/* 72px Left Rail */}
       <ServerSidebar
         guilds={guilds}

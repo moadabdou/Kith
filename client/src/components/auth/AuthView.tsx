@@ -9,6 +9,7 @@ export function AuthView() {
   const [loginField, setLoginField] = useState('')
   const [password, setPassword] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const pendingInvite = typeof window !== 'undefined' ? sessionStorage.getItem('kith_pending_invite') : null
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -44,6 +45,22 @@ export function AuthView() {
               : "We're so excited to see you again!"}
           </p>
         </div>
+
+        {pendingInvite && (
+          <div
+            style={{
+              backgroundColor: 'rgba(88, 101, 242, 0.2)',
+              border: '1px solid var(--brand)',
+              borderRadius: 6,
+              padding: '10px 14px',
+              color: 'var(--text-header)',
+              fontSize: 13,
+              textAlign: 'center',
+            }}
+          >
+            🎉 You have a server invitation! Log in or create an account to join.
+          </div>
+        )}
 
         {error && <div className="error-banner">{error}</div>}
 

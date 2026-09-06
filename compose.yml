@@ -83,6 +83,8 @@ services:
         NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
     environment:
       PORT: ${GATEWAY_PORT:-4000}
+      CHAOS_ENABLED: ${CHAOS_ENABLED:-true}
+    restart: unless-stopped
     ports:
       - "127.0.0.1:4000:4000"
     healthcheck:

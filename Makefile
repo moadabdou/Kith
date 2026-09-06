@@ -20,4 +20,8 @@ migrate-force:
 psql:
 	docker compose exec postgres psql -U $(POSTGRES_USER) -d $(POSTGRES_DB)
 
-.PHONY: migrate-up migrate-down migrate-force psql
+gateway-test:
+	docker build --target test -t kith-gateway-test gateway
+	docker run --rm -e PORT=0 kith-gateway-test
+
+.PHONY: migrate-up migrate-down migrate-force psql gateway-test

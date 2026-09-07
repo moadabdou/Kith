@@ -249,16 +249,15 @@ defmodule Gateway.Bus.Consumer do
           guild_id = event["guild_id"] || ""
           type = event["type"] || "UNKNOWN"
 
-          # Route by guild_id -> Registry lookup
-          subscribers =
-            if guild_id != "" and Process.whereis(Gateway.Registry) do
-              Registry.lookup(Gateway.Registry, guild_id)
-            else
-              []
-            end
+          # Route by guild_id -> locate Guild Actor
+          actor_pid =
+            if guild_id != "", do: Gateway.Guild.Actor.whereis(guild_id), else: nil
+
+          sub_count =
+            if actor_pid, do: Gateway.Guild.Actor.subscriber_count(guild_id), else: 0
 
           Logger.info(
-            "Event consumed [#{id}] type=#{type} guild_id=#{guild_id} (#{length(subscribers)} subscribers in Registry)"
+            "Event consumed [#{id}] type=#{type} guild_id=#{guild_id} (actor=#{inspect(actor_pid)}, #{sub_count} subscribers)"
           )
 
           if redelivery do

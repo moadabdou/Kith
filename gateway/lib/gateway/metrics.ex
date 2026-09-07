@@ -62,6 +62,22 @@ defmodule Gateway.Metrics do
     end)
   end
 
+  def incr_guild_actor do
+    Agent.update(__MODULE__, fn state ->
+      %{state | guild_actors_active: state.guild_actors_active + 1}
+    end)
+  end
+
+  def decr_guild_actor do
+    Agent.update(__MODULE__, fn state ->
+      %{state | guild_actors_active: max(0, state.guild_actors_active - 1)}
+    end)
+  end
+
+  def get_guild_actors_active do
+    Agent.get(__MODULE__, fn state -> state.guild_actors_active end)
+  end
+
   def render do
     state = Agent.get(__MODULE__, & &1)
 
@@ -99,6 +115,9 @@ defmodule Gateway.Metrics do
           "# HELP gateway_connections_active Active WebSocket connections.",
           "# TYPE gateway_connections_active gauge",
           "gateway_connections_active #{state.connections_active}",
+          "# HELP gateway_guild_actors_active Active guild actor processes.",
+          "# TYPE gateway_guild_actors_active gauge",
+          "gateway_guild_actors_active #{state.guild_actors_active}",
           "# HELP gateway_identifies_total Total IDENTIFY payloads received.",
           "# TYPE gateway_identifies_total counter",
           "gateway_identifies_total #{state.identifies}",
@@ -148,6 +167,7 @@ defmodule Gateway.Metrics do
       event_redeliveries: 0,
       consumer_lag: 0,
       connections_active: 0,
+      guild_actors_active: 0,
       identifies: 0,
       close_codes: %{},
       booted_at: System.monotonic_time()

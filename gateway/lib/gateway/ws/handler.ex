@@ -98,6 +98,13 @@ defmodule Gateway.WS.Handler do
   def terminate(reason, state) do
     Gateway.Metrics.decr_connection()
 
+    # Unsubscribe from guild actors
+    if state.session_id && is_list(state.guild_ids) do
+      Enum.each(state.guild_ids, fn gid ->
+        Gateway.Guild.Actor.unsubscribe(gid, state.session_id)
+      end)
+    end
+
     close_code =
       cond do
         state.close_code != nil ->
@@ -159,17 +166,15 @@ defmodule Gateway.WS.Handler do
 
             case Gateway.Guild.Cache.warm_member(user_id) do
               {:ok, user, guilds} ->
-                # Register session and guild subscriptions in Gateway.Registry
+                # Register session in Gateway.Registry
                 if Process.whereis(Gateway.Registry) do
                   Registry.register(Gateway.Registry, "session:#{session_id}", %{user_id: user_id})
-
-                  Enum.each(guilds, fn guild ->
-                    Registry.register(Gateway.Registry, guild["id"], %{
-                      session_id: session_id,
-                      user_id: user_id
-                    })
-                  end)
                 end
+
+                # Subscribe session to each guild actor
+                Enum.each(guilds, fn guild ->
+                  Gateway.Guild.Actor.subscribe(guild["id"], session_id, self())
+                end)
 
                 ready =
                   Jason.encode!(%{

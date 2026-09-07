@@ -24,7 +24,8 @@ defmodule Gateway.MixProject do
 
   defp deps do
     [
-      {:plug_cowboy, "~> 2.7"},
+      {:bandit, "~> 1.6"},
+      {:websock_adapter, "~> 0.6"},
       {:jason, "~> 1.4"},
       {:redix, "~> 1.5"}
     ]

@@ -21,6 +21,7 @@ defmodule Gateway.Bus.Consumer do
     consumer_id = Keyword.get(opts, :consumer_id, "gateway-#{:erlang.phash2(self())}-#{System.unique_integer([:positive])}")
     batch_size = Keyword.get(opts, :batch_size, @default_batch_size)
     block_ms = Keyword.get(opts, :block_ms, @default_block_ms)
+    stream_pattern = Keyword.get(opts, :stream_pattern, "kith:events:*")
 
     state = %{
       redix: nil,
@@ -29,6 +30,7 @@ defmodule Gateway.Bus.Consumer do
       consumer_id: consumer_id,
       batch_size: batch_size,
       block_ms: block_ms,
+      stream_pattern: stream_pattern,
       known_streams: MapSet.new(),
       shutting_down: false
     }
@@ -109,7 +111,7 @@ defmodule Gateway.Bus.Consumer do
   # ── Internal Helpers ────────────────────────────────────────────────────────
 
   defp discover_streams(state) do
-    case Redix.command(state.redix, ["KEYS", "kith:events:*"]) do
+    case scan_keys(state.redix, state.stream_pattern) do
       {:ok, keys} when is_list(keys) ->
         active_set = MapSet.new(keys)
         surviving = MapSet.intersection(state.known_streams, active_set)
@@ -129,6 +131,23 @@ defmodule Gateway.Bus.Consumer do
       {:error, reason} ->
         Logger.warning("Gateway.Bus.Consumer failed to discover streams: #{inspect(reason)}")
         state
+    end
+  end
+
+  defp scan_keys(redix, pattern) do
+    do_scan(redix, "0", pattern, [])
+  end
+
+  defp do_scan(redix, cursor, pattern, acc) do
+    case Redix.command(redix, ["SCAN", cursor, "MATCH", pattern, "COUNT", "100"]) do
+      {:ok, ["0", batch]} ->
+        {:ok, Enum.uniq(acc ++ batch)}
+
+      {:ok, [next_cursor, batch]} ->
+        do_scan(redix, next_cursor, pattern, acc ++ batch)
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

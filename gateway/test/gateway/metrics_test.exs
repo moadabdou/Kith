@@ -55,4 +55,29 @@ defmodule Gateway.MetricsTest do
       assert out =~ ~r{gateway_supervisor_child_starts_total\{child="#{child}"\} \d+}
     end
   end
+
+  test "websocket metrics increment and render properly" do
+    Metrics.incr_connection()
+    Metrics.incr_connection()
+    Metrics.decr_connection()
+
+    Metrics.incr_identify()
+    Metrics.incr_close_code(4001)
+    Metrics.incr_close_code("4004")
+
+    out = Metrics.render()
+
+    assert out =~ "# HELP gateway_connections_active "
+    assert out =~ "# TYPE gateway_connections_active gauge"
+    assert out =~ "gateway_connections_active 1"
+
+    assert out =~ "# HELP gateway_identifies_total "
+    assert out =~ "# TYPE gateway_identifies_total counter"
+    assert out =~ "gateway_identifies_total 1"
+
+    assert out =~ "# HELP gateway_ws_close_codes_total "
+    assert out =~ "# TYPE gateway_ws_close_codes_total counter"
+    assert out =~ ~s(gateway_ws_close_codes_total{code="4001"} 1)
+    assert out =~ ~s(gateway_ws_close_codes_total{code="4004"} 1)
+  end
 end

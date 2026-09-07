@@ -39,7 +39,7 @@ defmodule Gateway.Application do
       Gateway.GuildSupervisor,
       Gateway.ConnSupervisor,
       Gateway.Bus.Consumer,
-      {Plug.Cowboy, scheme: :http, plug: Gateway.Router, options: [port: port()]}
+      Supervisor.child_spec({Bandit, plug: Gateway.Router, port: port()}, id: Bandit)
     ]
   end
 

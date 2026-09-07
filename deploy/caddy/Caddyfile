@@ -2,6 +2,9 @@
 	handle /api/* {
 		reverse_proxy api:8080
 	}
+	handle /ws {
+		reverse_proxy gateway:4000
+	}
 	handle {
 		reverse_proxy client:5173
 	}

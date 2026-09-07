@@ -45,6 +45,12 @@ defmodule Gateway.Router do
     with_chaos(conn, fn -> kill(conn, Gateway.Metrics) end)
   end
 
+  get "/ws" do
+    conn
+    |> WebSockAdapter.upgrade(Gateway.WS.Handler, [], timeout: 60_000)
+    |> halt()
+  end
+
   match _ do
     send_resp(conn, 404, "not found")
   end

@@ -36,6 +36,32 @@ defmodule Gateway.Metrics do
     end)
   end
 
+  def incr_connection do
+    Agent.update(__MODULE__, fn state ->
+      %{state | connections_active: state.connections_active + 1}
+    end)
+  end
+
+  def decr_connection do
+    Agent.update(__MODULE__, fn state ->
+      %{state | connections_active: max(0, state.connections_active - 1)}
+    end)
+  end
+
+  def incr_identify do
+    Agent.update(__MODULE__, fn state ->
+      %{state | identifies: state.identifies + 1}
+    end)
+  end
+
+  def incr_close_code(code) do
+    code_str = to_string(code)
+
+    Agent.update(__MODULE__, fn state ->
+      %{state | close_codes: Map.update(state.close_codes, code_str, 1, &(&1 + 1))}
+    end)
+  end
+
   def render do
     state = Agent.get(__MODULE__, & &1)
 
@@ -47,6 +73,11 @@ defmodule Gateway.Metrics do
     child_start_lines =
       counter_lines("gateway_supervisor_child_starts_total", state.child_starts, fn child ->
         ~s({child="#{child}"})
+      end)
+
+    close_code_lines =
+      counter_lines("gateway_ws_close_codes_total", state.close_codes, fn code ->
+        ~s({code="#{code}"})
       end)
 
     ready = if Gateway.Health.ready?(), do: 1, else: 0
@@ -65,6 +96,12 @@ defmodule Gateway.Metrics do
           "# HELP gateway_uptime_seconds Seconds since the metrics agent last (re)started.",
           "# TYPE gateway_uptime_seconds gauge",
           "gateway_uptime_seconds #{uptime(state)}",
+          "# HELP gateway_connections_active Active WebSocket connections.",
+          "# TYPE gateway_connections_active gauge",
+          "gateway_connections_active #{state.connections_active}",
+          "# HELP gateway_identifies_total Total IDENTIFY payloads received.",
+          "# TYPE gateway_identifies_total counter",
+          "gateway_identifies_total #{state.identifies}",
           "# HELP gateway_events_consumed_total Total events consumed and acknowledged from event bus.",
           "# TYPE gateway_events_consumed_total counter",
           "gateway_events_consumed_total #{state.events_consumed}",
@@ -73,7 +110,13 @@ defmodule Gateway.Metrics do
           "gateway_event_redeliveries_total #{state.event_redeliveries}",
           "# HELP gateway_consumer_lag Current unread or pending event lag across streams.",
           "# TYPE gateway_consumer_lag gauge",
-          "gateway_consumer_lag #{state.consumer_lag}",
+          "gateway_consumer_lag #{state.consumer_lag}"
+        ] ++
+        [
+          "# HELP gateway_ws_close_codes_total WebSocket close codes recorded.",
+          "# TYPE gateway_ws_close_codes_total counter" | close_code_lines
+        ] ++
+        [
           "# HELP gateway_erlang_processes Number of BEAM processes.",
           "# TYPE gateway_erlang_processes gauge",
           "gateway_erlang_processes #{:erlang.system_info(:process_count)}",
@@ -104,6 +147,9 @@ defmodule Gateway.Metrics do
       events_consumed: 0,
       event_redeliveries: 0,
       consumer_lag: 0,
+      connections_active: 0,
+      identifies: 0,
+      close_codes: %{},
       booted_at: System.monotonic_time()
     }
   end

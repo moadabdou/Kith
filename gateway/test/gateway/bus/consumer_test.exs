@@ -58,7 +58,7 @@ defmodule Gateway.Bus.ConsumerTest do
 
   test "recovers unacknowledged events from PEL upon restart (zero loss)", %{redix: redix} do
     guild_id = "test_pel_#{System.unique_integer([:positive])}"
-    stream = "kith:events:#{guild_id}"
+    stream = "kith:test_pel:#{guild_id}"
     group = "kith-gateway"
     consumer_name = "dead-consumer"
 
@@ -106,6 +106,7 @@ defmodule Gateway.Bus.ConsumerTest do
         redis_url: @redis_url,
         group: group,
         consumer_id: consumer_name,
+        stream_pattern: "kith:test_pel:*",
         name: :"recovery_#{System.unique_integer([:positive])}"
       )
 

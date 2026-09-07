@@ -67,15 +67,64 @@ defmodule Gateway.WS.HandlerTest do
       Handler.terminate(:normal, new_state)
     end
 
-    test "IDENTIFY with token marks identified and cancels identify timer" do
+    test "IDENTIFY with invalid or tampered JWT returns close code 4004" do
+      {:push, _, state} = Handler.init([])
+      payload = Jason.encode!(%{"op" => 2, "d" => %{"token" => "invalid.jwt.token"}})
+
+      assert {:stop, :normal, {4004, "Authentication failed"}, new_state} =
+               Handler.handle_in({payload, opcode: :text}, state)
+
+      assert new_state.close_code == 4004
+      Handler.terminate(:normal, new_state)
+    end
+
+    test "IDENTIFY with expired JWT returns close code 4004" do
+      {:push, _, state} = Handler.init([])
+      expired_token = Gateway.Auth.JWT.issue(87000000000000001, state.jwt_secret, -60)
+      payload = Jason.encode!(%{"op" => 2, "d" => %{"token" => expired_token}})
+
+      assert {:stop, :normal, {4004, "Authentication failed"}, new_state} =
+               Handler.handle_in({payload, opcode: :text}, state)
+
+      assert new_state.close_code == 4004
+      Handler.terminate(:normal, new_state)
+    end
+
+    test "IDENTIFY with valid JWT dispatches READY (op 0) and warms guild cache" do
       {:push, _, state} = Handler.init([])
       timer = state.identify_timer
-      payload = Jason.encode!(%{"op" => 2, "d" => %{"token" => "valid_token"}})
+      user_id = 87000000000000001
+      token = Gateway.Auth.JWT.issue(user_id, state.jwt_secret, 3600)
+      payload = Jason.encode!(%{"op" => 2, "d" => %{"token" => token}})
 
-      assert {:ok, new_state} = Handler.handle_in({payload, opcode: :text}, state)
+      assert {:push, [{:text, ready_json}], new_state} =
+               Handler.handle_in({payload, opcode: :text}, state)
+
       assert new_state.identified == true
       assert new_state.identify_timer == nil
       assert Process.read_timer(timer) == false
+      assert is_binary(new_state.session_id)
+      assert new_state.seq == 0
+
+      assert {:ok, ready} = Jason.decode(ready_json)
+      assert ready["op"] == 0
+      assert ready["t"] == "READY"
+      assert ready["s"] == 0
+
+      data = ready["d"]
+      assert data["user"]["id"] == to_string(user_id)
+      assert data["user"]["username"] == "moad"
+      assert is_list(data["guilds"])
+      assert length(data["guilds"]) >= 1
+
+      hq_guild = Enum.find(data["guilds"], fn g -> g["id"] == "87000000000000100" end)
+      assert hq_guild != nil
+      assert hq_guild["name"] == "Kith HQ"
+      assert length(hq_guild["channels"]) >= 3
+
+      # Verify ETS cache was warmed
+      assert {:ok, cached_guild} = Gateway.Guild.Cache.get_guild("87000000000000100")
+      assert cached_guild["name"] == "Kith HQ"
 
       Handler.terminate(:normal, new_state)
     end

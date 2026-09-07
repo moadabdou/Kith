@@ -11,6 +11,7 @@ defmodule Gateway.WS.Handler do
   def init(opts) do
     heartbeat_interval = Keyword.get(opts, :heartbeat_interval, @default_heartbeat_interval)
     identify_timeout = Keyword.get(opts, :identify_timeout, @default_identify_timeout)
+    jwt_secret = Keyword.get(opts, :jwt_secret) || System.get_env("JWT_SECRET") || "dev-jwt-secret-change-me"
 
     Gateway.Metrics.incr_connection()
 
@@ -30,6 +31,11 @@ defmodule Gateway.WS.Handler do
       heartbeat_interval: heartbeat_interval,
       identified: false,
       identify_timer: identify_timer,
+      jwt_secret: jwt_secret,
+      user_id: nil,
+      session_id: nil,
+      seq: 0,
+      guild_ids: [],
       last_heartbeat_at: nil,
       rate_count: 0,
       rate_window_start: System.monotonic_time(:millisecond),
@@ -147,8 +153,58 @@ defmodule Gateway.WS.Handler do
         close(4004, "Authentication failed", state)
 
       true ->
-        # Full JWT validation & READY session dispatch is handled in Issue #18
-        {:ok, %{state | identified: true, identify_timer: nil}}
+        case Gateway.Auth.JWT.verify(token, state.jwt_secret) do
+          {:ok, user_id} ->
+            session_id = :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower)
+
+            case Gateway.Guild.Cache.warm_member(user_id) do
+              {:ok, user, guilds} ->
+                # Register session and guild subscriptions in Gateway.Registry
+                if Process.whereis(Gateway.Registry) do
+                  Registry.register(Gateway.Registry, "session:#{session_id}", %{user_id: user_id})
+
+                  Enum.each(guilds, fn guild ->
+                    Registry.register(Gateway.Registry, guild["id"], %{
+                      session_id: session_id,
+                      user_id: user_id
+                    })
+                  end)
+                end
+
+                ready =
+                  Jason.encode!(%{
+                    "t" => "READY",
+                    "s" => 0,
+                    "op" => 0,
+                    "d" => %{
+                      "v" => 1,
+                      "user" => user,
+                      "guilds" => guilds,
+                      "session_id" => session_id
+                    }
+                  })
+
+                new_state = %{
+                  state
+                  | identified: true,
+                    identify_timer: nil,
+                    user_id: user_id,
+                    session_id: session_id,
+                    seq: 0,
+                    guild_ids: Enum.map(guilds, & &1["id"])
+                }
+
+                {:push, [{:text, ready}], new_state}
+
+              {:error, reason} ->
+                Logger.error("Gateway.WS.Handler: failed to load user/guilds for #{user_id}: #{inspect(reason)}")
+                close(4000, "Internal server error", state)
+            end
+
+          {:error, reason} ->
+            Logger.warning("Gateway.WS.Handler: invalid JWT (#{inspect(reason)}), closing with 4004")
+            close(4004, "Authentication failed", state)
+        end
     end
   end
 

@@ -38,6 +38,8 @@ defmodule Gateway.Application do
       {Registry, keys: :unique, name: Gateway.Registry},
       Gateway.GuildSupervisor,
       Gateway.ConnSupervisor,
+      Gateway.Guild.Cache,
+      Supervisor.child_spec({Postgrex, parse_db_url(database_url())}, id: Gateway.DB),
       Gateway.Bus.Consumer,
       Supervisor.child_spec({Bandit, plug: Gateway.Router, port: port()}, id: Bandit)
     ]
@@ -46,6 +48,43 @@ defmodule Gateway.Application do
   defp report(child) do
     spec = Supervisor.child_spec(child, [])
     %{spec | start: {__MODULE__, :start_and_report, [spec.id, spec.start]}}
+  end
+
+  defp database_url do
+    System.get_env("DATABASE_URL") ||
+      "postgres://discord:discord@127.0.0.1:5432/discord?sslmode=disable"
+  end
+
+  defp parse_db_url(url) when is_binary(url) do
+    uri = URI.parse(url)
+
+    [username, password] =
+      case uri.userinfo do
+        nil -> [nil, nil]
+        userinfo ->
+          case String.split(userinfo, ":") do
+            [u, p] -> [u, p]
+            [u] -> [u, nil]
+          end
+      end
+
+    database =
+      case uri.path do
+        "/" <> db -> db
+        db when is_binary(db) and db != "" -> db
+        _ -> "discord"
+      end
+
+    opts = [
+      name: Gateway.DB,
+      hostname: uri.host || "127.0.0.1",
+      port: uri.port || 5432,
+      database: database
+    ]
+
+    opts = if username, do: Keyword.put(opts, :username, username), else: opts
+    opts = if password, do: Keyword.put(opts, :password, password), else: opts
+    opts
   end
 
   defp port do

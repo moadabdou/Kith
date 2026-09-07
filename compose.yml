@@ -101,6 +101,10 @@ services:
     environment:
       PORT: ${GATEWAY_PORT:-4000}
       CHAOS_ENABLED: ${CHAOS_ENABLED:-true}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+    depends_on:
+      redis:
+        condition: service_healthy
     restart: unless-stopped
     ports:
       - "127.0.0.1:4000:4000"

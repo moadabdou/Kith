@@ -38,6 +38,7 @@ defmodule Gateway.Application do
       {Registry, keys: :unique, name: Gateway.Registry},
       Gateway.GuildSupervisor,
       Gateway.ConnSupervisor,
+      Gateway.Bus.Consumer,
       {Plug.Cowboy, scheme: :http, plug: Gateway.Router, options: [port: port()]}
     ]
   end

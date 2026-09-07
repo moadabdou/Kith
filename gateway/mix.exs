@@ -25,7 +25,8 @@ defmodule Gateway.MixProject do
   defp deps do
     [
       {:plug_cowboy, "~> 2.7"},
-      {:jason, "~> 1.4"}
+      {:jason, "~> 1.4"},
+      {:redix, "~> 1.5"}
     ]
   end
 end

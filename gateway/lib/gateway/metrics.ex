@@ -18,6 +18,24 @@ defmodule Gateway.Metrics do
     end)
   end
 
+  def incr_event_consumed do
+    Agent.update(__MODULE__, fn state ->
+      %{state | events_consumed: state.events_consumed + 1}
+    end)
+  end
+
+  def incr_event_redelivered do
+    Agent.update(__MODULE__, fn state ->
+      %{state | event_redeliveries: state.event_redeliveries + 1}
+    end)
+  end
+
+  def set_consumer_lag(lag) when is_integer(lag) do
+    Agent.update(__MODULE__, fn state ->
+      %{state | consumer_lag: lag}
+    end)
+  end
+
   def render do
     state = Agent.get(__MODULE__, & &1)
 
@@ -47,6 +65,15 @@ defmodule Gateway.Metrics do
           "# HELP gateway_uptime_seconds Seconds since the metrics agent last (re)started.",
           "# TYPE gateway_uptime_seconds gauge",
           "gateway_uptime_seconds #{uptime(state)}",
+          "# HELP gateway_events_consumed_total Total events consumed and acknowledged from event bus.",
+          "# TYPE gateway_events_consumed_total counter",
+          "gateway_events_consumed_total #{state.events_consumed}",
+          "# HELP gateway_event_redeliveries_total Total unacknowledged events redelivered from PEL.",
+          "# TYPE gateway_event_redeliveries_total counter",
+          "gateway_event_redeliveries_total #{state.event_redeliveries}",
+          "# HELP gateway_consumer_lag Current unread or pending event lag across streams.",
+          "# TYPE gateway_consumer_lag gauge",
+          "gateway_consumer_lag #{state.consumer_lag}",
           "# HELP gateway_erlang_processes Number of BEAM processes.",
           "# TYPE gateway_erlang_processes gauge",
           "gateway_erlang_processes #{:erlang.system_info(:process_count)}",
@@ -71,6 +98,13 @@ defmodule Gateway.Metrics do
   end
 
   defp init do
-    %{requests: %{}, child_starts: %{}, booted_at: System.monotonic_time()}
+    %{
+      requests: %{},
+      child_starts: %{},
+      events_consumed: 0,
+      event_redeliveries: 0,
+      consumer_lag: 0,
+      booted_at: System.monotonic_time()
+    }
   end
 end

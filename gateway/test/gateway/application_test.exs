@@ -8,7 +8,7 @@ defmodule Gateway.ApplicationTest do
 
     ids = Enum.map(entries, &elem(&1, 0))
     assert MapSet.new(ids) == MapSet.new(Gateway.Application.child_ids())
-    assert length(entries) == 6
+    assert length(entries) == length(Gateway.Application.child_ids())
 
     assert Enum.all?(entries, fn {_id, pid, _type, _modules} ->
              is_pid(pid) and Process.alive?(pid)

@@ -22,7 +22,7 @@ psql:
 
 gateway-test:
 	docker build --target test -t kith-gateway-test gateway
-	docker run --rm -e PORT=0 kith-gateway-test
+	docker run --rm --network host -e PORT=0 kith-gateway-test
 
 smoke:
 	./scripts/smoke.sh

@@ -46,6 +46,19 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   api:
     build:
       context: ./api
@@ -60,6 +73,8 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-discord}:${POSTGRES_PASSWORD:-discord}@postgres:5432/${POSTGRES_DB:-discord}?sslmode=disable
       SNOWFLAKE_NODE_ID: ${SNOWFLAKE_NODE_ID:-1}
       JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me}
+      EVENTS_BUS: ${EVENTS_BUS:-redis}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:
@@ -67,6 +82,8 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:${API_PORT:-8080}/healthz"]
       interval: 5s
@@ -160,3 +177,4 @@ services:
 volumes:
   pgdata:
   grafana-data:
+  redisdata:

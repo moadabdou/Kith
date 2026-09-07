@@ -9,14 +9,18 @@ package events
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 )
+
+var ErrMissingGuildID = errors.New("events: missing guild_id for routable event")
 
 // Event is the wire envelope, versioned so the encoding (JSON in v1) can
 // change later without breaking consumers (00-architecture §8.2).
 type Event struct {
 	Type    string `json:"type"` // e.g. MESSAGE_CREATE
 	Version int    `json:"version"`
+	GuildID string `json:"guild_id,omitempty"`
 	Payload any    `json:"payload"`
 }
 

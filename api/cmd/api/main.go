@@ -85,8 +85,27 @@ func main() {
 	authHandler := &auth.Handler{Svc: authSvc}
 	usersHandler := &users.Handler{DB: db}
 	guildsHandler := &guilds.Handler{Svc: guilds.NewService(db, node)}
-	// Phase 0: no-op publisher. Phase 1: Redis/NATS behind the same call site.
-	var publisher events.Publisher = events.NoopPublisher{}
+	// Phase 1: Redis Streams first behind events.Publisher (EVENTS_BUS=redis|noop).
+	eventsBus := envOr("EVENTS_BUS", "noop")
+	var publisher events.Publisher
+	switch eventsBus {
+	case "redis":
+		redisURL := envOr("REDIS_URL", "redis://127.0.0.1:6379")
+		redisPub, err := events.NewRedisPublisher(redisURL)
+		if err != nil {
+			slog.Error("failed to initialize redis publisher", "url", redisURL, "error", err)
+			os.Exit(1)
+		}
+		defer redisPub.Close()
+		publisher = redisPub
+		slog.Info("events bus initialized", "bus", "redis", "url", redisURL)
+	case "noop":
+		publisher = events.NoopPublisher{}
+		slog.Info("events bus initialized", "bus", "noop")
+	default:
+		slog.Error("invalid EVENTS_BUS configuration", "bus", eventsBus)
+		os.Exit(1)
+	}
 	messagesHandler := &messages.Handler{Svc: messages.NewService(db, node, publisher)}
 
 	mux := http.NewServeMux()

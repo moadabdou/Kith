@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"log/slog"
 	"strconv"
 	"time"
 
@@ -32,6 +33,7 @@ const EditWindow = 15 * time.Minute
 type Message struct {
 	ID        string     `json:"id"`
 	ChannelID string     `json:"channel_id"`
+	GuildID   string     `json:"guild_id,omitempty"`
 	Author    AuthorRef  `json:"author"`
 	Content   string     `json:"content"`
 	CreatedAt time.Time  `json:"timestamp"`
@@ -66,7 +68,8 @@ func NewService(db *sql.DB, sf *snowflake.Node, pub events.Publisher) *Service {
 // write that already happened.
 func (s *Service) Send(ctx context.Context, userID, channelID int64, content string) (*Message, error) {
 	// Perm placeholder: member-of-guild check. Phase 4: permissions.CanSend.
-	if err := s.requireCanView(ctx, userID, channelID); err != nil {
+	channel, err := s.requireCanView(ctx, userID, channelID)
+	if err != nil {
 		return nil, err
 	}
 
@@ -81,7 +84,7 @@ func (s *Service) Send(ctx context.Context, userID, channelID int64, content str
 	}
 	defer tx.Rollback()
 
-	m, err := s.insertMessage(ctx, tx, id, userID, channelID, content)
+	m, err := s.insertMessage(ctx, tx, id, userID, channelID, channel.GuildID, content)
 	if err != nil {
 		return nil, err
 	}
@@ -90,11 +93,14 @@ func (s *Service) Send(ctx context.Context, userID, channelID int64, content str
 	}
 
 	// AFTER COMMIT — the single most important ordering in this file.
-	_ = s.pub.Publish(ctx, events.Event{
+	if err := s.pub.Publish(ctx, events.Event{
 		Type:    eventTypeMessageCreate,
 		Version: eventVersion,
+		GuildID: m.GuildID,
 		Payload: m, // same struct as the REST response
-	})
+	}); err != nil {
+		slog.ErrorContext(ctx, "failed to publish event", "type", eventTypeMessageCreate, "guild_id", m.GuildID, "error", err)
+	}
 	return m, nil
 }
 
@@ -102,7 +108,7 @@ func (s *Service) Send(ctx context.Context, userID, channelID int64, content str
 // cursor: before=<id> returns the 50 (default) messages older than that id.
 // Snowflakes are time-sortable, so the cursor needs no state (plan/02 §4).
 func (s *Service) List(ctx context.Context, userID, channelID int64, before int64, limit int) ([]Message, error) {
-	if err := s.requireCanView(ctx, userID, channelID); err != nil {
+	if _, err := s.requireCanView(ctx, userID, channelID); err != nil {
 		return nil, err
 	}
 	if limit <= 0 || limit > 100 {
@@ -110,10 +116,11 @@ func (s *Service) List(ctx context.Context, userID, channelID int64, before int6
 	}
 
 	query := `
-		SELECT m.id::text, m.channel_id::text,
+		SELECT m.id::text, m.channel_id::text, coalesce(c.guild_id::text, ''),
 		       u.id::text, u.username, to_char(u.discriminator, 'FM0000'),
 		       m.content, m.created_at, m.edited_at
 		FROM messages m
+		JOIN channels c ON c.id = m.channel_id
 		JOIN users u ON u.id = m.author_id
 		WHERE m.channel_id = $1`
 	args := []any{channelID}
@@ -144,7 +151,7 @@ func (s *Service) List(ctx context.Context, userID, channelID int64, before int6
 // window. The REST response shape stays a plain Message (Discord returns
 // MESSAGE_UPDATE on the gateway; that distinction is Phase 1's).
 func (s *Service) Edit(ctx context.Context, userID, channelID, messageID int64, content string) (*Message, error) {
-	if err := s.requireCanView(ctx, userID, channelID); err != nil {
+	if _, err := s.requireCanView(ctx, userID, channelID); err != nil {
 		return nil, err
 	}
 	if content == "" {
@@ -192,7 +199,7 @@ func (s *Service) Edit(ctx context.Context, userID, channelID, messageID int64, 
 // Delete removes a message. Author only, within the 15-minute window
 // (moderator delete is Phase 4).
 func (s *Service) Delete(ctx context.Context, userID, channelID, messageID int64) error {
-	if err := s.requireCanView(ctx, userID, channelID); err != nil {
+	if _, err := s.requireCanView(ctx, userID, channelID); err != nil {
 		return err
 	}
 
@@ -235,27 +242,39 @@ func (s *Service) Delete(ctx context.Context, userID, channelID, messageID int64
 	}
 }
 
-// requireCanView is the permission placeholder: author must be a member of
-// the guild that owns the channel. Phase 4: pkg/permissions.CanSend(user,
-// channel) resolving role bits + overwrites.
-func (s *Service) requireCanView(ctx context.Context, userID, channelID int64) error {
-	var ok bool
-	err := s.db.QueryRowContext(ctx, `
-		SELECT EXISTS(
-			SELECT 1 FROM channels c
-			JOIN members m ON m.guild_id = c.guild_id
-			WHERE c.id = $1 AND m.user_id = $2
-		)`, channelID, userID).Scan(&ok)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return ErrMissingAccess
-	}
-	return nil
+// ChannelRef carries the minimal channel context resolved during access checks,
+// such as GuildID for event bus routing.
+type ChannelRef struct {
+	GuildID int64
 }
 
-func (s *Service) insertMessage(ctx context.Context, tx *sql.Tx, id, userID, channelID int64, content string) (*Message, error) {
+// requireCanView verifies the user has permission to view/interact with the channel
+// and returns its ChannelRef in a single database round-trip. This avoids a redundant
+// SELECT for guild_id on the message hot path.
+//
+// Phase 4 will replace this membership placeholder with pkg/permissions.CanSend(user, channel)
+// once channel and member permissions are resolved via in-memory bitwise operations.
+func (s *Service) requireCanView(ctx context.Context, userID, channelID int64) (ChannelRef, error) {
+	var guildID sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT c.guild_id FROM channels c
+		JOIN members m ON m.guild_id = c.guild_id
+		WHERE c.id = $1 AND m.user_id = $2
+	`, channelID, userID).Scan(&guildID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ChannelRef{}, ErrMissingAccess
+	}
+	if err != nil {
+		return ChannelRef{}, err
+	}
+	var ref ChannelRef
+	if guildID.Valid {
+		ref.GuildID = guildID.Int64
+	}
+	return ref, nil
+}
+
+func (s *Service) insertMessage(ctx context.Context, tx *sql.Tx, id, userID, channelID, guildID int64, content string) (*Message, error) {
 	var m Message
 	err := tx.QueryRowContext(ctx, `
 		INSERT INTO messages (id, channel_id, author_id, content)
@@ -267,6 +286,9 @@ func (s *Service) insertMessage(ctx context.Context, tx *sql.Tx, id, userID, cha
 		// FK violation = channel (or user) doesn't exist.
 		return nil, ErrUnknownChannel
 	}
+	if guildID > 0 {
+		m.GuildID = strconv.FormatInt(guildID, 10)
+	}
 	m.Content = content
 	if err := s.fillAuthor(ctx, tx, &m); err != nil {
 		return nil, err
@@ -275,14 +297,23 @@ func (s *Service) insertMessage(ctx context.Context, tx *sql.Tx, id, userID, cha
 }
 
 func (s *Service) fillMessage(ctx context.Context, m *Message) error {
-	return s.db.QueryRowContext(ctx, `
+	var gid sql.NullString
+	err := s.db.QueryRowContext(ctx, `
 		SELECT u.id::text, u.username, to_char(u.discriminator, 'FM0000'),
-		       msg.content, msg.created_at, msg.edited_at
+		       c.guild_id::text, msg.content, msg.created_at, msg.edited_at
 		FROM messages msg
+		JOIN channels c ON c.id = msg.channel_id
 		JOIN users u ON u.id = msg.author_id
 		WHERE msg.id = $1`, m.ID,
 	).Scan(&m.Author.ID, &m.Author.Username, &m.Author.Discriminator,
-		&m.Content, &m.CreatedAt, &m.EditedAt)
+		&gid, &m.Content, &m.CreatedAt, &m.EditedAt)
+	if err != nil {
+		return err
+	}
+	if gid.Valid {
+		m.GuildID = gid.String
+	}
+	return nil
 }
 
 // fillAuthor completes m.Author's display fields from the users table,
@@ -304,10 +335,14 @@ type queryer interface {
 
 func scanMessage(rows *sql.Rows) (Message, error) {
 	var m Message
-	if err := rows.Scan(&m.ID, &m.ChannelID,
+	var gid sql.NullString
+	if err := rows.Scan(&m.ID, &m.ChannelID, &gid,
 		&m.Author.ID, &m.Author.Username, &m.Author.Discriminator,
 		&m.Content, &m.CreatedAt, &m.EditedAt); err != nil {
 		return m, err
+	}
+	if gid.Valid {
+		m.GuildID = gid.String
 	}
 	return m, nil
 }

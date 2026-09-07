@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/moadabdou/Kith/api/internal/events"
 	"github.com/moadabdou/Kith/api/pkg/snowflake"
+	"github.com/redis/go-redis/v9"
 )
 
 // Integration tests run against a migrated Postgres (TEST_DATABASE_URL).
@@ -253,7 +255,7 @@ func TestPublishAfterCommit(t *testing.T) {
 	pub := &publishProbe{db: other}
 	svc := NewService(h.db, h.node, pub)
 	a := h.user(t, "a")
-	_, cid, _ := h.guildWithMember(t, "g", a)
+	gid, cid, _ := h.guildWithMember(t, "g", a)
 
 	if _, err := svc.Send(ctx, a, cid, "must be visible when published"); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -264,9 +266,84 @@ func TestPublishAfterCommit(t *testing.T) {
 	if len(pub.seen) == 0 || pub.seen[0].Type != "MESSAGE_CREATE" {
 		t.Fatalf("no MESSAGE_CREATE event captured: %+v", pub.seen)
 	}
+	expectedGID := strconv.FormatInt(gid, 10)
+	if pub.seen[0].GuildID != expectedGID {
+		t.Fatalf("event.GuildID = %q, want %q", pub.seen[0].GuildID, expectedGID)
+	}
 	payload, ok := pub.seen[0].Payload.(*Message)
 	if !ok || payload.Content != "must be visible when published" {
 		t.Fatalf("event payload = %+v", pub.seen[0].Payload)
+	}
+	if payload.GuildID != expectedGID {
+		t.Fatalf("payload.GuildID = %q, want %q", payload.GuildID, expectedGID)
+	}
+}
+
+func TestSendWithRedisPublisher(t *testing.T) {
+	redisURL := os.Getenv("TEST_REDIS_URL")
+	if redisURL == "" {
+		redisURL = os.Getenv("REDIS_URL")
+	}
+	if redisURL == "" {
+		t.Skip("TEST_REDIS_URL / REDIS_URL not set")
+	}
+
+	h := newHarness(t)
+	ctx := context.Background()
+
+	pub, err := events.NewRedisPublisher(redisURL)
+	if err != nil {
+		t.Fatalf("NewRedisPublisher: %v", err)
+	}
+	defer pub.Close()
+
+	opt, err := redis.ParseURL(redisURL)
+	if err != nil {
+		t.Fatalf("redis.ParseURL: %v", err)
+	}
+	rdb := redis.NewClient(opt)
+	defer rdb.Close()
+
+	svc := NewService(h.db, h.node, pub)
+	a := h.user(t, "a")
+	gid, cid, _ := h.guildWithMember(t, "g", a)
+
+	streamKey := fmt.Sprintf("kith:events:%d", gid)
+	t.Cleanup(func() {
+		_ = rdb.Del(context.Background(), streamKey).Err()
+	})
+
+	m, err := svc.Send(ctx, a, cid, "hello from redis test")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if m.GuildID != strconv.FormatInt(gid, 10) {
+		t.Errorf("m.GuildID = %q, want %d", m.GuildID, gid)
+	}
+
+	// Verify List also returns GuildID
+	list, err := svc.List(ctx, a, cid, 0, 10)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(list) == 0 || list[0].GuildID != strconv.FormatInt(gid, 10) {
+		t.Errorf("List returned invalid GuildID: %+v", list)
+	}
+
+	// Acceptance: A message send produces exactly one XADD in Redis with guild_id in the stream key
+	entries, err := rdb.XRange(ctx, streamKey, "-", "+").Result()
+	if err != nil {
+		t.Fatalf("XRange: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry in stream %s, got %d", streamKey, len(entries))
+	}
+	rawEvent, ok := entries[0].Values["event"].(string)
+	if !ok {
+		t.Fatalf("entry missing 'event' field: %+v", entries[0].Values)
+	}
+	if len(rawEvent) == 0 {
+		t.Fatalf("empty event payload in stream")
 	}
 }
 

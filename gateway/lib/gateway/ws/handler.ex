@@ -15,7 +15,9 @@ defmodule Gateway.WS.Handler do
 
     Gateway.Metrics.incr_connection()
 
+    boot_at = System.monotonic_time(:millisecond)
     identify_timer = Process.send_after(self(), :identify_timeout, identify_timeout)
+    heartbeat_timer = Process.send_after(self(), :heartbeat_check, heartbeat_interval)
 
     hello =
       Jason.encode!(%{
@@ -29,17 +31,19 @@ defmodule Gateway.WS.Handler do
 
     state = %{
       heartbeat_interval: heartbeat_interval,
+      boot_at: boot_at,
       identified: false,
       identify_timer: identify_timer,
+      heartbeat_timer: heartbeat_timer,
       jwt_secret: jwt_secret,
       user_id: nil,
       session_id: nil,
       session_pid: nil,
       seq: 0,
       guild_ids: [],
-      last_heartbeat_at: nil,
+      last_heartbeat_at: boot_at,
       rate_count: 0,
-      rate_window_start: System.monotonic_time(:millisecond),
+      rate_window_start: boot_at,
       close_code: nil
     }
 
@@ -104,6 +108,23 @@ defmodule Gateway.WS.Handler do
     close(code, reason, state)
   end
 
+  def handle_info(:heartbeat_check, state) do
+    now = System.monotonic_time(:millisecond)
+    last = state.last_heartbeat_at || state.boot_at
+    elapsed = now - last
+
+    if elapsed > 2 * state.heartbeat_interval do
+      Logger.warning(
+        "Gateway.WS.Handler: zombie connection detected (no heartbeat for #{elapsed}ms > 2 * #{state.heartbeat_interval}ms), closing with 4009"
+      )
+
+      close(4009, "Session timed out", state)
+    else
+      timer = Process.send_after(self(), :heartbeat_check, state.heartbeat_interval)
+      {:ok, %{state | heartbeat_timer: timer}}
+    end
+  end
+
   def handle_info(:identify_timeout, state) do
     if not state.identified do
       Logger.info("Gateway.WS.Handler: client failed to IDENTIFY within timeout, closing")
@@ -123,7 +144,7 @@ defmodule Gateway.WS.Handler do
 
     # If unrecoverable close code or clean test stop, close session actor
     if state.session_id do
-      if state.close_code in [1000, 4004, 4008] or reason == :normal do
+      if state.close_code in [1000, 4004, 4008, 4009] or reason == :normal do
         Gateway.Session.close(state.session_id)
       end
     end
@@ -147,6 +168,10 @@ defmodule Gateway.WS.Handler do
 
     if state.identify_timer && Process.read_timer(state.identify_timer) do
       Process.cancel_timer(state.identify_timer)
+    end
+
+    if state.heartbeat_timer && Process.read_timer(state.heartbeat_timer) do
+      Process.cancel_timer(state.heartbeat_timer)
     end
 
     :ok

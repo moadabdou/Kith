@@ -208,6 +208,68 @@ defmodule Gateway.WS.HandlerTest do
       assert new_state.close_code == 4008
       Handler.terminate(:normal, new_state)
     end
+
+    test "missed heartbeats exceeding 2 intervals closes with 4009 (session timed out)" do
+      # 50ms interval => 2 intervals = 100ms
+      {:push, _, state} = Handler.init(heartbeat_interval: 50)
+
+      # Simulate elapsed time beyond 2 intervals (e.g. 110ms)
+      old_time = System.monotonic_time(:millisecond) - 110
+      stale_state = %{state | last_heartbeat_at: old_time}
+
+      assert {:stop, :normal, {4009, "Session timed out"}, new_state} =
+               Handler.handle_info(:heartbeat_check, stale_state)
+
+      assert new_state.close_code == 4009
+      Handler.terminate(:normal, new_state)
+
+      out = Metrics.render()
+      assert out =~ ~s(gateway_ws_close_codes_total{code="4009"})
+    end
+
+    test "heartbeats on time keep connection alive and rearm heartbeat timer" do
+      {:push, _, state} = Handler.init(heartbeat_interval: 50)
+
+      # Send a heartbeat
+      payload = Jason.encode!(%{"op" => 1, "d" => nil})
+      {:push, _, active_state} = Handler.handle_in({payload, opcode: :text}, state)
+
+      # Perform check within 2 intervals (e.g. 20ms elapsed)
+      assert {:ok, checked_state} = Handler.handle_info(:heartbeat_check, active_state)
+      assert is_reference(checked_state.heartbeat_timer)
+
+      Handler.terminate(:normal, checked_state)
+    end
+
+    test "zombie timeout cleans up session and leaves no orphan subscribers in guild actor" do
+      {:push, _, state} = Handler.init(heartbeat_interval: 50)
+      user_id = 87000000000000001
+      token = Gateway.Auth.JWT.issue(user_id, state.jwt_secret, 3600)
+      payload = Jason.encode!(%{"op" => 2, "d" => %{"token" => token}})
+
+      {:push, _, identified_state} = Handler.handle_in({payload, opcode: :text}, state)
+      session_id = identified_state.session_id
+      assert is_binary(session_id)
+      guild_id = "87000000000000100"
+
+      # Guild actor has subscriber
+      assert Gateway.Guild.Actor.subscriber_count(guild_id) >= 1
+      assert Gateway.Session.whereis(session_id) != nil
+
+      # Simulate zombie: missed 2 intervals
+      old_time = System.monotonic_time(:millisecond) - 120
+      stale_state = %{identified_state | last_heartbeat_at: old_time}
+
+      {:stop, :normal, {4009, _}, closing_state} =
+        Handler.handle_info(:heartbeat_check, stale_state)
+
+      Handler.terminate(:normal, closing_state)
+
+      # Verify full cleanup: session actor stopped, no orphan subscriber in guild actor
+      :timer.sleep(30)
+      assert Gateway.Session.whereis(session_id) == nil
+      assert Gateway.Guild.Actor.subscriber_count(guild_id) == 0
+    end
   end
 
   describe "End-to-end WebSocket over Bandit" do

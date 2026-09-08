@@ -113,6 +113,19 @@ defmodule Gateway.Guild.Actor do
     end
   end
 
+  @doc """
+  Dispatches an event asynchronously to all subscriber processes of the guild.
+  """
+  def dispatch_event(guild_id, event, bus_received_at \\ nil) do
+    case whereis(guild_id) do
+      pid when is_pid(pid) ->
+        GenServer.cast(pid, {:dispatch_event, event, bus_received_at})
+
+      nil ->
+        :ok
+    end
+  end
+
   # ── GenServer Callbacks ─────────────────────────────────────────────────────
 
   @impl true
@@ -189,6 +202,15 @@ defmodule Gateway.Guild.Actor do
 
   def handle_call(:subscriber_count, _from, state) do
     {:reply, map_size(state.subscribers), state}
+  end
+
+  @impl true
+  def handle_cast({:dispatch_event, event, bus_received_at}, state) do
+    Enum.each(state.subscribers, fn {_session_id, pid} ->
+      send(pid, {:dispatch, event, bus_received_at})
+    end)
+
+    {:noreply, state}
   end
 
   @impl true

@@ -244,12 +244,18 @@ defmodule Gateway.Bus.Consumer do
     event_payload = extract_field(fields, "event")
 
     if event_payload do
+      bus_received_at = System.monotonic_time(:microsecond)
+
       case Jason.decode(event_payload) do
         {:ok, event} ->
           guild_id = event["guild_id"] || ""
           type = event["type"] || "UNKNOWN"
 
-          # Route by guild_id -> locate Guild Actor
+          # Route by guild_id -> dispatch to Guild Actor
+          if guild_id != "" do
+            Gateway.Guild.Actor.dispatch_event(guild_id, event, bus_received_at)
+          end
+
           actor_pid =
             if guild_id != "", do: Gateway.Guild.Actor.whereis(guild_id), else: nil
 

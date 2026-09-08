@@ -177,6 +177,37 @@ defmodule Gateway.WS.HandlerTest do
       out = Metrics.render()
       assert out =~ ~s(gateway_ws_close_codes_total{code="4001"})
     end
+
+    test "send_frame pushes op 0 dispatch frame with monotonic seq and records latency" do
+      {:push, _, state} = Handler.init([])
+      event = %{"type" => "MESSAGE_CREATE", "data" => %{"id" => "123", "content" => "hello"}}
+      bus_ts = System.monotonic_time(:microsecond) - 5000
+
+      assert {:push, [{:text, frame_json}], new_state} =
+               Handler.handle_info({:send_frame, event, 1, bus_ts}, state)
+
+      assert new_state.seq == 1
+      assert {:ok, frame} = Jason.decode(frame_json)
+      assert frame["op"] == 0
+      assert frame["s"] == 1
+      assert frame["t"] == "MESSAGE_CREATE"
+      assert frame["d"]["content"] == "hello"
+
+      out = Metrics.render()
+      assert out =~ "gateway_fanout_latency_seconds_count"
+
+      Handler.terminate(:normal, new_state)
+    end
+
+    test "close info message terminates connection with given code" do
+      {:push, _, state} = Handler.init([])
+
+      assert {:stop, :normal, {4008, "Slow consumer dropped"}, new_state} =
+               Handler.handle_info({:close, 4008, "Slow consumer dropped"}, state)
+
+      assert new_state.close_code == 4008
+      Handler.terminate(:normal, new_state)
+    end
   end
 
   describe "End-to-end WebSocket over Bandit" do

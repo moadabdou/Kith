@@ -78,6 +78,74 @@ defmodule Gateway.Metrics do
     Agent.get(__MODULE__, fn state -> state.guild_actors_active end)
   end
 
+  def incr_session do
+    Agent.update(__MODULE__, fn state ->
+      %{state | sessions_active: state.sessions_active + 1}
+    end)
+  end
+
+  def decr_session do
+    Agent.update(__MODULE__, fn state ->
+      %{state | sessions_active: max(0, state.sessions_active - 1)}
+    end)
+  end
+
+  def get_sessions_active do
+    Agent.get(__MODULE__, fn state -> state.sessions_active end)
+  end
+
+  def incr_slow_consumer_drop do
+    Agent.update(__MODULE__, fn state ->
+      %{state | slow_consumer_drops: state.slow_consumer_drops + 1}
+    end)
+  end
+
+  def get_slow_consumer_drops do
+    Agent.get(__MODULE__, fn state -> state.slow_consumer_drops end)
+  end
+
+  @fanout_buckets [0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0]
+
+  def record_fanout_latency(seconds) when is_number(seconds) do
+    Agent.update(__MODULE__, fn state ->
+      hist = state.fanout_latency
+      new_sum = hist.sum + seconds
+      new_count = hist.count + 1
+
+      new_buckets =
+        Enum.reduce(@fanout_buckets, hist.buckets, fn b, acc ->
+          if seconds <= b do
+            Map.update(acc, b, 1, &(&1 + 1))
+          else
+            acc
+          end
+        end)
+
+      %{state | fanout_latency: %{hist | sum: new_sum, count: new_count, buckets: new_buckets}}
+    end)
+  end
+
+  @queue_buckets [0, 1, 5, 10, 50, 100, 250, 500, 1000, 2048]
+
+  def record_send_queue_depth(depth) when is_integer(depth) do
+    Agent.update(__MODULE__, fn state ->
+      hist = state.send_queue_depth
+      new_sum = hist.sum + depth
+      new_count = hist.count + 1
+
+      new_buckets =
+        Enum.reduce(@queue_buckets, hist.buckets, fn b, acc ->
+          if depth <= b do
+            Map.update(acc, b, 1, &(&1 + 1))
+          else
+            acc
+          end
+        end)
+
+      %{state | send_queue_depth: %{hist | sum: new_sum, count: new_count, buckets: new_buckets}}
+    end)
+  end
+
   def render do
     state = Agent.get(__MODULE__, & &1)
 
@@ -115,9 +183,15 @@ defmodule Gateway.Metrics do
           "# HELP gateway_connections_active Active WebSocket connections.",
           "# TYPE gateway_connections_active gauge",
           "gateway_connections_active #{state.connections_active}",
+          "# HELP gateway_sessions_active Active session actor processes.",
+          "# TYPE gateway_sessions_active gauge",
+          "gateway_sessions_active #{state.sessions_active}",
           "# HELP gateway_guild_actors_active Active guild actor processes.",
           "# TYPE gateway_guild_actors_active gauge",
           "gateway_guild_actors_active #{state.guild_actors_active}",
+          "# HELP gateway_slow_consumer_drops_total Total connections dropped due to excessive outbound queue backlog.",
+          "# TYPE gateway_slow_consumer_drops_total counter",
+          "gateway_slow_consumer_drops_total #{state.slow_consumer_drops}",
           "# HELP gateway_identifies_total Total IDENTIFY payloads received.",
           "# TYPE gateway_identifies_total counter",
           "gateway_identifies_total #{state.identifies}",
@@ -131,6 +205,18 @@ defmodule Gateway.Metrics do
           "# TYPE gateway_consumer_lag gauge",
           "gateway_consumer_lag #{state.consumer_lag}"
         ] ++
+        histogram_lines(
+          "gateway_fanout_latency_seconds",
+          "Fan-out latency from bus consumption to socket write in seconds.",
+          @fanout_buckets,
+          state.fanout_latency
+        ) ++
+        histogram_lines(
+          "gateway_ws_send_queue_depth",
+          "Outbound WebSocket connection send queue depth histogram.",
+          @queue_buckets,
+          state.send_queue_depth
+        ) ++
         [
           "# HELP gateway_ws_close_codes_total WebSocket close codes recorded.",
           "# TYPE gateway_ws_close_codes_total counter" | close_code_lines
@@ -145,6 +231,23 @@ defmodule Gateway.Metrics do
         ]
 
     Enum.join(lines, "\n") <> "\n"
+  end
+
+  defp histogram_lines(name, help, buckets, %{sum: sum, count: count, buckets: counts}) do
+    bucket_lines =
+      Enum.map(buckets, fn b ->
+        val = Map.get(counts, b, 0)
+        ~s(#{name}_bucket{le="#{b}"} #{val})
+      end) ++ [~s(#{name}_bucket{le="+Inf"} #{count})]
+
+    [
+      "# HELP #{name} #{help}",
+      "# TYPE #{name} histogram"
+      | bucket_lines
+    ] ++ [
+      "#{name}_sum #{sum}",
+      "#{name}_count #{count}"
+    ]
   end
 
   defp counter_lines(name, counts, labeler) do
@@ -167,9 +270,13 @@ defmodule Gateway.Metrics do
       event_redeliveries: 0,
       consumer_lag: 0,
       connections_active: 0,
+      sessions_active: 0,
       guild_actors_active: 0,
+      slow_consumer_drops: 0,
       identifies: 0,
       close_codes: %{},
+      fanout_latency: %{sum: 0.0, count: 0, buckets: %{}},
+      send_queue_depth: %{sum: 0, count: 0, buckets: %{}},
       booted_at: System.monotonic_time()
     }
   end

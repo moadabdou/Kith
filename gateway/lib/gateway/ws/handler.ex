@@ -34,6 +34,7 @@ defmodule Gateway.WS.Handler do
       jwt_secret: jwt_secret,
       user_id: nil,
       session_id: nil,
+      session_pid: nil,
       seq: 0,
       guild_ids: [],
       last_heartbeat_at: nil,
@@ -81,6 +82,28 @@ defmodule Gateway.WS.Handler do
   end
 
   @impl true
+  def handle_info({:send_frame, event, seq, bus_received_at}, state) do
+    if is_integer(bus_received_at) do
+      latency_s = (System.monotonic_time(:microsecond) - bus_received_at) / 1_000_000.0
+      Gateway.Metrics.record_fanout_latency(latency_s)
+    end
+
+    frame =
+      Jason.encode!(%{
+        "t" => event["type"],
+        "s" => seq,
+        "op" => 0,
+        "d" => event["payload"] || event["data"] || event
+      })
+
+    {:push, [{:text, frame}], %{state | seq: seq}}
+  end
+
+  def handle_info({:close, code, reason}, state) do
+    Logger.warning("Gateway.WS.Handler: received close instruction #{code} (#{reason})")
+    close(code, reason, state)
+  end
+
   def handle_info(:identify_timeout, state) do
     if not state.identified do
       Logger.info("Gateway.WS.Handler: client failed to IDENTIFY within timeout, closing")
@@ -98,11 +121,11 @@ defmodule Gateway.WS.Handler do
   def terminate(reason, state) do
     Gateway.Metrics.decr_connection()
 
-    # Unsubscribe from guild actors
-    if state.session_id && is_list(state.guild_ids) do
-      Enum.each(state.guild_ids, fn gid ->
-        Gateway.Guild.Actor.unsubscribe(gid, state.session_id)
-      end)
+    # If unrecoverable close code or clean test stop, close session actor
+    if state.session_id do
+      if state.close_code in [1000, 4004, 4008] or reason == :normal do
+        Gateway.Session.close(state.session_id)
+      end
     end
 
     close_code =
@@ -166,15 +189,16 @@ defmodule Gateway.WS.Handler do
 
             case Gateway.Guild.Cache.warm_member(user_id) do
               {:ok, user, guilds} ->
-                # Register session in Gateway.Registry
-                if Process.whereis(Gateway.Registry) do
-                  Registry.register(Gateway.Registry, "session:#{session_id}", %{user_id: user_id})
-                end
+                guild_ids = Enum.map(guilds, & &1["id"])
 
-                # Subscribe session to each guild actor
-                Enum.each(guilds, fn guild ->
-                  Gateway.Guild.Actor.subscribe(guild["id"], session_id, self())
-                end)
+                # Spawn Session Actor under Gateway.ConnSupervisor
+                {:ok, session_pid} =
+                  Gateway.Session.get_or_spawn(
+                    session_id: session_id,
+                    user_id: user_id,
+                    guild_ids: guild_ids,
+                    ws_pid: self()
+                  )
 
                 ready =
                   Jason.encode!(%{
@@ -195,8 +219,9 @@ defmodule Gateway.WS.Handler do
                     identify_timer: nil,
                     user_id: user_id,
                     session_id: session_id,
+                    session_pid: session_pid,
                     seq: 0,
-                    guild_ids: Enum.map(guilds, & &1["id"])
+                    guild_ids: guild_ids
                 }
 
                 {:push, [{:text, ready}], new_state}

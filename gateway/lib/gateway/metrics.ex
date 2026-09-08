@@ -54,6 +54,16 @@ defmodule Gateway.Metrics do
     end)
   end
 
+  def incr_resume do
+    Agent.update(__MODULE__, fn state ->
+      %{state | resumes: state.resumes + 1}
+    end)
+  end
+
+  def get_resumes do
+    Agent.get(__MODULE__, fn state -> state.resumes end)
+  end
+
   def incr_close_code(code) do
     code_str = to_string(code)
 
@@ -146,6 +156,27 @@ defmodule Gateway.Metrics do
     end)
   end
 
+  @resume_replay_buckets [0, 1, 5, 10, 25, 50, 100, 250, 500, 1000]
+
+  def record_resume_replay_size(count) when is_integer(count) do
+    Agent.update(__MODULE__, fn state ->
+      hist = state.resume_replay_size
+      new_sum = hist.sum + count
+      new_count = hist.count + 1
+
+      new_buckets =
+        Enum.reduce(@resume_replay_buckets, hist.buckets, fn b, acc ->
+          if count <= b do
+            Map.update(acc, b, 1, &(&1 + 1))
+          else
+            acc
+          end
+        end)
+
+      %{state | resume_replay_size: %{hist | sum: new_sum, count: new_count, buckets: new_buckets}}
+    end)
+  end
+
   def render do
     state = Agent.get(__MODULE__, & &1)
 
@@ -195,6 +226,9 @@ defmodule Gateway.Metrics do
           "# HELP gateway_identifies_total Total IDENTIFY payloads received.",
           "# TYPE gateway_identifies_total counter",
           "gateway_identifies_total #{state.identifies}",
+          "# HELP gateway_resumes_total Total RESUME payloads processed successfully.",
+          "# TYPE gateway_resumes_total counter",
+          "gateway_resumes_total #{state.resumes}",
           "# HELP gateway_events_consumed_total Total events consumed and acknowledged from event bus.",
           "# TYPE gateway_events_consumed_total counter",
           "gateway_events_consumed_total #{state.events_consumed}",
@@ -216,6 +250,12 @@ defmodule Gateway.Metrics do
           "Outbound WebSocket connection send queue depth histogram.",
           @queue_buckets,
           state.send_queue_depth
+        ) ++
+        histogram_lines(
+          "gateway_resume_replay_size",
+          "Number of replayed events during a successful RESUME.",
+          @resume_replay_buckets,
+          state.resume_replay_size
         ) ++
         [
           "# HELP gateway_ws_close_codes_total WebSocket close codes recorded.",
@@ -274,9 +314,11 @@ defmodule Gateway.Metrics do
       guild_actors_active: 0,
       slow_consumer_drops: 0,
       identifies: 0,
+      resumes: 0,
       close_codes: %{},
       fanout_latency: %{sum: 0.0, count: 0, buckets: %{}},
       send_queue_depth: %{sum: 0, count: 0, buckets: %{}},
+      resume_replay_size: %{sum: 0, count: 0, buckets: %{}},
       booted_at: System.monotonic_time()
     }
   end

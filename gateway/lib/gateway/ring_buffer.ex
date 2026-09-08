@@ -103,6 +103,37 @@ defmodule Gateway.RingBuffer do
   end
 
   @doc """
+  Retrieves a contiguous range of items with sequence numbers from `from_seq` to `to_seq` (inclusive).
+  Returns `{:ok, [{seq, item}]}` or `{:error, :gap_unbufferable}` if `from_seq` has already been evicted.
+  """
+  @spec range_with_seq(t(), non_neg_integer(), non_neg_integer()) ::
+          {:ok, list({non_neg_integer(), any()})} | {:error, :gap_unbufferable}
+  def range_with_seq(%__MODULE__{count: 0}, _from_seq, _to_seq), do: {:ok, []}
+
+  def range_with_seq(%__MODULE__{} = buf, from_seq, to_seq)
+      when is_integer(from_seq) and is_integer(to_seq) do
+    cond do
+      from_seq > to_seq ->
+        {:ok, []}
+
+      from_seq < buf.min_seq ->
+        {:error, :gap_unbufferable}
+
+      true ->
+        items =
+          Enum.reduce_while(from_seq..to_seq, [], fn s, acc ->
+            case Map.fetch(buf.entries, s) do
+              {:ok, item} -> {:cont, [{s, item} | acc]}
+              :error -> {:cont, acc}
+            end
+          end)
+          |> Enum.reverse()
+
+        {:ok, items}
+    end
+  end
+
+  @doc """
   Returns the number of entries currently stored in the buffer.
   """
   @spec size(t()) :: non_neg_integer()

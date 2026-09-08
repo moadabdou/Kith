@@ -31,6 +31,7 @@ defmodule Gateway.WS.Handler do
 
     state = %{
       heartbeat_interval: heartbeat_interval,
+      identify_timeout: identify_timeout,
       boot_at: boot_at,
       identified: false,
       identify_timer: identify_timer,
@@ -64,6 +65,9 @@ defmodule Gateway.WS.Handler do
 
         {:ok, %{"op" => 2, "d" => d}} ->
           handle_identify(d, state)
+
+        {:ok, %{"op" => 6, "d" => d}} ->
+          handle_resume(d, state)
 
         {:ok, %{"op" => _other_op}} ->
           Logger.warning("Gateway.WS.Handler: unknown or unhandled opcode, closing with 4001")
@@ -142,9 +146,10 @@ defmodule Gateway.WS.Handler do
   def terminate(reason, state) do
     Gateway.Metrics.decr_connection()
 
-    # If unrecoverable close code or clean test stop, close session actor
+    # If unrecoverable close code, close session actor immediately.
+    # Normal disconnects leave session alive for the 60s disconnect TTL to allow RESUME.
     if state.session_id do
-      if state.close_code in [1000, 4004, 4008, 4009] or reason == :normal do
+      if state.close_code in [4004, 4008, 4009] do
         Gateway.Session.close(state.session_id)
       end
     end
@@ -261,6 +266,103 @@ defmodule Gateway.WS.Handler do
             close(4004, "Authentication failed", state)
         end
     end
+  end
+
+  defp handle_resume(d, state) do
+    token = if is_map(d), do: d["token"], else: nil
+    session_id = if is_map(d), do: d["session_id"], else: nil
+    client_seq = if is_map(d), do: d["seq"], else: nil
+
+    cond do
+      is_nil(token) or token == "" ->
+        Logger.warning("Gateway.WS.Handler: RESUME missing token, closing with 4004")
+        close(4004, "Authentication failed", state)
+
+      true ->
+        case Gateway.Auth.JWT.verify(token, state.jwt_secret) do
+          {:ok, user_id} ->
+            attempt_resume(session_id, client_seq, user_id, state)
+
+          {:error, reason} ->
+            Logger.warning("Gateway.WS.Handler: RESUME invalid JWT (#{inspect(reason)}), closing with 4004")
+            close(4004, "Authentication failed", state)
+        end
+    end
+  end
+
+  defp attempt_resume(session_id, client_seq, user_id, state) do
+    cond do
+      is_nil(session_id) or not is_binary(session_id) or session_id == "" or
+      is_nil(client_seq) or not is_integer(client_seq) or client_seq < 0 ->
+        Logger.warning("Gateway.WS.Handler: RESUME malformed session_id or seq; sending op 9")
+        send_invalid_session(state)
+
+      true ->
+        case Gateway.Session.resume(session_id, self(), client_seq, user_id) do
+          {:ok, current_seq, missed_events} ->
+            Gateway.Metrics.incr_resume()
+            Gateway.Metrics.record_resume_replay_size(length(missed_events))
+
+            if state.identify_timer && Process.read_timer(state.identify_timer) do
+              Process.cancel_timer(state.identify_timer)
+            end
+
+            replay_frames =
+              Enum.map(missed_events, fn {seq, event} ->
+                payload =
+                  Jason.encode!(%{
+                    "t" => event["type"],
+                    "s" => seq,
+                    "op" => 0,
+                    "d" => event["payload"] || event["data"] || event
+                  })
+
+                {:text, payload}
+              end)
+
+            {:ok, info} = Gateway.Session.info(session_id)
+
+            new_state = %{
+              state
+              | identified: true,
+                identify_timer: nil,
+                user_id: user_id,
+                session_id: session_id,
+                session_pid: Gateway.Session.whereis(session_id),
+                seq: current_seq,
+                guild_ids: info.guild_ids
+            }
+
+            Logger.info(
+              "Gateway.WS.Handler: session #{session_id} resumed; replaying #{length(replay_frames)} frames (seq #{client_seq} -> #{current_seq})"
+            )
+
+            {:push, replay_frames, new_state}
+
+          {:error, reason} ->
+            Logger.warning("Gateway.WS.Handler: RESUME failed (#{inspect(reason)}); sending op 9")
+            send_invalid_session(state)
+        end
+    end
+  end
+
+  defp send_invalid_session(state) do
+    invalid_session =
+      Jason.encode!(%{
+        "t" => nil,
+        "s" => nil,
+        "op" => 9,
+        "d" => false
+      })
+
+    timer =
+      if state.identify_timer && Process.read_timer(state.identify_timer) do
+        state.identify_timer
+      else
+        Process.send_after(self(), :identify_timeout, state.identify_timeout)
+      end
+
+    {:push, [{:text, invalid_session}], %{state | identify_timer: timer}}
   end
 
   defp close(code, reason, state) do

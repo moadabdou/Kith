@@ -64,5 +64,28 @@ defmodule Gateway.RingBufferTest do
       assert {:error, :gap_unbufferable} = RingBuffer.range(buf, 10, 12)
       assert {:ok, ["m11", "m12", "m13"]} = RingBuffer.range(buf, 11, 13)
     end
+
+    test "range_with_seq returns contiguous slice with sequence numbers or gap error" do
+      buf =
+        RingBuffer.new(3)
+        |> RingBuffer.put(10, "m10")
+        |> RingBuffer.put(11, "m11")
+        |> RingBuffer.put(12, "m12")
+
+      assert {:ok, [{10, "m10"}, {11, "m11"}, {12, "m12"}]} =
+               RingBuffer.range_with_seq(buf, 10, 12)
+
+      assert {:ok, [{11, "m11"}, {12, "m12"}]} =
+               RingBuffer.range_with_seq(buf, 11, 12)
+
+      assert {:ok, []} = RingBuffer.range_with_seq(buf, 13, 12)
+
+      # Evict 10
+      buf = RingBuffer.put(buf, 13, "m13")
+
+      assert {:error, :gap_unbufferable} = RingBuffer.range_with_seq(buf, 10, 12)
+      assert {:ok, [{11, "m11"}, {12, "m12"}, {13, "m13"}]} =
+               RingBuffer.range_with_seq(buf, 11, 13)
+    end
   end
 end

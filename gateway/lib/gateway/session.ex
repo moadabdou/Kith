@@ -74,6 +74,21 @@ defmodule Gateway.Session do
   end
 
   @doc """
+  Resumes an existing session for a reconnecting WebSocket connection.
+  Validates requesting_user_id against session owner.
+  Returns {:ok, current_seq, missed_events} or {:error, reason}.
+  """
+  def resume(session_id, new_ws_pid, client_seq, requesting_user_id) do
+    case whereis(session_id) do
+      pid when is_pid(pid) ->
+        GenServer.call(pid, {:resume, new_ws_pid, client_seq, requesting_user_id})
+
+      nil ->
+        {:error, :session_not_found}
+    end
+  end
+
+  @doc """
   Returns diagnostic information about the session actor.
   """
   def info(session_id) do
@@ -174,6 +189,53 @@ defmodule Gateway.Session do
 
     {:reply, {:ok, state.seq},
      %{state | ws_pid: new_ws_pid, ws_ref: ref, ttl_timer: nil}}
+  end
+
+  def handle_call({:resume, new_ws_pid, client_seq, requesting_user_id}, _from, state) do
+    cond do
+      requesting_user_id != state.user_id ->
+        Logger.warning(
+          "Gateway.Session [#{state.session_id}]: unauthorized resume attempt by user #{inspect(requesting_user_id)} (owner is #{inspect(state.user_id)})"
+        )
+
+        {:reply, {:error, :unauthorized}, state}
+
+      not is_integer(client_seq) or client_seq < 0 or client_seq > state.seq ->
+        Logger.warning(
+          "Gateway.Session [#{state.session_id}]: invalid resume sequence #{inspect(client_seq)} (current server seq is #{state.seq})"
+        )
+
+        {:reply, {:error, :invalid_seq}, state}
+
+      true ->
+        from_seq = client_seq + 1
+        to_seq = state.seq
+
+        case Gateway.RingBuffer.range_with_seq(state.replay, from_seq, to_seq) do
+          {:ok, missed_frames} ->
+            cancel_timer(state.ttl_timer)
+
+            if state.ws_ref do
+              Process.demonitor(state.ws_ref, [:flush])
+            end
+
+            ref = Process.monitor(new_ws_pid)
+
+            Logger.info(
+              "Gateway.Session [#{state.session_id}]: resumed by user #{state.user_id} with #{length(missed_frames)} replayed frames (client_seq=#{client_seq}, current_seq=#{state.seq})"
+            )
+
+            new_state = %{state | ws_pid: new_ws_pid, ws_ref: ref, ttl_timer: nil}
+            {:reply, {:ok, state.seq, missed_frames}, new_state}
+
+          {:error, :gap_unbufferable} = err ->
+            Logger.warning(
+              "Gateway.Session [#{state.session_id}]: unbufferable gap for seq #{client_seq} (oldest buffered seq is #{state.replay.min_seq})"
+            )
+
+            {:reply, err, state}
+        end
+    end
   end
 
   def handle_call(:info, _from, state) do

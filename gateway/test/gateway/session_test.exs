@@ -132,6 +132,99 @@ defmodule Gateway.SessionTest do
 
       Session.close(@test_session_id_2)
     end
+
+    test "resume replays missed frames and binds new socket process" do
+      {:ok, session_pid} =
+        Session.get_or_spawn(
+          session_id: @test_session_id,
+          user_id: 12345,
+          guild_ids: [@test_guild_id],
+          ws_pid: nil
+        )
+
+      e1 = %{"type" => "MESSAGE_CREATE", "data" => %{"n" => 1}}
+      e2 = %{"type" => "MESSAGE_CREATE", "data" => %{"n" => 2}}
+      e3 = %{"type" => "MESSAGE_CREATE", "data" => %{"n" => 3}}
+
+      send(session_pid, {:dispatch, e1, 0})
+      send(session_pid, {:dispatch, e2, 0})
+      send(session_pid, {:dispatch, e3, 0})
+      :timer.sleep(20)
+
+      # Client resumes from seq 1 (should receive e2 and e3 with sequences 2 and 3)
+      assert {:ok, 3, [{2, ^e2}, {3, ^e3}]} =
+               Session.resume(@test_session_id, self(), 1, 12345)
+
+      # Subsequent dispatch arrives at self() with sequence 4
+      e4 = %{"type" => "MESSAGE_CREATE", "data" => %{"n" => 4}}
+      send(session_pid, {:dispatch, e4, 0})
+      assert_receive {:send_frame, ^e4, 4, _ts}, 500
+
+      Session.close(@test_session_id)
+    end
+
+    test "resume rejects unauthorized user_id" do
+      {:ok, _session_pid} =
+        Session.get_or_spawn(
+          session_id: @test_session_id,
+          user_id: 12345,
+          guild_ids: [@test_guild_id],
+          ws_pid: nil
+        )
+
+      assert {:error, :unauthorized} =
+               Session.resume(@test_session_id, self(), 0, 99999)
+
+      Session.close(@test_session_id)
+    end
+
+    test "resume rejects invalid seq (future seq or negative)" do
+      {:ok, session_pid} =
+        Session.get_or_spawn(
+          session_id: @test_session_id,
+          user_id: 12345,
+          guild_ids: [@test_guild_id],
+          ws_pid: nil
+        )
+
+      send(session_pid, {:dispatch, %{"type" => "MSG"}, 0})
+      :timer.sleep(10)
+
+      assert {:error, :invalid_seq} =
+               Session.resume(@test_session_id, self(), 99, 12345)
+
+      assert {:error, :invalid_seq} =
+               Session.resume(@test_session_id, self(), -1, 12345)
+
+      Session.close(@test_session_id)
+    end
+
+    test "resume returns gap_unbufferable when requested sequence was evicted" do
+      {:ok, session_pid} =
+        Session.get_or_spawn(
+          session_id: @test_session_id,
+          user_id: 12345,
+          guild_ids: [@test_guild_id],
+          ws_pid: nil,
+          ring_capacity: 2
+        )
+
+      send(session_pid, {:dispatch, %{"type" => "MSG1"}, 0})
+      send(session_pid, {:dispatch, %{"type" => "MSG2"}, 0})
+      send(session_pid, {:dispatch, %{"type" => "MSG3"}, 0})
+      :timer.sleep(20)
+
+      # Capacity is 2; seq 1 was evicted, buffer holds [2, 3]
+      # Resuming from 0 means needing 1..3, which has an unbufferable gap
+      assert {:error, :gap_unbufferable} =
+               Session.resume(@test_session_id, self(), 0, 12345)
+
+      # Resuming from 1 means needing 2..3, which is fully buffered!
+      assert {:ok, 3, [{2, _}, {3, _}]} =
+               Session.resume(@test_session_id, self(), 1, 12345)
+
+      Session.close(@test_session_id)
+    end
   end
 
   defp assert_receive_in_process(pid, expected) do

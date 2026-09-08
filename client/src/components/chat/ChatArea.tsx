@@ -3,12 +3,15 @@ import { AlertCircle, Hash, Send } from 'lucide-react'
 import { api } from '../../api'
 import type { Channel, Guild, Message } from '../../types'
 
+import { useGateway } from '../../gateway/useGateway'
+
 interface ChatAreaProps {
   currentGuild: Guild | null
   currentChannel: Channel | null
 }
 
 export function ChatArea({ currentGuild, currentChannel }: ChatAreaProps) {
+  const { subscribeToMessages, connected } = useGateway()
   const [messages, setMessages] = useState<Message[]>([])
   const [inputText, setInputText] = useState('')
   const [sending, setSending] = useState(false)
@@ -19,7 +22,7 @@ export function ChatArea({ currentGuild, currentChannel }: ChatAreaProps) {
     messagesEndRef.current?.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto' })
   }
 
-  // Set up polling on channel change
+  // Fetch initial message history on channel change
   useEffect(() => {
     if (!currentGuild || !currentChannel) {
       return
@@ -29,30 +32,41 @@ export function ChatArea({ currentGuild, currentChannel }: ChatAreaProps) {
     const channelId = currentChannel.id
     let active = true
 
-    const fetchLatest = () => {
-      api.getMessages(guildId, channelId)
-        .then((msgs) => {
-          if (!active) return
-          setMessages([...msgs].reverse())
-          setError(null)
-        })
-        .catch((err: any) => {
-          if (!active) return
-          setError(err.message || 'Failed to fetch messages')
-        })
-    }
-
-    // Initial load
-    fetchLatest()
-
-    // 2-second polling loop per Issue #11 specs
-    const interval = window.setInterval(fetchLatest, 2000)
+    api.getMessages(guildId, channelId)
+      .then((msgs) => {
+        if (!active) return
+        setMessages([...msgs].reverse())
+        setError(null)
+      })
+      .catch((err: any) => {
+        if (!active) return
+        setError(err.message || 'Failed to fetch messages')
+      })
 
     return () => {
       active = false
-      window.clearInterval(interval)
     }
   }, [currentGuild, currentChannel])
+
+  // Real-time Gateway WebSocket subscription (replaces Phase 0 2-second polling)
+  useEffect(() => {
+    if (!currentChannel) return
+    const channelId = currentChannel.id
+
+    const unsubscribe = subscribeToMessages((newMsg: Message) => {
+      if (newMsg.channel_id === channelId) {
+        setMessages((prev) => {
+          if (prev.some((m) => m.id === newMsg.id)) {
+            return prev
+          }
+          return [...prev, newMsg]
+        })
+        scrollToBottom(true)
+      }
+    })
+
+    return unsubscribe
+  }, [currentChannel, subscribeToMessages])
 
   // Scroll to bottom when messages count increases
   useEffect(() => {
@@ -64,13 +78,21 @@ export function ChatArea({ currentGuild, currentChannel }: ChatAreaProps) {
     if (!inputText.trim() || !currentGuild || !currentChannel || sending) return
 
     const content = inputText.trim()
+    const guildId = currentGuild.id
+    const channelId = currentChannel.id
+
     setSending(true)
     setError(null)
 
     try {
-      const sent = await api.sendMessage(currentGuild.id, currentChannel.id, content)
+      // Send stays REST (POST /messages)
+      const sent = await api.sendMessage(guildId, channelId, content)
       setInputText('')
-      setMessages((prev) => [...prev, sent])
+      // Reconcile / deduplicate with real-time WS dispatch
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === sent.id)) return prev
+        return [...prev, sent]
+      })
       scrollToBottom(true)
     } catch (err: any) {
       setError(err.message || 'Failed to send message')
@@ -99,6 +121,21 @@ export function ChatArea({ currentGuild, currentChannel }: ChatAreaProps) {
         <Hash size={24} style={{ color: 'var(--text-muted)' }} />
         <span>{currentChannel.name}</span>
         <span className="chat-header-desc">Welcome to the #{currentChannel.name} channel!</span>
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: '50%',
+              backgroundColor: connected ? '#23a55a' : '#f0b232',
+              display: 'inline-block'
+            }}
+            title={connected ? 'Real-time Gateway Connected' : 'Gateway Connecting...'}
+          />
+          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+            {connected ? 'Live' : 'Connecting...'}
+          </span>
+        </div>
       </div>
 
       {/* Messages Scroll Area */}

@@ -9,6 +9,7 @@ import { ChannelSidebar } from './components/navigation/ChannelSidebar'
 import { ServerSidebar } from './components/navigation/ServerSidebar'
 import { AuthProvider } from './context/AuthContext'
 import { useAuth } from './context/useAuth'
+import { GatewayProvider } from './gateway/GatewayContext'
 import type { Channel, Guild } from './types'
 
 function getInviteCodeFromUrl(): string | null {
@@ -255,7 +256,9 @@ function Dashboard() {
 export default function App() {
   return (
     <AuthProvider>
-      <Dashboard />
+      <GatewayProvider>
+        <Dashboard />
+      </GatewayProvider>
     </AuthProvider>
   )
 }

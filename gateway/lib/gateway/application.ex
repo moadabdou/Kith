@@ -40,9 +40,16 @@ defmodule Gateway.Application do
       Gateway.ConnSupervisor,
       Gateway.Guild.Cache,
       Supervisor.child_spec({Postgrex, parse_db_url(database_url())}, id: Gateway.DB),
-      Gateway.Bus.Consumer,
+      bus_consumer(),
       Supervisor.child_spec({Bandit, plug: Gateway.Router, port: port()}, id: Bandit)
     ]
+  end
+
+  defp bus_consumer do
+    case System.get_env("BUS_TYPE", "nats") do
+      "redis" -> Gateway.Bus.Consumer
+      _ -> Gateway.Bus.NatsConsumer
+    end
   end
 
   defp report(child) do

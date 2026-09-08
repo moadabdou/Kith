@@ -85,10 +85,20 @@ func main() {
 	authHandler := &auth.Handler{Svc: authSvc}
 	usersHandler := &users.Handler{DB: db}
 	guildsHandler := &guilds.Handler{Svc: guilds.NewService(db, node)}
-	// Phase 1: Redis Streams first behind events.Publisher (EVENTS_BUS=redis|noop).
-	eventsBus := envOr("EVENTS_BUS", "noop")
+	// Phase 1: NATS JetStream (default) and Redis Streams behind events.Publisher (EVENTS_BUS=nats|redis|noop).
+	eventsBus := envOr("EVENTS_BUS", "nats")
 	var publisher events.Publisher
 	switch eventsBus {
+	case "nats":
+		natsURL := envOr("NATS_URL", "nats://127.0.0.1:4222")
+		natsPub, err := events.NewNatsPublisher(natsURL)
+		if err != nil {
+			slog.Error("failed to initialize nats publisher", "url", natsURL, "error", err)
+			os.Exit(1)
+		}
+		defer natsPub.Close()
+		publisher = natsPub
+		slog.Info("events bus initialized", "bus", "nats", "url", natsURL)
 	case "redis":
 		redisURL := envOr("REDIS_URL", "redis://127.0.0.1:6379")
 		redisPub, err := events.NewRedisPublisher(redisURL)

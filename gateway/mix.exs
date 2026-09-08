@@ -28,7 +28,8 @@ defmodule Gateway.MixProject do
       {:websock_adapter, "~> 0.6"},
       {:jason, "~> 1.4"},
       {:redix, "~> 1.5"},
-      {:postgrex, "~> 0.20"}
+      {:postgrex, "~> 0.20"},
+      {:gnat, "~> 1.16"}
     ]
   end
 end

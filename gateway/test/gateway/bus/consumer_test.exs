@@ -19,7 +19,26 @@ defmodule Gateway.Bus.ConsumerTest do
     stream = "kith:events:#{guild_id}"
     group = "kith-gateway"
 
+    consumer_pid =
+      case Process.whereis(Gateway.Bus.Consumer) do
+        nil ->
+          {:ok, pid} =
+            Gateway.Bus.Consumer.start_link(
+              redis_url: @redis_url,
+              group: group,
+              stream_pattern: "kith:events:*",
+              name: :"consumer_#{System.unique_integer([:positive])}"
+            )
+          pid
+
+        pid ->
+          pid
+      end
+
     on_exit(fn ->
+      if consumer_pid != Process.whereis(Gateway.Bus.Consumer) and Process.alive?(consumer_pid) do
+        GenServer.stop(consumer_pid)
+      end
       cleanup_stream(stream)
     end)
 

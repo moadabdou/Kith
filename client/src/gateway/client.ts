@@ -167,11 +167,14 @@ export class GatewayClient {
       return
     }
 
-    // If already connected/ready with the same token, do nothing
+    // If already connecting, connected, or ready with the same token, do nothing
     if (
       this.ws &&
       this.token === token &&
-      (this.status === 'connected' || this.status === 'ready' || this.status === 'resuming')
+      (this.status === 'connected' ||
+        this.status === 'ready' ||
+        this.status === 'resuming' ||
+        this.status === 'connecting')
     ) {
       return
     }
@@ -179,6 +182,21 @@ export class GatewayClient {
     this.clearReconnectTimers()
     this.explicitDisconnect = false
     this.token = token
+
+    // Clean up previous socket if any before creating a new one
+    if (this.ws) {
+      this.ws.onopen = null
+      this.ws.onmessage = null
+      this.ws.onerror = null
+      this.ws.onclose = null
+      try {
+        this.ws.close()
+      } catch {
+        // ignore
+      }
+      this.ws = null
+    }
+
     this.setStatus('connecting')
 
     const url = getGatewayUrl()
@@ -433,9 +451,7 @@ export class GatewayClient {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return
 
     if (!this.lastHeartbeatAck) {
-      console.warn('[Gateway] missed HEARTBEAT_ACK, connection may be zombie; closing...')
-      this.ws.close(4009, 'Heartbeat timeout')
-      return
+      console.warn('[Gateway] missed HEARTBEAT_ACK from previous interval')
     }
 
     this.lastHeartbeatAck = false

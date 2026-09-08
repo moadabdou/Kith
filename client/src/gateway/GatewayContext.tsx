@@ -5,7 +5,7 @@ import { gatewayClient, type GatewayStatus, type ReconnectState } from './client
 import { GatewayContext } from './gateway-context-def'
 
 export function GatewayProvider({ children }: { children: ReactNode }) {
-  const { token, user } = useAuth()
+  const { token } = useAuth()
   const [status, setStatus] = useState<GatewayStatus>(gatewayClient.getStatus())
   const [reconnectState, setReconnectState] = useState<ReconnectState | null>(null)
 
@@ -23,12 +23,12 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
   }, [])
 
   useEffect(() => {
-    if (token && user) {
+    if (token) {
       gatewayClient.connect(token)
     } else {
       gatewayClient.disconnect()
     }
-  }, [token, user])
+  }, [token])
 
   const subscribeToMessages = (callback: (msg: Message) => void) => {
     return gatewayClient.onMessage(callback)

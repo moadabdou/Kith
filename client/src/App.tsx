@@ -7,9 +7,11 @@ import { CreateGuildModal } from './components/modals/CreateGuildModal'
 import { InviteModal } from './components/modals/InviteModal'
 import { ChannelSidebar } from './components/navigation/ChannelSidebar'
 import { ServerSidebar } from './components/navigation/ServerSidebar'
+import { ConnectionBanner } from './components/common/ConnectionBanner'
 import { AuthProvider } from './context/AuthContext'
 import { useAuth } from './context/useAuth'
 import { GatewayProvider } from './gateway/GatewayContext'
+import { useGateway } from './gateway/useGateway'
 import type { Channel, Guild } from './types'
 
 function getInviteCodeFromUrl(): string | null {
@@ -36,6 +38,7 @@ if (initialInvite && typeof window !== 'undefined') {
 
 function Dashboard() {
   const { user, loading } = useAuth()
+  const { onSessionReset } = useGateway()
   const [guilds, setGuilds] = useState<Guild[]>([])
   const [selectedGuildId, setSelectedGuildId] = useState<string | null>(null)
   const [channels, setChannels] = useState<Channel[]>([])
@@ -84,6 +87,26 @@ function Dashboard() {
       active = false
     }
   }, [selectedGuildId])
+
+  // On session reset (Op 9 INVALID_SESSION), refetch guilds and active channels
+  useEffect(() => {
+    return onSessionReset(() => {
+      console.log('[Dashboard] session reset received (op 9) — refetching state...')
+      api.getMyGuilds()
+        .then((list) => {
+          setGuilds(list)
+        })
+        .catch((err) => console.error('Failed to reload guilds on session reset:', err))
+
+      if (selectedGuildId) {
+        api.getChannels(selectedGuildId)
+          .then((list) => {
+            setChannels(list)
+          })
+          .catch((err) => console.error('Failed to reload channels on session reset:', err))
+      }
+    })
+  }, [onSessionReset, selectedGuildId])
 
   const handleCreateGuild = async (name: string) => {
     const newGuild = await api.createGuild(name)
@@ -181,7 +204,9 @@ function Dashboard() {
   const currentChannel = channels.find((c) => c.id === selectedChannelId) ?? null
 
   return (
-    <div className="app-container">
+    <div style={{ display: 'flex', flexDirection: 'column', width: '100vw', height: '100vh', overflow: 'hidden' }}>
+      <ConnectionBanner />
+      <div className="app-container" style={{ flex: 1, minHeight: 0 }}>
       {inviteFeedback && (
         <div
           style={{
@@ -249,6 +274,7 @@ function Dashboard() {
         guild={currentGuild}
         channel={currentChannel ?? channels[0] ?? null}
       />
+      </div>
     </div>
   )
 }

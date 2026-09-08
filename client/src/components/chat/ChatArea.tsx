@@ -11,7 +11,7 @@ interface ChatAreaProps {
 }
 
 export function ChatArea({ currentGuild, currentChannel }: ChatAreaProps) {
-  const { subscribeToMessages, connected } = useGateway()
+  const { subscribeToMessages, connected, onSessionReset } = useGateway()
   const [messages, setMessages] = useState<Message[]>([])
   const [inputText, setInputText] = useState('')
   const [sending, setSending] = useState(false)
@@ -47,6 +47,25 @@ export function ChatArea({ currentGuild, currentChannel }: ChatAreaProps) {
       active = false
     }
   }, [currentGuild, currentChannel])
+
+  // Refetch messages on session reset (Op 9 INVALID_SESSION) when resumption was rejected
+  useEffect(() => {
+    if (!currentGuild || !currentChannel) return
+    const guildId = currentGuild.id
+    const channelId = currentChannel.id
+
+    return onSessionReset(() => {
+      console.log('[ChatArea] session reset received — refetching message history')
+      api.getMessages(guildId, channelId)
+        .then((msgs) => {
+          setMessages([...msgs].reverse())
+          setError(null)
+        })
+        .catch((err: any) => {
+          setError(err.message || 'Failed to fetch messages')
+        })
+    })
+  }, [currentGuild, currentChannel, onSessionReset])
 
   // Real-time Gateway WebSocket subscription (replaces Phase 0 2-second polling)
   useEffect(() => {

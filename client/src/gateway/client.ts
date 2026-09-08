@@ -1,11 +1,30 @@
 import type { Message } from '../types'
 
-export type GatewayStatus = 'disconnected' | 'connecting' | 'connected' | 'ready'
+export type GatewayStatus =
+  | 'disconnected'
+  | 'connecting'
+  | 'connected'
+  | 'ready'
+  | 'resuming'
+  | 'reconnecting'
 
 export type GatewayEventCallback = (data: any) => void
 
+export const BASE_BACKOFF_MS = 2000
+export const MAX_BACKOFF_MS = 30000
+
+/**
+ * Calculates exponential backoff with jitter.
+ * delay = min(30000, 2000 * 2^attempt) + jitter(0, 1000)
+ */
+export function calculateBackoff(attempt: number, randomFn = Math.random): number {
+  const exp = Math.min(MAX_BACKOFF_MS, BASE_BACKOFF_MS * Math.pow(2, attempt))
+  const jitter = Math.floor(randomFn() * 1000)
+  return Math.min(MAX_BACKOFF_MS, exp + jitter)
+}
+
 export function getGatewayUrl(): string {
-  if (import.meta.env.VITE_GATEWAY_WS) {
+  if (import.meta.env?.VITE_GATEWAY_WS) {
     return import.meta.env.VITE_GATEWAY_WS
   }
   if (typeof window === 'undefined') {
@@ -20,18 +39,30 @@ export function getGatewayUrl(): string {
   return `${proto}//${window.location.host}/ws`
 }
 
+export interface ReconnectState {
+  attempt: number
+  countdownMs: number
+}
+
 export class GatewayClient {
-  private ws: WebSocket | null = null
+  public ws: WebSocket | null = null
   private token: string | null = null
   private status: GatewayStatus = 'disconnected'
   private heartbeatIntervalMs: number | null = null
-  private heartbeatTimer: number | null = null
+  private heartbeatTimer: any = null
   private lastHeartbeatAck = true
   private sessionId: string | null = null
   private lastSeq: number | null = null
   private listeners: Map<string, Set<GatewayEventCallback>> = new Map()
   private statusListeners: Set<(status: GatewayStatus) => void> = new Set()
+  private reconnectListeners: Set<(state: ReconnectState | null) => void> = new Set()
   private explicitDisconnect = false
+
+  // Reconnect backoff state
+  private reconnectAttempt = 0
+  private reconnectTimeoutId: any = null
+  private countdownIntervalId: any = null
+  private targetReconnectTime: number | null = null
 
   public getStatus(): GatewayStatus {
     return this.status
@@ -45,11 +76,45 @@ export class GatewayClient {
     return this.lastSeq
   }
 
+  public getReconnectAttempt(): number {
+    return this.reconnectAttempt
+  }
+
   public onStatusChange(callback: (status: GatewayStatus) => void): () => void {
     this.statusListeners.add(callback)
     callback(this.status)
     return () => {
       this.statusListeners.delete(callback)
+    }
+  }
+
+  public onReconnectChange(callback: (state: ReconnectState | null) => void): () => void {
+    this.reconnectListeners.add(callback)
+    callback(this.getReconnectState())
+    return () => {
+      this.reconnectListeners.delete(callback)
+    }
+  }
+
+  private getReconnectState(): ReconnectState | null {
+    if (this.status !== 'reconnecting' || !this.targetReconnectTime) {
+      return null
+    }
+    const remaining = Math.max(0, this.targetReconnectTime - Date.now())
+    return {
+      attempt: this.reconnectAttempt,
+      countdownMs: remaining,
+    }
+  }
+
+  private notifyReconnectListeners() {
+    const state = this.getReconnectState()
+    for (const cb of this.reconnectListeners) {
+      try {
+        cb(state)
+      } catch (err) {
+        console.error('[Gateway] reconnect listener error:', err)
+      }
     }
   }
 
@@ -63,6 +128,7 @@ export class GatewayClient {
         console.error('[Gateway] status listener error:', err)
       }
     }
+    this.notifyReconnectListeners()
   }
 
   public on(event: string, callback: GatewayEventCallback): () => void {
@@ -79,7 +145,11 @@ export class GatewayClient {
     return this.on('MESSAGE_CREATE', callback)
   }
 
-  private emit(event: string, data: any) {
+  public onSessionReset(callback: () => void): () => void {
+    return this.on('SESSION_RESET', callback)
+  }
+
+  private emit(event: string, data?: any) {
     const callbacks = this.listeners.get(event)
     if (!callbacks) return
     for (const cb of callbacks) {
@@ -97,24 +167,28 @@ export class GatewayClient {
       return
     }
 
-    // If already connected with the same token, do nothing
-    if (this.ws && this.token === token && (this.status === 'connected' || this.status === 'ready')) {
+    // If already connected/ready with the same token, do nothing
+    if (
+      this.ws &&
+      this.token === token &&
+      (this.status === 'connected' || this.status === 'ready' || this.status === 'resuming')
+    ) {
       return
     }
 
-    this.disconnect()
+    this.clearReconnectTimers()
     this.explicitDisconnect = false
     this.token = token
     this.setStatus('connecting')
 
     const url = getGatewayUrl()
-    console.log(`[Gateway] connecting to ${url}`)
+    console.log(`[Gateway] connecting to ${url} (hasSession=${!!this.sessionId}, lastSeq=${this.lastSeq})`)
 
     try {
       this.ws = new WebSocket(url)
     } catch (err) {
       console.error('[Gateway] failed to create WebSocket:', err)
-      this.setStatus('disconnected')
+      this.handleConnectionFailure()
       return
     }
 
@@ -133,22 +207,46 @@ export class GatewayClient {
     this.ws.onclose = (event) => {
       console.log(`[Gateway] socket closed (code=${event.code}, reason=${event.reason})`)
       this.cleanupHeartbeat()
-      this.setStatus('disconnected')
 
-      // Auto-reconnect if not explicit disconnect and not fatal auth error (4004)
-      if (!this.explicitDisconnect && event.code !== 4004 && this.token) {
-        window.setTimeout(() => {
-          if (!this.explicitDisconnect && this.token) {
-            this.connect(this.token)
-          }
-        }, 2000)
+      // Fatal authentication error (4004) -> stop reconnecting
+      if (event.code === 4004) {
+        console.warn('[Gateway] fatal auth failure (4004), clearing session and stopping reconnect')
+        this.sessionId = null
+        this.lastSeq = null
+        this.token = null
+        this.setStatus('disconnected')
+        return
       }
+
+      // If close was explicitly requested by user/logout, don't reconnect
+      if (this.explicitDisconnect) {
+        this.setStatus('disconnected')
+        return
+      }
+
+      // Start exponential backoff reconnect
+      this.scheduleReconnect()
     }
+  }
+
+  /**
+   * Immediately retries connection without waiting for the backoff timer.
+   */
+  public reconnectNow() {
+    if (!this.token) return
+    console.log('[Gateway] manual reconnectNow triggered')
+    this.clearReconnectTimers()
+    this.connect(this.token)
   }
 
   public disconnect() {
     this.explicitDisconnect = true
+    this.clearReconnectTimers()
     this.cleanupHeartbeat()
+    this.sessionId = null
+    this.lastSeq = null
+    this.reconnectAttempt = 0
+
     if (this.ws) {
       this.ws.onopen = null
       this.ws.onmessage = null
@@ -164,6 +262,51 @@ export class GatewayClient {
     this.setStatus('disconnected')
   }
 
+  private scheduleReconnect() {
+    this.clearReconnectTimers()
+
+    const delay = calculateBackoff(this.reconnectAttempt)
+    this.reconnectAttempt++
+    this.targetReconnectTime = Date.now() + delay
+
+    console.log(`[Gateway] scheduling reconnect attempt #${this.reconnectAttempt} in ${delay}ms`)
+    this.setStatus('reconnecting')
+
+    // Periodic countdown tick (every 200ms) for UI countdown
+    this.countdownIntervalId = setInterval(() => {
+      this.notifyReconnectListeners()
+    }, 200)
+
+    this.reconnectTimeoutId = setTimeout(() => {
+      this.clearReconnectTimers()
+      if (!this.explicitDisconnect && this.token) {
+        this.connect(this.token)
+      }
+    }, delay)
+  }
+
+  private clearReconnectTimers() {
+    if (this.reconnectTimeoutId !== null) {
+      clearTimeout(this.reconnectTimeoutId)
+      this.reconnectTimeoutId = null
+    }
+    if (this.countdownIntervalId !== null) {
+      clearInterval(this.countdownIntervalId)
+      this.countdownIntervalId = null
+    }
+    this.targetReconnectTime = null
+    this.notifyReconnectListeners()
+  }
+
+  private handleConnectionFailure() {
+    this.cleanupHeartbeat()
+    if (!this.explicitDisconnect && this.token) {
+      this.scheduleReconnect()
+    } else {
+      this.setStatus('disconnected')
+    }
+  }
+
   private handleMessage(raw: any) {
     let packet: any
     try {
@@ -175,7 +318,7 @@ export class GatewayClient {
 
     const { op, d, s, t } = packet
 
-    // Track sequence number if present on dispatch
+    // Track sequence number if present on dispatch frame
     if (typeof s === 'number') {
       this.lastSeq = s
     }
@@ -198,11 +341,7 @@ export class GatewayClient {
         break
 
       case 9: // INVALID_SESSION
-        console.warn('[Gateway] received INVALID_SESSION (op 9)')
-        this.sessionId = null
-        this.lastSeq = null
-        // Re-identify
-        this.sendIdentify()
+        this.handleInvalidSession()
         break
 
       default:
@@ -218,8 +357,30 @@ export class GatewayClient {
     // Start periodic heartbeat
     this.startHeartbeat()
 
-    // Send IDENTIFY (op 2)
-    this.sendIdentify()
+    // If we have an active session and lastSeq, attempt RESUME (op 6)
+    if (this.sessionId && this.lastSeq !== null) {
+      this.sendResume()
+    } else {
+      // Otherwise perform fresh IDENTIFY (op 2)
+      this.sendIdentify()
+    }
+  }
+
+  private sendResume() {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.token || !this.sessionId) return
+
+    console.log(`[Gateway] sending RESUME (op 6): session_id=${this.sessionId}, seq=${this.lastSeq}`)
+    this.setStatus('resuming')
+
+    const resumePayload = {
+      op: 6,
+      d: {
+        token: this.token,
+        session_id: this.sessionId,
+        seq: this.lastSeq,
+      },
+    }
+    this.ws.send(JSON.stringify(resumePayload))
   }
 
   private sendIdentify() {
@@ -233,12 +394,25 @@ export class GatewayClient {
         properties: {
           os: 'browser',
           browser: 'kith-web',
-          device: 'kith-web'
-        }
-      }
+          device: 'kith-web',
+        },
+      },
     }
     this.ws.send(JSON.stringify(identifyPayload))
     this.setStatus('connected')
+  }
+
+  private handleInvalidSession() {
+    console.warn('[Gateway] received INVALID_SESSION (op 9) — session cannot be resumed')
+    // Clear dead session
+    this.sessionId = null
+    this.lastSeq = null
+
+    // Notify listeners so UI can trigger full state refetch
+    this.emit('SESSION_RESET')
+
+    // Perform fresh IDENTIFY
+    this.sendIdentify()
   }
 
   private startHeartbeat() {
@@ -247,9 +421,9 @@ export class GatewayClient {
 
     // Jitter first heartbeat slightly per Discord gateway spec
     const initialDelay = Math.floor(Math.random() * (this.heartbeatIntervalMs * 0.5))
-    this.heartbeatTimer = window.setTimeout(() => {
+    this.heartbeatTimer = setTimeout(() => {
       this.sendHeartbeat()
-      this.heartbeatTimer = window.setInterval(() => {
+      this.heartbeatTimer = setInterval(() => {
         this.sendHeartbeat()
       }, this.heartbeatIntervalMs!)
     }, initialDelay)
@@ -279,7 +453,12 @@ export class GatewayClient {
   private handleDispatch(type: string, data: any) {
     if (type === 'READY') {
       this.sessionId = data.session_id
+      this.reconnectAttempt = 0
       console.log(`[Gateway] READY received! session_id=${this.sessionId}, user=${data.user?.username}`)
+      this.setStatus('ready')
+    } else if (this.status === 'resuming') {
+      // Replayed dispatch on successful resume
+      this.reconnectAttempt = 0
       this.setStatus('ready')
     }
 
@@ -289,3 +468,8 @@ export class GatewayClient {
 
 // Global singleton instance for the browser session
 export const gatewayClient = new GatewayClient()
+
+// Development testing helpers on window
+if (typeof window !== 'undefined' && (import.meta as any).env?.DEV) {
+  ;(window as any).gatewayClient = gatewayClient
+}

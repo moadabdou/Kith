@@ -242,7 +242,7 @@ defmodule Gateway.WS.HandlerTest do
       Handler.terminate(:normal, checked_state)
     end
 
-    test "zombie timeout cleans up session and leaves no orphan subscribers in guild actor" do
+    test "zombie timeout closes with 4009 and leaves session resumable until TTL expiration" do
       {:push, _, state} = Handler.init(heartbeat_interval: 50)
       user_id = 87000000000000001
       token = Gateway.Auth.JWT.issue(user_id, state.jwt_secret, 3600)
@@ -267,7 +267,11 @@ defmodule Gateway.WS.HandlerTest do
 
       Handler.terminate(:normal, closing_state)
 
-      # Verify full cleanup: session actor stopped, no orphan subscriber in guild actor
+      # Session actor is STILL ALIVE for RESUME within disconnect TTL
+      assert Gateway.Session.whereis(session_id) != nil
+
+      # When session is explicitly closed or TTL expires, full cleanup occurs
+      Gateway.Session.close(session_id)
       :timer.sleep(30)
       assert Gateway.Session.whereis(session_id) == nil
       assert Gateway.Guild.Actor.subscriber_count(guild_id) == subs_before - 1

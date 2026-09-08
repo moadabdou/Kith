@@ -147,9 +147,10 @@ defmodule Gateway.WS.Handler do
     Gateway.Metrics.decr_connection()
 
     # If unrecoverable close code, close session actor immediately.
-    # Normal disconnects leave session alive for the 60s disconnect TTL to allow RESUME.
+    # 4009 (Session timed out on missed heartbeats) and normal disconnects leave session alive
+    # for the 60s disconnect TTL to allow RESUME.
     if state.session_id do
-      if state.close_code in [4004, 4008, 4009] do
+      if state.close_code in [4004, 4008] do
         Gateway.Session.close(state.session_id)
       end
     end

@@ -25,6 +25,7 @@ var (
 	ErrUnknownChannel     = errors.New("guilds: unknown channel")
 	ErrUnknownInvite      = errors.New("guilds: unknown invite")
 	ErrUnknownMember      = errors.New("guilds: unknown member")
+	ErrUnknownRole        = errors.New("guilds: unknown role")
 	ErrUnknownUser        = errors.New("guilds: unknown user")
 	ErrMissingAccess      = errors.New("guilds: missing access")
 	ErrMissingPermissions = errors.New("guilds: missing permissions")
@@ -90,6 +91,18 @@ type Invite struct {
 	Uses      int32      `json:"uses"`
 	MaxUses   int32      `json:"max_uses"`
 	ExpiresAt *time.Time `json:"expires_at"`
+}
+
+type Role struct {
+	ID          string    `json:"id"`
+	GuildID     string    `json:"guild_id"`
+	Name        string    `json:"name"`
+	Color       int32     `json:"color"`
+	Hoist       bool      `json:"hoist"`
+	Position    int32     `json:"position"`
+	Permissions string    `json:"permissions"`
+	Mentionable bool      `json:"mentionable"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // ── permission seams (Phase 4: pkg/permissions.Resolve) ───────────────────
@@ -608,3 +621,139 @@ func randomInviteCode() (string, error) {
 	}
 	return string(out), nil
 }
+
+// ── roles ─────────────────────────────────────────────────────────────────
+
+func (s *Service) ListRoles(ctx context.Context, userID, guildID int64) ([]Role, error) {
+	if err := s.requireMember(ctx, guildID, userID); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id::text, guild_id::text, name, color, hoist, position, permissions::text, mentionable, created_at
+		FROM roles
+		WHERE guild_id = $1
+		ORDER BY position DESC, id ASC`, guildID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	roles := []Role{}
+	for rows.Next() {
+		var r Role
+		if err := rows.Scan(&r.ID, &r.GuildID, &r.Name, &r.Color, &r.Hoist, &r.Position, &r.Permissions, &r.Mentionable, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		roles = append(roles, r)
+	}
+	return roles, rows.Err()
+}
+
+func (s *Service) CreateRole(ctx context.Context, userID, guildID int64, name string, color *int32, hoist *bool, position *int32, permissions *int64, mentionable *bool) (*Role, error) {
+	if err := s.requireOwner(ctx, guildID, userID); err != nil {
+		return nil, err
+	}
+	id, err := s.sf.Generate()
+	if err != nil {
+		return nil, err
+	}
+	var c int32
+	if color != nil {
+		c = *color
+	}
+	var h bool
+	if hoist != nil {
+		h = *hoist
+	}
+	var pos int32
+	if position != nil {
+		pos = *position
+	}
+	var perms int64
+	if permissions != nil {
+		perms = *permissions
+	}
+	var men bool
+	if mentionable != nil {
+		men = *mentionable
+	}
+
+	var r Role
+	err = s.db.QueryRowContext(ctx, `
+		INSERT INTO roles (id, guild_id, name, color, hoist, position, permissions, mentionable)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING id::text, guild_id::text, name, color, hoist, position, permissions::text, mentionable, created_at`,
+		id, guildID, name, c, h, pos, perms, men).Scan(
+		&r.ID, &r.GuildID, &r.Name, &r.Color, &r.Hoist, &r.Position, &r.Permissions, &r.Mentionable, &r.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+func (s *Service) UpdateRole(ctx context.Context, userID, guildID, roleID int64, name *string, color *int32, hoist *bool, position *int32, permissions *int64, mentionable *bool) (*Role, error) {
+	if err := s.requireOwner(ctx, guildID, userID); err != nil {
+		return nil, err
+	}
+	var nameNull sql.NullString
+	if name != nil {
+		nameNull = sql.NullString{String: *name, Valid: true}
+	}
+	var colorNull sql.NullInt32
+	if color != nil {
+		colorNull = sql.NullInt32{Int32: *color, Valid: true}
+	}
+	var hoistNull sql.NullBool
+	if hoist != nil {
+		hoistNull = sql.NullBool{Bool: *hoist, Valid: true}
+	}
+	var posNull sql.NullInt32
+	if position != nil {
+		posNull = sql.NullInt32{Int32: *position, Valid: true}
+	}
+	var permsNull sql.NullInt64
+	if permissions != nil {
+		permsNull = sql.NullInt64{Int64: *permissions, Valid: true}
+	}
+	var menNull sql.NullBool
+	if mentionable != nil {
+		menNull = sql.NullBool{Bool: *mentionable, Valid: true}
+	}
+
+	var r Role
+	err := s.db.QueryRowContext(ctx, `
+		UPDATE roles
+		SET name = COALESCE($3::text, name),
+		    color = COALESCE($4::integer, color),
+		    hoist = COALESCE($5::boolean, hoist),
+		    position = COALESCE($6::integer, position),
+		    permissions = COALESCE($7::bigint, permissions),
+		    mentionable = COALESCE($8::boolean, mentionable)
+		WHERE id = $1 AND guild_id = $2
+		RETURNING id::text, guild_id::text, name, color, hoist, position, permissions::text, mentionable, created_at`,
+		roleID, guildID, nameNull, colorNull, hoistNull, posNull, permsNull, menNull).Scan(
+		&r.ID, &r.GuildID, &r.Name, &r.Color, &r.Hoist, &r.Position, &r.Permissions, &r.Mentionable, &r.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrUnknownRole
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+func (s *Service) DeleteRole(ctx context.Context, userID, guildID, roleID int64) error {
+	if err := s.requireOwner(ctx, guildID, userID); err != nil {
+		return err
+	}
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM roles WHERE id = $1 AND guild_id = $2`, roleID, guildID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrUnknownRole
+	}
+	return nil
+}
+

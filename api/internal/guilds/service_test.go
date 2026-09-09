@@ -350,3 +350,94 @@ func TestInviteLifecycle(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+func boolPtr(b bool) *bool     { return &b }
+func int32Ptr(i int32) *int32  { return &i }
+func int64Ptr(i int64) *int64  { return &i }
+
+func TestRoles_Lifecycle(t *testing.T) {
+	svc, db, node, prefix := newTestService(t)
+	ctx := context.Background()
+
+	owner := createTestUser(t, db, node, prefix, "_owner")
+	other := createTestUser(t, db, node, prefix, "_other")
+
+	g, err := svc.CreateGuild(ctx, owner, prefix+"-roles-guild")
+	if err != nil {
+		t.Fatalf("CreateGuild: %v", err)
+	}
+	gid, _ := snowflake.Parse(g.ID)
+
+	// Non-member cannot list roles
+	if _, err := svc.ListRoles(ctx, other, gid); !errors.Is(err, ErrMissingAccess) {
+		t.Errorf("ListRoles(non-member) = %v, want ErrMissingAccess", err)
+	}
+
+	// Non-owner cannot create roles
+	if _, err := svc.CreateRole(ctx, other, gid, "Admin", int32Ptr(100), boolPtr(true), int32Ptr(1), int64Ptr(8), boolPtr(true)); !errors.Is(err, ErrMissingPermissions) {
+		t.Errorf("CreateRole(non-owner) = %v, want ErrMissingPermissions", err)
+	}
+
+	// Owner creates hoisted role
+	adminRole, err := svc.CreateRole(ctx, owner, gid, "Admin", int32Ptr(15158332), boolPtr(true), int32Ptr(2), int64Ptr(8), boolPtr(true))
+	if err != nil {
+		t.Fatalf("CreateRole(Admin): %v", err)
+	}
+	if !adminRole.Hoist {
+		t.Errorf("adminRole.Hoist = false, want true")
+	}
+	if adminRole.Permissions != "8" {
+		t.Errorf("adminRole.Permissions = %q, want \"8\"", adminRole.Permissions)
+	}
+	if adminRole.Color != 15158332 {
+		t.Errorf("adminRole.Color = %d, want 15158332", adminRole.Color)
+	}
+
+	// Owner creates unhoisted role
+	memberRole, err := svc.CreateRole(ctx, owner, gid, "Regular", int32Ptr(0), boolPtr(false), int32Ptr(1), int64Ptr(0), boolPtr(false))
+	if err != nil {
+		t.Fatalf("CreateRole(Regular): %v", err)
+	}
+	if memberRole.Hoist {
+		t.Errorf("memberRole.Hoist = true, want false")
+	}
+
+	// Owner lists roles
+	roles, err := svc.ListRoles(ctx, owner, gid)
+	if err != nil {
+		t.Fatalf("ListRoles: %v", err)
+	}
+	if len(roles) != 2 {
+		t.Fatalf("len(roles) = %d, want 2", len(roles))
+	}
+	if roles[0].Name != "Admin" || !roles[0].Hoist {
+		t.Errorf("first role = %+v, want Admin (hoisted)", roles[0])
+	}
+	if roles[1].Name != "Regular" || roles[1].Hoist {
+		t.Errorf("second role = %+v, want Regular (unhoisted)", roles[1])
+	}
+
+	// Update regular role to hoisted
+	mrid, _ := snowflake.Parse(memberRole.ID)
+	updated, err := svc.UpdateRole(ctx, owner, gid, mrid, strPtr("VIP"), nil, boolPtr(true), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("UpdateRole: %v", err)
+	}
+	if updated.Name != "VIP" || !updated.Hoist {
+		t.Errorf("updated role = %+v, want VIP (hoist=true)", updated)
+	}
+
+	// Delete role
+	arid, _ := snowflake.Parse(adminRole.ID)
+	if err := svc.DeleteRole(ctx, owner, gid, arid); err != nil {
+		t.Fatalf("DeleteRole: %v", err)
+	}
+
+	// Unknown role on update / delete
+	if _, err := svc.UpdateRole(ctx, owner, gid, arid, strPtr("Ghost"), nil, nil, nil, nil, nil); !errors.Is(err, ErrUnknownRole) {
+		t.Errorf("UpdateRole(deleted) = %v, want ErrUnknownRole", err)
+	}
+	if err := svc.DeleteRole(ctx, owner, gid, arid); !errors.Is(err, ErrUnknownRole) {
+		t.Errorf("DeleteRole(deleted) = %v, want ErrUnknownRole", err)
+	}
+}
+

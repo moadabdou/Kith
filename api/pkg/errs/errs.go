@@ -28,6 +28,7 @@ const (
 	CodeUnknownInvite   = 10006
 	CodeUnknownMember   = 10007
 	CodeUnknownMessage  = 10008
+	CodeUnknownRole     = 10011
 	CodeUnknownUser     = 10013
 	CodeCannotEditOther = 50005 // Cannot edit a message authored by another user
 	CodeMissingAccess   = 50001
@@ -106,6 +107,9 @@ func UnknownMember() *Error {
 }
 func UnknownMessage() *Error {
 	return &Error{Status: http.StatusNotFound, Code: CodeUnknownMessage, Message: "Unknown Message"}
+}
+func UnknownRole() *Error {
+	return &Error{Status: http.StatusNotFound, Code: CodeUnknownRole, Message: "Unknown Role"}
 }
 func UnknownUser() *Error {
 	return &Error{Status: http.StatusNotFound, Code: CodeUnknownUser, Message: "Unknown User"}

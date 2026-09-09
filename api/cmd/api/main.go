@@ -149,6 +149,12 @@ func main() {
 	mux.Handle("POST /api/invites", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.CreateInvite)))
 	mux.Handle("POST /api/invites/{code}/join", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.JoinInvite)))
 
+	// roles
+	mux.Handle("GET /api/guilds/{id}/roles", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.ListRoles)))
+	mux.Handle("POST /api/guilds/{id}/roles", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.CreateRole)))
+	mux.Handle("PATCH /api/guilds/{id}/roles/{rid}", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.UpdateRole)))
+	mux.Handle("DELETE /api/guilds/{id}/roles/{rid}", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.DeleteRole)))
+
 	// messages — the hot path.
 	// POST /messages rate limit: 5/5s per (user, channel), Discord's model
 	// (plan/02 §5). In-memory now; Redis swap stays behind the same

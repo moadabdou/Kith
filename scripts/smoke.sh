@@ -14,7 +14,7 @@ NC='\033[0m' # No Color
 API_BASE="${API_BASE:-http://localhost:80/api}"
 
 step=0
-total_steps=6
+total_steps=7
 
 log_step() {
   step=$((step + 1))
@@ -174,13 +174,87 @@ if [ "${FOUND_MSG}" != "${MSG_TEXT}" ]; then
 fi
 log_pass "Verified message content matches exactly"
 
+# ── 7. Roles & Hoist Verification (Phase 2 #29) ──────────────
+log_step "Verifying roles and hoist flags..."
+ADMIN_ROLE_RESP="$(curl -sS -w "\n%{http_code}" -X POST "${API_BASE}/guilds/${GUILD_ID}/roles" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -d '{"name": "Admin", "color": 15158332, "hoist": true, "position": 2, "permissions": "8", "mentionable": true}')"
+
+ADMIN_STATUS="$(echo "${ADMIN_ROLE_RESP}" | tail -n1)"
+ADMIN_BODY="$(echo "${ADMIN_ROLE_RESP}" | sed '$d')"
+if [ "${ADMIN_STATUS}" -ne 201 ]; then
+  log_fail "Admin role creation failed (HTTP ${ADMIN_STATUS}): ${ADMIN_BODY}"
+fi
+
+ADMIN_HOIST="$(echo "${ADMIN_BODY}" | jq -r '.hoist')"
+ADMIN_ROLE_ID="$(echo "${ADMIN_BODY}" | jq -r '.id')"
+if [ "${ADMIN_HOIST}" != "true" ]; then
+  log_fail "Admin role expected hoist=true, got: ${ADMIN_HOIST}"
+fi
+log_pass "Created hoisted role Admin (ID: ${ADMIN_ROLE_ID}, hoist=true)"
+
+MEMBER_ROLE_RESP="$(curl -sS -w "\n%{http_code}" -X POST "${API_BASE}/guilds/${GUILD_ID}/roles" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -d '{"name": "Member", "hoist": false, "position": 1}')"
+
+MEMBER_STATUS="$(echo "${MEMBER_ROLE_RESP}" | tail -n1)"
+MEMBER_BODY="$(echo "${MEMBER_ROLE_RESP}" | sed '$d')"
+if [ "${MEMBER_STATUS}" -ne 201 ]; then
+  log_fail "Member role creation failed (HTTP ${MEMBER_STATUS}): ${MEMBER_BODY}"
+fi
+
+MEMBER_HOIST="$(echo "${MEMBER_BODY}" | jq -r '.hoist')"
+MEMBER_ROLE_ID="$(echo "${MEMBER_BODY}" | jq -r '.id')"
+if [ "${MEMBER_HOIST}" != "false" ]; then
+  log_fail "Member role expected hoist=false, got: ${MEMBER_HOIST}"
+fi
+log_pass "Created unhoisted role Member (ID: ${MEMBER_ROLE_ID}, hoist=false)"
+
+# Query roles list
+ROLES_RESP="$(curl -sS -w "\n%{http_code}" -X GET "${API_BASE}/guilds/${GUILD_ID}/roles" \
+  -H "Authorization: Bearer ${TOKEN}")"
+
+ROLES_STATUS="$(echo "${ROLES_RESP}" | tail -n1)"
+ROLES_BODY="$(echo "${ROLES_RESP}" | sed '$d')"
+if [ "${ROLES_STATUS}" -ne 200 ]; then
+  log_fail "Listing roles failed (HTTP ${ROLES_STATUS}): ${ROLES_BODY}"
+fi
+
+FOUND_ADMIN_HOIST="$(echo "${ROLES_BODY}" | jq -r --arg id "${ADMIN_ROLE_ID}" '.[] | select(.id == $id) | .hoist')"
+FOUND_MEMBER_HOIST="$(echo "${ROLES_BODY}" | jq -r --arg id "${MEMBER_ROLE_ID}" '.[] | select(.id == $id) | .hoist')"
+if [ "${FOUND_ADMIN_HOIST}" != "true" ] || [ "${FOUND_MEMBER_HOIST}" != "false" ]; then
+  log_fail "Roles query hoist values mismatch: Admin hoist=${FOUND_ADMIN_HOIST} (want true), Member hoist=${FOUND_MEMBER_HOIST} (want false)"
+fi
+log_pass "Verified roles query returns hoist: true/false in JSON response"
+
+# Patch role to hoist=true
+PATCH_RESP="$(curl -sS -w "\n%{http_code}" -X PATCH "${API_BASE}/guilds/${GUILD_ID}/roles/${MEMBER_ROLE_ID}" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -d '{"name": "Moderator", "hoist": true}')"
+
+PATCH_STATUS="$(echo "${PATCH_RESP}" | tail -n1)"
+PATCH_BODY="$(echo "${PATCH_RESP}" | sed '$d')"
+if [ "${PATCH_STATUS}" -ne 200 ]; then
+  log_fail "Patching role failed (HTTP ${PATCH_STATUS}): ${PATCH_BODY}"
+fi
+
+PATCHED_HOIST="$(echo "${PATCH_BODY}" | jq -r '.hoist')"
+if [ "${PATCHED_HOIST}" != "true" ]; then
+  log_fail "Patched role expected hoist=true, got: ${PATCHED_HOIST}"
+fi
+log_pass "Patched Member role to Moderator with hoist=true"
+
 # ── Summary ──────────────────────────────────────────────────
 echo ""
 printf "${GREEN}${BOLD}══════════════════════════════════════════════════════════════${NC}\n"
-printf "${GREEN}${BOLD} ✔ Phase 0 Gate Smoke Test PASSED end-to-end!                 ${NC}\n"
+printf "${GREEN}${BOLD} ✔ Phase 0 + Phase 2 Smoke Test PASSED end-to-end!             ${NC}\n"
 printf "   User:     %-30s (ID: %s)\n" "${TEST_USER}" "${USER_ID}"
 printf "   Guild:    %-30s (ID: %s)\n" "${GUILD_NAME}" "${GUILD_ID}"
 printf "   Channel:  %-30s (ID: %s)\n" "#${CHANNEL_NAME}" "${CHANNEL_ID}"
 printf "   Message:  %-30s (ID: %s)\n" "${MSG_TEXT:0:30}..." "${MSG_ID}"
+printf "   Roles:    Admin (hoist=true), Moderator (hoist=true)\n"
 printf "${GREEN}${BOLD}══════════════════════════════════════════════════════════════${NC}\n"
 echo ""

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,6 +36,8 @@ func (h *Handler) writeErr(w http.ResponseWriter, err error) {
 		errs.Write(w, errs.UnknownInvite())
 	case errors.Is(err, ErrUnknownMember):
 		errs.Write(w, errs.UnknownMember())
+	case errors.Is(err, ErrUnknownRole):
+		errs.Write(w, errs.UnknownRole())
 	case errors.Is(err, ErrUnknownUser):
 		errs.Write(w, errs.UnknownUser())
 	case errors.Is(err, ErrMissingAccess):
@@ -70,11 +73,14 @@ func (h *Handler) CreateGuild(w http.ResponseWriter, r *http.Request) {
 		errs.Write(w, errs.InvalidJSON())
 		return
 	}
-	if name := strings.TrimSpace(req.Name); len(name) < 2 || len(name) > 100 {
-		errs.Write(w, errs.FormBody("Invalid Form Body: name must be 2-100 chars"))
+	name := strings.TrimSpace(req.Name)
+	v := errs.NewValidator()
+	v.Check("name", len(name) >= 2 && len(name) <= 100, errs.CodeBadLength, "Must be between 2 and 100 in length.")
+	if v.Err() != nil {
+		errs.Write(w, v.Err())
 		return
 	}
-	g, err := h.Svc.CreateGuild(r.Context(), mustUser(r), strings.TrimSpace(req.Name))
+	g, err := h.Svc.CreateGuild(r.Context(), mustUser(r), name)
 	if err != nil {
 		h.writeErr(w, err)
 		return
@@ -121,8 +127,10 @@ func (h *Handler) UpdateGuild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := strings.TrimSpace(*req.Name)
-	if len(name) < 2 || len(name) > 100 {
-		errs.Write(w, errs.FormBody("Invalid Form Body: name must be 2-100 chars"))
+	v := errs.NewValidator()
+	v.Check("name", len(name) >= 2 && len(name) <= 100, errs.CodeBadLength, "Must be between 2 and 100 in length.")
+	if v.Err() != nil {
+		errs.Write(w, v.Err())
 		return
 	}
 	g, err := h.Svc.UpdateGuild(r.Context(), mustUser(r), id, name)
@@ -177,15 +185,12 @@ func (h *Handler) CreateChannel(w http.ResponseWriter, r *http.Request) {
 		errs.Write(w, errs.InvalidJSON())
 		return
 	}
-	if req.Type != 0 && req.Type != 2 {
-		errs.Write(w, errs.FormBody("Invalid Form Body: type must be 0 (text) or 2 (voice)"))
-		return
-	}
+	v := errs.NewValidator()
+	v.Check("type", req.Type == 0 || req.Type == 2, errs.CodeInvalidType, "type must be 0 (text) or 2 (voice)")
 	name := strings.TrimSpace(req.Name)
-	if name == "" || len(name) > 100 {
-		errs.Write(w, errs.FormBody("Invalid Form Body: name must be 1-100 chars"))
-		return
-	}
+	v.Check("name", name != "", errs.CodeRequired, "This field is required")
+	v.Check("name", len(name) >= 1 && len(name) <= 100, errs.CodeBadLength, "Must be between 1 and 100 in length.")
+
 	var position int32
 	if req.Position != nil {
 		position = int32(*req.Position)
@@ -194,10 +199,14 @@ func (h *Handler) CreateChannel(w http.ResponseWriter, r *http.Request) {
 	if req.ParentID != nil {
 		pid, err := snowflake.Parse(*req.ParentID)
 		if err != nil || pid == 0 {
-			errs.Write(w, errs.FormBody("Invalid Form Body: bad parent_id"))
-			return
+			v.Check("parent_id", false, errs.CodeInvalidType, "Invalid snowflake ID")
+		} else {
+			parentID = &pid
 		}
-		parentID = &pid
+	}
+	if v.Err() != nil {
+		errs.Write(w, v.Err())
+		return
 	}
 	c, err := h.Svc.CreateChannel(r.Context(), mustUser(r), id, int16(req.Type), name, position, parentID)
 	if err != nil {
@@ -228,13 +237,11 @@ func (h *Handler) UpdateChannel(w http.ResponseWriter, r *http.Request) {
 		errs.Write(w, errs.InvalidJSON())
 		return
 	}
+	v := errs.NewValidator()
 	var name *string
 	if req.Name != nil {
 		n := strings.TrimSpace(*req.Name)
-		if n == "" || len(n) > 100 {
-			errs.Write(w, errs.FormBody("Invalid Form Body: name must be 1-100 chars"))
-			return
-		}
+		v.Check("name", len(n) >= 1 && len(n) <= 100, errs.CodeBadLength, "Must be between 1 and 100 in length.")
 		name = &n
 	}
 	var position *int32
@@ -246,10 +253,14 @@ func (h *Handler) UpdateChannel(w http.ResponseWriter, r *http.Request) {
 	if req.ParentID != nil {
 		pid, err := snowflake.Parse(*req.ParentID)
 		if err != nil || pid == 0 {
-			errs.Write(w, errs.FormBody("Invalid Form Body: bad parent_id"))
-			return
+			v.Check("parent_id", false, errs.CodeInvalidType, "Invalid snowflake ID")
+		} else {
+			parentID = &pid
 		}
-		parentID = &pid
+	}
+	if v.Err() != nil {
+		errs.Write(w, v.Err())
+		return
 	}
 	c, err := h.Svc.UpdateChannel(r.Context(), mustUser(r), id, cid, name, position, parentID)
 	if err != nil {
@@ -394,3 +405,154 @@ func (h *Handler) JoinInvite(w http.ResponseWriter, r *http.Request) {
 func durationFromSeconds(sec int) time.Duration {
 	return time.Duration(sec) * time.Second
 }
+
+// ── roles ─────────────────────────────────────────────────────────────────
+
+// ListRoles handles GET /api/guilds/{id}/roles.
+func (h *Handler) ListRoles(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r, "id")
+	if !ok {
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad guild id"))
+		return
+	}
+	roles, err := h.Svc.ListRoles(r.Context(), mustUser(r), id)
+	if err != nil {
+		h.writeErr(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, roles)
+}
+
+// CreateRole handles POST /api/guilds/{id}/roles.
+func (h *Handler) CreateRole(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r, "id")
+	if !ok {
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad guild id"))
+		return
+	}
+	var req struct {
+		Name        *string `json:"name"`
+		Color       *int32  `json:"color"`
+		Hoist       *bool   `json:"hoist"`
+		Position    *int32  `json:"position"`
+		Permissions any     `json:"permissions"`
+		Mentionable *bool   `json:"mentionable"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err.Error() != "EOF" {
+		errs.Write(w, errs.InvalidJSON())
+		return
+	}
+	name := "new role"
+	v := errs.NewValidator()
+	if req.Name != nil {
+		name = strings.TrimSpace(*req.Name)
+		v.Check("name", len(name) >= 1 && len(name) <= 100, errs.CodeBadLength,
+			"Must be between 1 and 100 in length.")
+	}
+	perms, err := parsePermissions(req.Permissions)
+	if err != nil {
+		v.Check("permissions", false, errs.CodeInvalidType, "Invalid permissions bitfield")
+	}
+	if v.Err() != nil {
+		errs.Write(w, v.Err())
+		return
+	}
+	role, err := h.Svc.CreateRole(r.Context(), mustUser(r), id, name, req.Color, req.Hoist, req.Position, perms, req.Mentionable)
+	if err != nil {
+		h.writeErr(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusCreated, role)
+}
+
+// UpdateRole handles PATCH /api/guilds/{id}/roles/{rid}.
+func (h *Handler) UpdateRole(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r, "id")
+	if !ok {
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad guild id"))
+		return
+	}
+	rid, ok := pathID(r, "rid")
+	if !ok {
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad role id"))
+		return
+	}
+	var req struct {
+		Name        *string `json:"name"`
+		Color       *int32  `json:"color"`
+		Hoist       *bool   `json:"hoist"`
+		Position    *int32  `json:"position"`
+		Permissions any     `json:"permissions"`
+		Mentionable *bool   `json:"mentionable"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errs.Write(w, errs.InvalidJSON())
+		return
+	}
+	v := errs.NewValidator()
+	if req.Name != nil {
+		trimmed := strings.TrimSpace(*req.Name)
+		v.Check("name", len(trimmed) >= 1 && len(trimmed) <= 100, errs.CodeBadLength,
+			"Must be between 1 and 100 in length.")
+		req.Name = &trimmed
+	}
+	perms, err := parsePermissions(req.Permissions)
+	if err != nil {
+		v.Check("permissions", false, errs.CodeInvalidType, "Invalid permissions bitfield")
+	}
+	if v.Err() != nil {
+		errs.Write(w, v.Err())
+		return
+	}
+	role, err := h.Svc.UpdateRole(r.Context(), mustUser(r), id, rid, req.Name, req.Color, req.Hoist, req.Position, perms, req.Mentionable)
+	if err != nil {
+		h.writeErr(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, role)
+}
+
+// DeleteRole handles DELETE /api/guilds/{id}/roles/{rid}.
+func (h *Handler) DeleteRole(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r, "id")
+	if !ok {
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad guild id"))
+		return
+	}
+	rid, ok := pathID(r, "rid")
+	if !ok {
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad role id"))
+		return
+	}
+	if err := h.Svc.DeleteRole(r.Context(), mustUser(r), id, rid); err != nil {
+		h.writeErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func parsePermissions(val any) (*int64, error) {
+	if val == nil {
+		return nil, nil
+	}
+	switch v := val.(type) {
+	case float64:
+		i := int64(v)
+		return &i, nil
+	case string:
+		i, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		return &i, nil
+	case json.Number:
+		i, err := v.Int64()
+		if err != nil {
+			return nil, err
+		}
+		return &i, nil
+	default:
+		return nil, errors.New("invalid permissions")
+	}
+}
+

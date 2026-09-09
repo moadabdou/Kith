@@ -297,4 +297,85 @@ defmodule Gateway.Presence.StoreTest do
       assert p.status == :online
     end
   end
+
+  describe "Issue #33: manual status updates & invisible status" do
+    test "update_status updates declared status, activities, and afk" do
+      user_id = "user_status_1"
+      session_id = "sess_status_1"
+      activities = [%{"name" => "Coding", "type" => 0}]
+
+      Store.session_connected(user_id, session_id, self(), :online)
+      assert :ok = Store.update_status(user_id, session_id, "dnd", activities, true)
+
+      assert {:ok, p} = Store.get_presence(user_id)
+      assert p.status == :dnd
+      assert p.activities == activities
+      assert p.sessions[session_id].status == :dnd
+      assert p.sessions[session_id].declared_status == :dnd
+      assert p.sessions[session_id].activities == activities
+      assert p.sessions[session_id].afk == true
+    end
+
+    test "update_status with invisible maps to :offline in ETS while retaining session" do
+      user_id = "user_invis_1"
+      session_id = "sess_invis_1"
+
+      Store.session_connected(user_id, session_id, self(), :online)
+      assert :ok = Store.update_status(user_id, session_id, "invisible")
+
+      assert {:ok, p} = Store.get_presence(user_id)
+      assert p.status == :offline
+      assert p.sessions[session_id].status == :offline
+      assert p.sessions[session_id].declared_status == :invisible
+      assert Map.has_key?(p.sessions, session_id)
+
+      # User is excluded from list_online
+      online_uids = Enum.map(Store.list_online(), & &1.user_id)
+      refute user_id in online_uids
+    end
+
+    test "multi-session: invisible session does not hide concurrent online session" do
+      user_id = "user_invis_multi"
+      s1 = "sess_invis"
+      s2 = "sess_online"
+
+      Store.session_connected(user_id, s1, self(), :online)
+      Store.session_connected(user_id, s2, self(), :online)
+
+      # Mark s1 invisible
+      Store.update_status(user_id, s1, "invisible")
+
+      {:ok, p} = Store.get_presence(user_id)
+      assert p.sessions[s1].status == :offline
+      assert p.sessions[s2].status == :online
+      assert p.status == :online
+
+      # Drop online session -> aggregate becomes offline, but s1 remains tracked
+      Store.drop_session(user_id, s2)
+      {:ok, p2} = Store.get_presence(user_id)
+      assert p2.status == :offline
+      assert Map.has_key?(p2.sessions, s1)
+    end
+
+    test "manual idle declaration is not reverted to online by heartbeat touch" do
+      user_id = "user_manual_idle"
+      session_id = "sess_man_idle"
+
+      Store.session_connected(user_id, session_id, self(), :online)
+      Store.update_status(user_id, session_id, "idle")
+
+      {:ok, p_idle} = Store.get_presence(user_id)
+      assert p_idle.status == :idle
+      assert p_idle.sessions[session_id].declared_status == :idle
+
+      # Simulate fresh heartbeat touch
+      now = System.system_time(:millisecond)
+      Store.touch_activity(user_id, session_id, now)
+
+      # Must remain :idle because declared_status is :idle
+      {:ok, p_still_idle} = Store.get_presence(user_id)
+      assert p_still_idle.status == :idle
+      assert p_still_idle.sessions[session_id].status == :idle
+    end
+  end
 end

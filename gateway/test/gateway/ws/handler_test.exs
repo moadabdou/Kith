@@ -4,6 +4,18 @@ defmodule Gateway.WS.HandlerTest do
   alias Gateway.WS.Handler
   alias Gateway.Metrics
 
+  setup do
+    for {_, pid, _, _} <- DynamicSupervisor.which_children(Gateway.ConnSupervisor) do
+      DynamicSupervisor.terminate_child(Gateway.ConnSupervisor, pid)
+    end
+
+    if :ets.whereis(:gateway_presence_store) != :undefined do
+      :ets.delete_all_objects(:gateway_presence_store)
+    end
+
+    :ok
+  end
+
   describe "WebSock callback protocol unit tests" do
     test "init sends HELLO (op 10) with heartbeat_interval and arms 60s identify timer" do
       {:push, [{:text, hello_json}], state} = Handler.init(heartbeat_interval: 10_000)
@@ -275,8 +287,7 @@ defmodule Gateway.WS.HandlerTest do
       assert presence.status == :online
 
       # When session is explicitly closed or TTL expires, full cleanup occurs
-      Gateway.Session.close(session_id)
-      :timer.sleep(30)
+      close_session(session_id)
       assert Gateway.Session.whereis(session_id) == nil
       assert Gateway.Guild.Actor.subscriber_count(guild_id) == subs_before - 1
 
@@ -315,6 +326,122 @@ defmodule Gateway.WS.HandlerTest do
 
       Handler.terminate(:normal, identified_state)
       Gateway.Session.close(session_id)
+    end
+
+    test "STATUS_UPDATE (op 3) updates presence status and activities when identified" do
+      {:push, _, state} = Handler.init(heartbeat_interval: 10_000)
+      user_id = 87000000000000001
+      token = Gateway.Auth.JWT.issue(user_id, state.jwt_secret, 3600)
+      id_payload = Jason.encode!(%{"op" => 2, "d" => %{"token" => token}})
+
+      {:push, _, identified_state} = Handler.handle_in({id_payload, opcode: :text}, state)
+      session_id = identified_state.session_id
+
+      # Send Opcode 3 with dnd and activities
+      activities = [%{"name" => "Playing Elixir", "type" => 0}]
+
+      update_payload =
+        Jason.encode!(%{
+          "op" => 3,
+          "d" => %{
+            "status" => "dnd",
+            "activities" => activities,
+            "afk" => false,
+            "since" => 1_700_000_000_000
+          }
+        })
+
+      assert {:ok, new_state} = Handler.handle_in({update_payload, opcode: :text}, identified_state)
+      assert new_state.identified == true
+      assert new_state.close_code == nil
+      assert new_state.session_id == session_id
+
+      # Verify presence store was updated
+      {:ok, presence} = Gateway.Presence.Store.get_presence(user_id)
+      assert presence.status == :dnd
+      assert presence.activities == activities
+      assert presence.sessions[session_id].status == :dnd
+      assert presence.sessions[session_id].declared_status == :dnd
+      assert presence.sessions[session_id].activities == activities
+
+      Handler.terminate(:normal, identified_state)
+      close_session(session_id)
+    end
+
+    test "STATUS_UPDATE (op 3) with invisible maps to offline in presence store" do
+      {:push, _, state} = Handler.init(heartbeat_interval: 10_000)
+      user_id = 87000000000000001
+      token = Gateway.Auth.JWT.issue(user_id, state.jwt_secret, 3600)
+      id_payload = Jason.encode!(%{"op" => 2, "d" => %{"token" => token}})
+
+      {:push, _, identified_state} = Handler.handle_in({id_payload, opcode: :text}, state)
+      session_id = identified_state.session_id
+
+      # Send Opcode 3 with invisible
+      update_payload =
+        Jason.encode!(%{
+          "op" => 3,
+          "d" => %{
+            "status" => "invisible",
+            "activities" => [],
+            "afk" => false,
+            "since" => nil
+          }
+        })
+
+      assert {:ok, _} = Handler.handle_in({update_payload, opcode: :text}, identified_state)
+
+      {:ok, presence} = Gateway.Presence.Store.get_presence(user_id)
+      assert presence.status == :offline
+      assert presence.sessions[session_id].status == :offline
+      assert presence.sessions[session_id].declared_status == :invisible
+
+      Handler.terminate(:normal, identified_state)
+      close_session(session_id)
+    end
+
+    test "STATUS_UPDATE (op 3) before IDENTIFY is safely ignored" do
+      {:push, _, state} = Handler.init(heartbeat_interval: 10_000)
+      update_payload = Jason.encode!(%{"op" => 3, "d" => %{"status" => "online"}})
+
+      assert {:ok, new_state} = Handler.handle_in({update_payload, opcode: :text}, state)
+      assert new_state.identified == false
+      assert new_state.close_code == nil
+      assert new_state.session_id == nil
+
+      Handler.terminate(:normal, new_state)
+    end
+
+    test "STATUS_UPDATE (op 3) with invalid status or non-map payload is safely ignored without closing connection" do
+      {:push, _, state} = Handler.init(heartbeat_interval: 10_000)
+      user_id = 87000000000000001
+      token = Gateway.Auth.JWT.issue(user_id, state.jwt_secret, 3600)
+      id_payload = Jason.encode!(%{"op" => 2, "d" => %{"token" => token}})
+
+      {:push, _, identified_state} = Handler.handle_in({id_payload, opcode: :text}, state)
+      session_id = identified_state.session_id
+
+      # Invalid status string
+      bad_status_payload = Jason.encode!(%{"op" => 3, "d" => %{"status" => "sleeping"}})
+      assert {:ok, state1} = Handler.handle_in({bad_status_payload, opcode: :text}, identified_state)
+      assert state1.close_code == nil
+
+      # Non-map d payload
+      bad_d_payload = Jason.encode!(%{"op" => 3, "d" => "not_a_map"})
+      assert {:ok, state2} = Handler.handle_in({bad_d_payload, opcode: :text}, state1)
+      assert state2.close_code == nil
+
+      # Missing d entirely
+      missing_d_payload = Jason.encode!(%{"op" => 3})
+      assert {:ok, state3} = Handler.handle_in({missing_d_payload, opcode: :text}, state2)
+      assert state3.close_code == nil
+
+      # Presence remains online
+      {:ok, presence} = Gateway.Presence.Store.get_presence(user_id)
+      assert presence.status == :online
+
+      Handler.terminate(:normal, identified_state)
+      close_session(session_id)
     end
 
     test "RESUME (op 6) with valid token and seq replays missed frames in sequence" do
@@ -571,4 +698,21 @@ defmodule Gateway.WS.HandlerTest do
   end
 
   defp decode_server_frame(_), do: :pending
+
+  defp close_session(session_id) do
+    case Gateway.Session.whereis(session_id) do
+      pid when is_pid(pid) ->
+        ref = Process.monitor(pid)
+        Gateway.Session.close(session_id)
+
+        receive do
+          {:DOWN, ^ref, :process, ^pid, _} -> :ok
+        after
+          500 -> :ok
+        end
+
+      nil ->
+        :ok
+    end
+  end
 end

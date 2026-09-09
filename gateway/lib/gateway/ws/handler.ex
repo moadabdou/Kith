@@ -66,6 +66,9 @@ defmodule Gateway.WS.Handler do
         {:ok, %{"op" => 2, "d" => d}} ->
           handle_identify(d, state)
 
+        {:ok, %{"op" => 3} = msg} ->
+          handle_status_update(Map.get(msg, "d"), state)
+
         {:ok, %{"op" => 6, "d" => d}} ->
           handle_resume(d, state)
 
@@ -205,6 +208,33 @@ defmodule Gateway.WS.Handler do
   defp extract_activity_timestamp(%{"last_activity" => ts}) when is_integer(ts), do: ts
   defp extract_activity_timestamp(%{"since" => ts}) when is_integer(ts), do: ts
   defp extract_activity_timestamp(_other), do: System.system_time(:millisecond)
+
+  defp handle_status_update(d, state) do
+    cond do
+      not state.identified or is_nil(state.user_id) or is_nil(state.session_id) ->
+        Logger.warning("Gateway.WS.Handler: Opcode 3 received before IDENTIFY, ignoring")
+        {:ok, state}
+
+      not is_map(d) ->
+        Logger.warning("Gateway.WS.Handler: Opcode 3 payload is not a map, ignoring")
+        {:ok, state}
+
+      true ->
+        status = d["status"]
+        allowed_statuses = ["online", "idle", "dnd", "invisible", "offline"]
+
+        if is_binary(status) and status in allowed_statuses do
+          activities = Map.get(d, "activities", [])
+          afk = Map.get(d, "afk", false)
+          since = Map.get(d, "since")
+          Gateway.Presence.Store.update_status(state.user_id, state.session_id, status, activities, afk, since)
+        else
+          Logger.warning("Gateway.WS.Handler: Opcode 3 invalid status #{inspect(status)}, ignoring")
+        end
+
+        {:ok, state}
+    end
+  end
 
   defp handle_identify(d, state) do
     if state.identify_timer do

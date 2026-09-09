@@ -69,13 +69,19 @@ defmodule Gateway.Presence.Store do
 
     case :ets.lookup(@table, uid) do
       [{^uid, status, client_status, last_activity_at, sessions_map}] ->
+        agg_activities =
+          sessions_map
+          |> Map.values()
+          |> Enum.flat_map(fn s -> Map.get(s, :activities, []) end)
+
         {:ok,
          %{
            user_id: uid,
            status: status,
            client_status: client_status,
            last_activity_at: last_activity_at,
-           sessions: sessions_map
+           sessions: sessions_map,
+           activities: agg_activities
          }}
 
       [] ->
@@ -130,6 +136,22 @@ defmodule Gateway.Presence.Store do
         sid = to_string(session_id)
         ts = timestamp || System.system_time(:millisecond)
         GenServer.call(__MODULE__, {:touch_activity, uid, sid, ts})
+
+      nil ->
+        {:error, :not_running}
+    end
+  end
+
+  @doc """
+  Explicitly updates a session's declared presence status, activities, and AFK flag (plan/01 §3 & #33).
+  Status `"invisible"` is mapped to `:offline` for public visibility while retaining actual session state.
+  """
+  def update_status(user_id, session_id, status, activities \\ [], afk \\ false, since \\ nil) do
+    case GenServer.whereis(__MODULE__) do
+      pid when is_pid(pid) ->
+        uid = to_string(user_id)
+        sid = to_string(session_id)
+        GenServer.call(__MODULE__, {:update_status, uid, sid, status, activities, afk, since})
 
       nil ->
         {:error, :not_running}
@@ -235,6 +257,9 @@ defmodule Gateway.Presence.Store do
       session_pid: session_pid,
       ws_pid: ws_pid,
       status: norm_status,
+      declared_status: norm_status,
+      activities: [],
+      afk: false,
       client_status: client_status || %{},
       last_activity_at: now
     }
@@ -266,9 +291,11 @@ defmodule Gateway.Presence.Store do
               sessions_map
 
             entry ->
-              # If session was marked :idle and touch is fresh, wake back up to :online
+              # If session was automatically marked :idle and touch is fresh, wake back up to :online.
+              # If user manually declared :idle, do not auto-wake.
               new_status =
-                if entry.status == :idle and (now - ts < state.idle_threshold_ms) do
+                if entry.status == :idle and Map.get(entry, :declared_status, :online) != :idle and
+                     now - ts < state.idle_threshold_ms do
                   :online
                 else
                   entry.status
@@ -290,6 +317,41 @@ defmodule Gateway.Presence.Store do
     threshold = custom_threshold_ms || state.idle_threshold_ms
     swept_count = do_sweep_idle(state.table, threshold)
     {:reply, {:ok, swept_count}, state}
+  end
+
+  @impl true
+  def handle_call({:update_status, uid, sid, status, activities, afk, since}, _from, state) do
+    declared_atom = to_status_atom(status)
+    effective_status = if declared_atom == :invisible, do: :offline, else: declared_atom
+    activity_ts = since || System.system_time(:millisecond)
+
+    case :ets.lookup(@table, uid) do
+      [{^uid, _prev_status, client_status, _prev_ts, sessions_map}] ->
+        updated_sessions =
+          case Map.get(sessions_map, sid) do
+            nil ->
+              sessions_map
+
+            entry ->
+              updated_entry = %{
+                entry
+                | status: effective_status,
+                  declared_status: declared_atom,
+                  activities: if(is_list(activities), do: activities, else: []),
+                  afk: afk == true,
+                  last_activity_at: activity_ts
+              }
+
+              Map.put(sessions_map, sid, updated_entry)
+          end
+
+        agg_status = resolve_status(updated_sessions, :offline)
+        :ets.insert(@table, {uid, agg_status, client_status, activity_ts, updated_sessions})
+        {:reply, :ok, state}
+
+      [] ->
+        {:reply, {:error, :not_found}, state}
+    end
   end
 
   @impl true
@@ -416,6 +478,8 @@ defmodule Gateway.Presence.Store do
   defp to_status_atom("dnd"), do: :dnd
   defp to_status_atom("online"), do: :online
   defp to_status_atom("idle"), do: :idle
+  defp to_status_atom("invisible"), do: :invisible
+  defp to_status_atom("offline"), do: :offline
   defp to_status_atom(_), do: :offline
 
   defp resolve_client_status(sessions_map, fallback) when map_size(sessions_map) == 0, do: fallback

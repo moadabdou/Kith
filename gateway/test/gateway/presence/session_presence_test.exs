@@ -130,11 +130,10 @@ defmodule Gateway.Presence.SessionPresenceTest do
       {:ok, _seq} = Session.attach(session_id, self())
 
       {:ok, p_reconnect} = Store.get_presence(user_id)
-      # Must preserve :dnd status and desktop client_status while updating ws_pid to self()
+      # Session actor was alive the entire time; presence remains untouched (:dnd)
       assert p_reconnect.status == :dnd
       assert p_reconnect.sessions[session_id].status == :dnd
       assert p_reconnect.sessions[session_id].client_status == %{"desktop" => "dnd"}
-      assert p_reconnect.sessions[session_id].ws_pid == self()
     end
   end
 end

@@ -199,17 +199,6 @@ defmodule Gateway.Session do
 
     ref = Process.monitor(new_ws_pid)
 
-    if state.user_id do
-      Gateway.Presence.Store.session_connected(
-        state.user_id,
-        state.session_id,
-        new_ws_pid,
-        nil,
-        %{},
-        self()
-      )
-    end
-
     {:reply, {:ok, state.seq},
      %{state | ws_pid: new_ws_pid, ws_ref: ref, ttl_timer: nil}}
   end
@@ -243,17 +232,6 @@ defmodule Gateway.Session do
             end
 
             ref = Process.monitor(new_ws_pid)
-
-            if state.user_id do
-              Gateway.Presence.Store.session_connected(
-                state.user_id,
-                state.session_id,
-                new_ws_pid,
-                nil,
-                %{},
-                self()
-              )
-            end
 
             Logger.info(
               "Gateway.Session [#{state.session_id}]: resumed by user #{state.user_id} with #{length(missed_frames)} replayed frames (client_seq=#{client_seq}, current_seq=#{state.seq})"

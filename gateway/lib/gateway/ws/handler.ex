@@ -60,8 +60,8 @@ defmodule Gateway.WS.Handler do
       close(4008, "Rate limited", state)
     else
       case Jason.decode(payload) do
-        {:ok, %{"op" => 1} = _heartbeat} ->
-          handle_heartbeat(state)
+        {:ok, %{"op" => 1} = msg} ->
+          handle_heartbeat(Map.get(msg, "d"), state)
 
         {:ok, %{"op" => 2, "d" => d}} ->
           handle_identify(d, state)
@@ -146,9 +146,6 @@ defmodule Gateway.WS.Handler do
   def terminate(reason, state) do
     Gateway.Metrics.decr_connection()
 
-    # If unrecoverable close code, close session actor immediately.
-    # 4009 (Session timed out on missed heartbeats) and normal disconnects leave session alive
-    # for the 60s disconnect TTL to allow RESUME.
     if state.session_id do
       if state.close_code in [4004, 4008] do
         Gateway.Session.close(state.session_id)
@@ -185,8 +182,13 @@ defmodule Gateway.WS.Handler do
 
   # ── Private Protocol Helpers ────────────────────────────────────────────────
 
-  defp handle_heartbeat(state) do
+  defp handle_heartbeat(d, state) do
     now = System.monotonic_time(:millisecond)
+
+    if state.user_id && state.session_id do
+      ts = extract_activity_timestamp(d)
+      Gateway.Presence.Store.touch_activity(state.user_id, state.session_id, ts)
+    end
 
     ack =
       Jason.encode!(%{
@@ -198,6 +200,11 @@ defmodule Gateway.WS.Handler do
 
     {:push, [{:text, ack}], %{state | last_heartbeat_at: now}}
   end
+
+  defp extract_activity_timestamp(d) when is_integer(d) and d > 1_000_000_000, do: d
+  defp extract_activity_timestamp(%{"last_activity" => ts}) when is_integer(ts), do: ts
+  defp extract_activity_timestamp(%{"since" => ts}) when is_integer(ts), do: ts
+  defp extract_activity_timestamp(_other), do: System.system_time(:millisecond)
 
   defp handle_identify(d, state) do
     if state.identify_timer do

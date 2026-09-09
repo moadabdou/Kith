@@ -13,6 +13,8 @@ defmodule Gateway.Presence.Store do
   require Logger
 
   @table :gateway_presence_store
+  @default_idle_threshold_ms 10 * 60 * 1000
+  @default_sweep_interval_ms 30 * 1000
 
   # ── Client API ─────────────────────────────────────────────────────────────
 
@@ -151,6 +153,21 @@ defmodule Gateway.Presence.Store do
   end
 
   @doc """
+  Triggers a synchronous idle sweep over active sessions.
+  Marks sessions inactive for longer than `threshold_ms` (defaults to configured idle_threshold_ms)
+  as `:idle`. Used by periodic sweeper and unit tests.
+  """
+  def sweep_idle(threshold_ms \\ nil) do
+    case GenServer.whereis(__MODULE__) do
+      pid when is_pid(pid) ->
+        GenServer.call(__MODULE__, {:sweep_idle, threshold_ms})
+
+      nil ->
+        {:error, :not_running}
+    end
+  end
+
+  @doc """
   Returns the name of the managed ETS table.
   """
   def table_name, do: @table
@@ -158,7 +175,7 @@ defmodule Gateway.Presence.Store do
   # ── GenServer Callbacks ─────────────────────────────────────────────────────
 
   @impl true
-  def init(_opts) do
+  def init(opts) do
     table =
       :ets.new(@table, [
         :named_table,
@@ -168,12 +185,25 @@ defmodule Gateway.Presence.Store do
         write_concurrency: true
       ])
 
+    idle_threshold_ms = Keyword.get(opts, :idle_threshold_ms, @default_idle_threshold_ms)
+    sweep_interval_ms = Keyword.get(opts, :sweep_interval_ms, @default_sweep_interval_ms)
+
+    sweep_timer =
+      if sweep_interval_ms > 0 do
+        Process.send_after(self(), :sweep_idle, sweep_interval_ms)
+      else
+        nil
+      end
+
     state = %{
       table: table,
       # monitor_ref => {user_id, session_id}
       monitors: %{},
       # {user_id, session_id} => monitor_ref
-      session_monitors: %{}
+      session_monitors: %{},
+      idle_threshold_ms: idle_threshold_ms,
+      sweep_interval_ms: sweep_interval_ms,
+      sweep_timer: sweep_timer
     }
 
     Logger.info("Gateway.Presence.Store initialized with ETS table #{@table}")
@@ -226,6 +256,8 @@ defmodule Gateway.Presence.Store do
 
   @impl true
   def handle_call({:touch_activity, uid, sid, ts}, _from, state) do
+    now = System.system_time(:millisecond)
+
     case :ets.lookup(@table, uid) do
       [{^uid, status, client_status, _last_activity, sessions_map}] ->
         updated_sessions =
@@ -234,15 +266,30 @@ defmodule Gateway.Presence.Store do
               sessions_map
 
             entry ->
-              Map.put(sessions_map, sid, %{entry | last_activity_at: ts})
+              # If session was marked :idle and touch is fresh, wake back up to :online
+              new_status =
+                if entry.status == :idle and (now - ts < state.idle_threshold_ms) do
+                  :online
+                else
+                  entry.status
+                end
+
+              Map.put(sessions_map, sid, %{entry | last_activity_at: ts, status: new_status})
           end
 
-        :ets.insert(@table, {uid, status, client_status, ts, updated_sessions})
+        agg_status = resolve_status(updated_sessions, status)
+        :ets.insert(@table, {uid, agg_status, client_status, ts, updated_sessions})
         {:reply, :ok, state}
 
       [] ->
         {:reply, {:error, :not_found}, state}
     end
+  end
+
+  def handle_call({:sweep_idle, custom_threshold_ms}, _from, state) do
+    threshold = custom_threshold_ms || state.idle_threshold_ms
+    swept_count = do_sweep_idle(state.table, threshold)
+    {:reply, {:ok, swept_count}, state}
   end
 
   @impl true
@@ -265,11 +312,56 @@ defmodule Gateway.Presence.Store do
     end
   end
 
+  def handle_info(:sweep_idle, state) do
+    do_sweep_idle(state.table, state.idle_threshold_ms)
+
+    sweep_timer =
+      if state.sweep_interval_ms > 0 do
+        Process.send_after(self(), :sweep_idle, state.sweep_interval_ms)
+      else
+        nil
+      end
+
+    {:noreply, %{state | sweep_timer: sweep_timer}}
+  end
+
   def handle_info(_msg, state) do
     {:noreply, state}
   end
 
   # ── Private Helpers ─────────────────────────────────────────────────────────
+
+  defp do_sweep_idle(table, threshold_ms) do
+    now = System.system_time(:millisecond)
+
+    match_spec = [
+      {{:"$1", :"$2", :"$3", :"$4", :"$5"},
+       [{:"/=", :"$2", :offline}, {:"/=", :"$2", "offline"}],
+       [{{:"$1", :"$2", :"$3", :"$4", :"$5"}}]}
+    ]
+
+    records = :ets.select(table, match_spec)
+
+    Enum.reduce(records, 0, fn {uid, _status, client_status, last_activity, sessions_map}, acc ->
+      {any_updated?, updated_sessions, newly_idle} =
+        Enum.reduce(sessions_map, {false, %{}, 0}, fn {sid, session}, {changed, acc_sessions, idle_acc} ->
+          if session.status == :online and (now - session.last_activity_at >= threshold_ms) do
+            updated_session = %{session | status: :idle}
+            {true, Map.put(acc_sessions, sid, updated_session), idle_acc + 1}
+          else
+            {changed, Map.put(acc_sessions, sid, session), idle_acc}
+          end
+        end)
+
+      if any_updated? do
+        agg_status = resolve_status(updated_sessions, :idle)
+        :ets.insert(table, {uid, agg_status, client_status, last_activity, updated_sessions})
+        acc + newly_idle
+      else
+        acc
+      end
+    end)
+  end
 
   defp do_drop_session(uid, sid) do
     case :ets.lookup(@table, uid) do

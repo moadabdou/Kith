@@ -214,4 +214,87 @@ defmodule Gateway.Presence.StoreTest do
       assert map_size(p4.sessions) == 0
     end
   end
+
+  describe "Issue #32: idle sweeper & activity wake" do
+    test "sweep_idle transitions inactive :online sessions to :idle" do
+      user_id = "user_idle_sweep_1"
+      session_id = "sess_idle_sweep_1"
+
+      Store.session_connected(user_id, session_id, self(), :online)
+      {:ok, p_init} = Store.get_presence(user_id)
+      assert p_init.status == :online
+
+      # Simulate past activity 11 minutes ago (660,000 ms ago)
+      past_ts = System.system_time(:millisecond) - 660_000
+      Store.touch_activity(user_id, session_id, past_ts)
+
+      # Trigger idle sweep with default 10-minute threshold
+      assert {:ok, count} = Store.sweep_idle(600_000)
+      assert count >= 1
+
+      {:ok, p_idle} = Store.get_presence(user_id)
+      assert p_idle.status == :idle
+      assert p_idle.sessions[session_id].status == :idle
+    end
+
+    test "sweep_idle preserves :dnd sessions without downgrading to :idle" do
+      user_id = "user_dnd_preserve"
+      session_id = "sess_dnd_preserve"
+
+      Store.session_connected(user_id, session_id, self(), :dnd)
+
+      # Inactive for 20 minutes
+      past_ts = System.system_time(:millisecond) - 1_200_000
+      # Touch with old timestamp
+      GenServer.call(Store, {:touch_activity, user_id, session_id, past_ts})
+
+      assert {:ok, _count} = Store.sweep_idle(600_000)
+
+      {:ok, p_dnd} = Store.get_presence(user_id)
+      assert p_dnd.status == :dnd
+      assert p_dnd.sessions[session_id].status == :dnd
+    end
+
+    test "touch_activity wakes an :idle session back to :online" do
+      user_id = "user_wake_1"
+      session_id = "sess_wake_1"
+
+      Store.session_connected(user_id, session_id, self(), :online)
+      past_ts = System.system_time(:millisecond) - 700_000
+      GenServer.call(Store, {:touch_activity, user_id, session_id, past_ts})
+
+      Store.sweep_idle(600_000)
+      {:ok, p_idle} = Store.get_presence(user_id)
+      assert p_idle.status == :idle
+
+      # User acts now (fresh activity)
+      now_ts = System.system_time(:millisecond)
+      assert :ok = Store.touch_activity(user_id, session_id, now_ts)
+
+      {:ok, p_online} = Store.get_presence(user_id)
+      assert p_online.status == :online
+      assert p_online.sessions[session_id].status == :online
+    end
+
+    test "multi-session: one active session keeps user :online when other session goes :idle" do
+      user_id = "user_multi_idle"
+      s_desktop = "sess_desk"
+      s_mobile = "sess_mob"
+
+      Store.session_connected(user_id, s_desktop, self(), :online)
+      Store.session_connected(user_id, s_mobile, self(), :online)
+
+      # Mobile had no activity for 15 mins; desktop was active just now
+      past_ts = System.system_time(:millisecond) - 900_000
+      GenServer.call(Store, {:touch_activity, user_id, s_mobile, past_ts})
+
+      assert {:ok, _} = Store.sweep_idle(600_000)
+
+      {:ok, p} = Store.get_presence(user_id)
+      # Mobile is idle, desktop is online -> user aggregate status is online!
+      assert p.sessions[s_mobile].status == :idle
+      assert p.sessions[s_desktop].status == :online
+      assert p.status == :online
+    end
+  end
 end

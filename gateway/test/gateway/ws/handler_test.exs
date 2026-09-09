@@ -270,11 +270,51 @@ defmodule Gateway.WS.HandlerTest do
       # Session actor is STILL ALIVE for RESUME within disconnect TTL
       assert Gateway.Session.whereis(session_id) != nil
 
+      # Presence remains :online while session actor is alive during disconnect TTL window
+      {:ok, presence} = Gateway.Presence.Store.get_presence(user_id)
+      assert presence.status == :online
+
       # When session is explicitly closed or TTL expires, full cleanup occurs
       Gateway.Session.close(session_id)
       :timer.sleep(30)
       assert Gateway.Session.whereis(session_id) == nil
       assert Gateway.Guild.Actor.subscriber_count(guild_id) == subs_before - 1
+
+      # After session actor terminates, presence transitions to :offline
+      {:ok, presence_after} = Gateway.Presence.Store.get_presence(user_id)
+      assert presence_after.status == :offline
+    end
+
+    test "HEARTBEAT (op 1) touches activity in Gateway.Presence.Store" do
+      {:push, _, state} = Handler.init(heartbeat_interval: 10_000)
+      user_id = 87000000000000001
+      token = Gateway.Auth.JWT.issue(user_id, state.jwt_secret, 3600)
+      payload = Jason.encode!(%{"op" => 2, "d" => %{"token" => token}})
+
+      {:push, _, identified_state} = Handler.handle_in({payload, opcode: :text}, state)
+      session_id = identified_state.session_id
+
+      # Verify initial presence
+      {:ok, p_init} = Gateway.Presence.Store.get_presence(user_id)
+      assert p_init.status == :online
+
+      # Send heartbeat with custom last_activity timestamp in the future
+      future_ts = p_init.last_activity_at + 10_000
+      hb_payload = Jason.encode!(%{"op" => 1, "d" => %{"last_activity" => future_ts}})
+
+      assert {:push, [{:text, ack_json}], _hb_state} =
+               Handler.handle_in({hb_payload, opcode: :text}, identified_state)
+
+      assert {:ok, ack} = Jason.decode(ack_json)
+      assert ack["op"] == 11
+
+      # Verify presence store activity timestamp was bumped
+      {:ok, p_after} = Gateway.Presence.Store.get_presence(user_id)
+      assert p_after.last_activity_at == future_ts
+      assert p_after.sessions[session_id].last_activity_at == future_ts
+
+      Handler.terminate(:normal, identified_state)
+      Gateway.Session.close(session_id)
     end
 
     test "RESUME (op 6) with valid token and seq replays missed frames in sequence" do

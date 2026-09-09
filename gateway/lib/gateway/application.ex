@@ -36,6 +36,7 @@ defmodule Gateway.Application do
       Gateway.Metrics,
       Gateway.Health,
       {Registry, keys: :unique, name: Gateway.Registry},
+      Gateway.Presence.Store,
       Gateway.GuildSupervisor,
       Gateway.ConnSupervisor,
       Gateway.Guild.Cache,

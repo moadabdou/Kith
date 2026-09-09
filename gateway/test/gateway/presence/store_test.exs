@@ -213,29 +213,5 @@ defmodule Gateway.Presence.StoreTest do
       assert p4.status == :offline
       assert map_size(p4.sessions) == 0
     end
-
-    test "reconnecting existing session preserves custom status and client_status while updating ws_pid" do
-      user_id = "user_reconnect_preserve"
-      session_id = "sess_reconnect_preserve"
-      ws_old = spawn(fn -> :ok end)
-      ws_new = spawn(fn -> :ok end)
-
-      # 1. User configures session with :dnd and platform status
-      assert :ok = Store.session_connected(user_id, session_id, ws_old, :dnd, %{"desktop" => "dnd"})
-      {:ok, before_reconnect} = Store.get_presence(user_id)
-      assert before_reconnect.status == :dnd
-      assert before_reconnect.sessions[session_id].ws_pid == ws_old
-      assert before_reconnect.sessions[session_id].status == :dnd
-      assert before_reconnect.sessions[session_id].client_status == %{"desktop" => "dnd"}
-
-      # 2. Socket drops and reconnects (status passed as nil / omitted, client_status empty)
-      assert :ok = Store.session_connected(user_id, session_id, ws_new)
-
-      {:ok, after_reconnect} = Store.get_presence(user_id)
-      assert after_reconnect.status == :dnd
-      assert after_reconnect.sessions[session_id].ws_pid == ws_new
-      assert after_reconnect.sessions[session_id].status == :dnd
-      assert after_reconnect.sessions[session_id].client_status == %{"desktop" => "dnd"}
-    end
   end
 end

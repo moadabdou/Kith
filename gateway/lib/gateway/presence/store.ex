@@ -44,10 +44,8 @@ defmodule Gateway.Presence.Store do
   Lifecycle callback invoked when a new session connects or attaches (plan/05 §1 & #31).
   Registers the session in `Presence.Store` with its initial status, client platform details,
   and optionally monitors `session_pid` (the `Gateway.Session` actor).
-  When reconnecting an existing session with `nil` or `:preserve` status, preserves existing
-  status and client_status while updating `ws_pid` and `last_activity_at`.
   """
-  def session_connected(user_id, session_id, ws_pid, initial_status \\ nil, client_status \\ %{}, session_pid \\ nil) do
+  def session_connected(user_id, session_id, ws_pid, initial_status \\ :online, client_status \\ %{}, session_pid \\ nil) do
     put_presence(user_id, initial_status, client_status, session_id, ws_pid, session_pid)
   end
 
@@ -202,64 +200,25 @@ defmodule Gateway.Presence.Store do
         state
       end
 
+    session_entry = %{
+      session_id: sid,
+      session_pid: session_pid,
+      ws_pid: ws_pid,
+      status: norm_status,
+      client_status: client_status || %{},
+      last_activity_at: now
+    }
+
     case :ets.lookup(@table, uid) do
       [{^uid, _prev_status, _prev_client_status, _prev_ts, sessions_map}] ->
-        session_entry =
-          case Map.get(sessions_map, sid) do
-            nil ->
-              %{
-                session_id: sid,
-                session_pid: session_pid,
-                ws_pid: ws_pid,
-                status: norm_status || :online,
-                client_status: client_status || %{},
-                last_activity_at: now
-              }
-
-            existing ->
-              # Preserve existing status if reconnecting without explicit override
-              final_status =
-                if is_nil(norm_status) or norm_status == :preserve do
-                  existing.status
-                else
-                  norm_status
-                end
-
-              # Preserve and merge client platform status
-              merged_client_status =
-                cond do
-                  is_nil(client_status) or client_status == %{} -> existing.client_status
-                  is_map(existing.client_status) and is_map(client_status) -> Map.merge(existing.client_status, client_status)
-                  true -> client_status
-                end
-
-              %{
-                existing
-                | ws_pid: ws_pid,
-                  session_pid: session_pid || existing.session_pid,
-                  status: final_status,
-                  client_status: merged_client_status,
-                  last_activity_at: now
-              }
-          end
-
         updated_sessions = Map.put(sessions_map, sid, session_entry)
-        agg_status = resolve_status(updated_sessions, session_entry.status)
-        agg_client_status = resolve_client_status(updated_sessions, session_entry.client_status)
+        agg_status = resolve_status(updated_sessions, norm_status)
+        agg_client_status = resolve_client_status(updated_sessions, client_status || %{})
         :ets.insert(@table, {uid, agg_status, agg_client_status, now, updated_sessions})
 
       [] ->
-        status = norm_status || :online
-        session_entry = %{
-          session_id: sid,
-          session_pid: session_pid,
-          ws_pid: ws_pid,
-          status: status,
-          client_status: client_status || %{},
-          last_activity_at: now
-        }
         sessions_map = %{sid => session_entry}
-        :ets.insert(@table, {uid, status, client_status || %{}, now, sessions_map})
+        :ets.insert(@table, {uid, norm_status, client_status || %{}, now, sessions_map})
     end
 
     {:reply, :ok, state}
@@ -361,8 +320,6 @@ defmodule Gateway.Presence.Store do
     end
   end
 
-  defp to_status_atom(nil), do: nil
-  defp to_status_atom(:preserve), do: :preserve
   defp to_status_atom(s) when is_atom(s), do: s
   defp to_status_atom("dnd"), do: :dnd
   defp to_status_atom("online"), do: :online

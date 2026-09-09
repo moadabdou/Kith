@@ -153,6 +153,18 @@ defmodule Gateway.Session do
       Gateway.Guild.Actor.subscribe(gid, session_id, self())
     end)
 
+    # Register presence in Gateway.Presence.Store if user_id is provided (plan/05 §1 & #31)
+    if user_id do
+      Gateway.Presence.Store.session_connected(
+        user_id,
+        session_id,
+        ws_pid,
+        :online,
+        %{},
+        self()
+      )
+    end
+
     ttl_timer =
       if ws_pid == nil do
         Process.send_after(self(), :session_timeout, disconnect_ttl_ms)
@@ -187,6 +199,17 @@ defmodule Gateway.Session do
 
     ref = Process.monitor(new_ws_pid)
 
+    if state.user_id do
+      Gateway.Presence.Store.session_connected(
+        state.user_id,
+        state.session_id,
+        new_ws_pid,
+        nil,
+        %{},
+        self()
+      )
+    end
+
     {:reply, {:ok, state.seq},
      %{state | ws_pid: new_ws_pid, ws_ref: ref, ttl_timer: nil}}
   end
@@ -220,6 +243,17 @@ defmodule Gateway.Session do
             end
 
             ref = Process.monitor(new_ws_pid)
+
+            if state.user_id do
+              Gateway.Presence.Store.session_connected(
+                state.user_id,
+                state.session_id,
+                new_ws_pid,
+                nil,
+                %{},
+                self()
+              )
+            end
 
             Logger.info(
               "Gateway.Session [#{state.session_id}]: resumed by user #{state.user_id} with #{length(missed_frames)} replayed frames (client_seq=#{client_seq}, current_seq=#{state.seq})"
@@ -330,6 +364,10 @@ defmodule Gateway.Session do
     Enum.each(state.guild_ids, fn gid ->
       Gateway.Guild.Actor.unsubscribe(gid, state.session_id)
     end)
+
+    if state.user_id do
+      Gateway.Presence.Store.session_disconnected(state.user_id, state.session_id)
+    end
 
     Logger.debug("Gateway.Session [#{state.session_id}] terminated")
     :ok

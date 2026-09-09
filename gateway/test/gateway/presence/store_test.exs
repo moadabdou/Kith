@@ -147,4 +147,95 @@ defmodule Gateway.Presence.StoreTest do
     assert "idle_user_2" in online_uids
     refute "offline_user_3" in online_uids
   end
+
+  describe "Issue #31: lifecycle callbacks & multi-session acceptance" do
+    test "session_connected/4 defaults to :online and empty client_status" do
+      user_id = "user_lc_1"
+      session_id = "sess_lc_1"
+
+      assert :ok = Store.session_connected(user_id, session_id, self())
+
+      assert {:ok, p} = Store.get_presence(user_id)
+      assert p.status == :online
+      assert p.client_status == %{}
+      assert Map.has_key?(p.sessions, session_id)
+      assert p.sessions[session_id].status == :online
+    end
+
+    test "session_connected/6 with explicit status, client_status, and session_pid" do
+      user_id = "user_lc_2"
+      session_id = "sess_lc_2"
+
+      assert :ok = Store.session_connected(user_id, session_id, self(), :dnd, %{"web" => "dnd"}, self())
+
+      assert {:ok, p} = Store.get_presence(user_id)
+      assert p.status == :dnd
+      assert p.client_status == %{"web" => "dnd"}
+    end
+
+    test "normalizes string statuses to canonical atoms" do
+      user_id = "user_norm_1"
+      session_id = "sess_norm_1"
+
+      Store.session_connected(user_id, session_id, self(), "dnd")
+      assert {:ok, p} = Store.get_presence(user_id)
+      assert p.status == :dnd
+      assert p.sessions[session_id].status == :dnd
+    end
+
+    test "acceptance: connecting two sessions maintains online when one disconnects; transitions to offline when last disconnects" do
+      user_id = "user_dual_session"
+      s1 = "session_web"
+      s2 = "session_mobile"
+
+      # 1. First session connects
+      assert :ok = Store.session_connected(user_id, s1, self(), :online, %{"web" => "online"})
+      {:ok, p1} = Store.get_presence(user_id)
+      assert p1.status == :online
+      assert map_size(p1.sessions) == 1
+
+      # 2. Second session connects
+      assert :ok = Store.session_connected(user_id, s2, self(), :online, %{"mobile" => "online"})
+      {:ok, p2} = Store.get_presence(user_id)
+      assert p2.status == :online
+      assert map_size(p2.sessions) == 2
+
+      # 3. First session disconnects -> user remains online!
+      assert :ok = Store.session_disconnected(user_id, s1)
+      {:ok, p3} = Store.get_presence(user_id)
+      assert p3.status == :online
+      assert map_size(p3.sessions) == 1
+      assert Map.has_key?(p3.sessions, s2)
+
+      # 4. Final session disconnects -> user transitions to offline
+      assert :ok = Store.session_disconnected(user_id, s2)
+      {:ok, p4} = Store.get_presence(user_id)
+      assert p4.status == :offline
+      assert map_size(p4.sessions) == 0
+    end
+
+    test "reconnecting existing session preserves custom status and client_status while updating ws_pid" do
+      user_id = "user_reconnect_preserve"
+      session_id = "sess_reconnect_preserve"
+      ws_old = spawn(fn -> :ok end)
+      ws_new = spawn(fn -> :ok end)
+
+      # 1. User configures session with :dnd and platform status
+      assert :ok = Store.session_connected(user_id, session_id, ws_old, :dnd, %{"desktop" => "dnd"})
+      {:ok, before_reconnect} = Store.get_presence(user_id)
+      assert before_reconnect.status == :dnd
+      assert before_reconnect.sessions[session_id].ws_pid == ws_old
+      assert before_reconnect.sessions[session_id].status == :dnd
+      assert before_reconnect.sessions[session_id].client_status == %{"desktop" => "dnd"}
+
+      # 2. Socket drops and reconnects (status passed as nil / omitted, client_status empty)
+      assert :ok = Store.session_connected(user_id, session_id, ws_new)
+
+      {:ok, after_reconnect} = Store.get_presence(user_id)
+      assert after_reconnect.status == :dnd
+      assert after_reconnect.sessions[session_id].ws_pid == ws_new
+      assert after_reconnect.sessions[session_id].status == :dnd
+      assert after_reconnect.sessions[session_id].client_status == %{"desktop" => "dnd"}
+    end
+  end
 end

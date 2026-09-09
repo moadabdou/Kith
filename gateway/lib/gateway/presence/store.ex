@@ -29,10 +29,35 @@ defmodule Gateway.Presence.Store do
   when the Gateway.Session actor terminates.
   """
   def put_presence(user_id, status, client_status, session_id, ws_pid, session_pid \\ nil) do
-    uid = to_string(user_id)
-    sid = to_string(session_id)
+    case GenServer.whereis(__MODULE__) do
+      pid when is_pid(pid) ->
+        uid = to_string(user_id)
+        sid = to_string(session_id)
+        GenServer.call(__MODULE__, {:put_presence, uid, status, client_status, sid, ws_pid, session_pid})
 
-    GenServer.call(__MODULE__, {:put_presence, uid, status, client_status, sid, ws_pid, session_pid})
+      nil ->
+        {:error, :not_running}
+    end
+  end
+
+  @doc """
+  Lifecycle callback invoked when a new session connects or attaches (plan/05 §1 & #31).
+  Registers the session in `Presence.Store` with its initial status, client platform details,
+  and optionally monitors `session_pid` (the `Gateway.Session` actor).
+  When reconnecting an existing session with `nil` or `:preserve` status, preserves existing
+  status and client_status while updating `ws_pid` and `last_activity_at`.
+  """
+  def session_connected(user_id, session_id, ws_pid, initial_status \\ nil, client_status \\ %{}, session_pid \\ nil) do
+    put_presence(user_id, initial_status, client_status, session_id, ws_pid, session_pid)
+  end
+
+  @doc """
+  Lifecycle callback invoked when a session disconnects or terminates (plan/05 §1 & #31).
+  Removes the session from the user's active session map in `Presence.Store`.
+  If no sessions remain, transitions the user to `:offline`.
+  """
+  def session_disconnected(user_id, session_id) do
+    drop_session(user_id, session_id)
   end
 
   @doc """
@@ -99,11 +124,16 @@ defmodule Gateway.Presence.Store do
   Updates `last_activity_at` for a given user and session (e.g. on heartbeat).
   """
   def touch_activity(user_id, session_id, timestamp \\ nil) do
-    uid = to_string(user_id)
-    sid = to_string(session_id)
-    ts = timestamp || System.system_time(:millisecond)
+    case GenServer.whereis(__MODULE__) do
+      pid when is_pid(pid) ->
+        uid = to_string(user_id)
+        sid = to_string(session_id)
+        ts = timestamp || System.system_time(:millisecond)
+        GenServer.call(__MODULE__, {:touch_activity, uid, sid, ts})
 
-    GenServer.call(__MODULE__, {:touch_activity, uid, sid, ts})
+      nil ->
+        {:error, :not_running}
+    end
   end
 
   @doc """
@@ -111,10 +141,15 @@ defmodule Gateway.Presence.Store do
   If no sessions remain, user status transitions to `:offline`.
   """
   def drop_session(user_id, session_id) do
-    uid = to_string(user_id)
-    sid = to_string(session_id)
+    case GenServer.whereis(__MODULE__) do
+      pid when is_pid(pid) ->
+        uid = to_string(user_id)
+        sid = to_string(session_id)
+        GenServer.call(__MODULE__, {:drop_session, uid, sid})
 
-    GenServer.call(__MODULE__, {:drop_session, uid, sid})
+      nil ->
+        :ok
+    end
   end
 
   @doc """
@@ -150,6 +185,7 @@ defmodule Gateway.Presence.Store do
   @impl true
   def handle_call({:put_presence, uid, status, client_status, sid, ws_pid, session_pid}, _from, state) do
     now = System.system_time(:millisecond)
+    norm_status = to_status_atom(status)
 
     # Manage process monitor if session_pid is supplied and alive
     state =
@@ -166,26 +202,64 @@ defmodule Gateway.Presence.Store do
         state
       end
 
-    session_entry = %{
-      session_id: sid,
-      session_pid: session_pid,
-      ws_pid: ws_pid,
-      status: status,
-      client_status: client_status,
-      last_activity_at: now
-    }
-
     case :ets.lookup(@table, uid) do
       [{^uid, _prev_status, _prev_client_status, _prev_ts, sessions_map}] ->
+        session_entry =
+          case Map.get(sessions_map, sid) do
+            nil ->
+              %{
+                session_id: sid,
+                session_pid: session_pid,
+                ws_pid: ws_pid,
+                status: norm_status || :online,
+                client_status: client_status || %{},
+                last_activity_at: now
+              }
+
+            existing ->
+              # Preserve existing status if reconnecting without explicit override
+              final_status =
+                if is_nil(norm_status) or norm_status == :preserve do
+                  existing.status
+                else
+                  norm_status
+                end
+
+              # Preserve and merge client platform status
+              merged_client_status =
+                cond do
+                  is_nil(client_status) or client_status == %{} -> existing.client_status
+                  is_map(existing.client_status) and is_map(client_status) -> Map.merge(existing.client_status, client_status)
+                  true -> client_status
+                end
+
+              %{
+                existing
+                | ws_pid: ws_pid,
+                  session_pid: session_pid || existing.session_pid,
+                  status: final_status,
+                  client_status: merged_client_status,
+                  last_activity_at: now
+              }
+          end
+
         updated_sessions = Map.put(sessions_map, sid, session_entry)
-        # Determine aggregate status
-        agg_status = resolve_status(updated_sessions, status)
-        agg_client_status = resolve_client_status(updated_sessions, client_status)
+        agg_status = resolve_status(updated_sessions, session_entry.status)
+        agg_client_status = resolve_client_status(updated_sessions, session_entry.client_status)
         :ets.insert(@table, {uid, agg_status, agg_client_status, now, updated_sessions})
 
       [] ->
+        status = norm_status || :online
+        session_entry = %{
+          session_id: sid,
+          session_pid: session_pid,
+          ws_pid: ws_pid,
+          status: status,
+          client_status: client_status || %{},
+          last_activity_at: now
+        }
         sessions_map = %{sid => session_entry}
-        :ets.insert(@table, {uid, status, client_status, now, sessions_map})
+        :ets.insert(@table, {uid, status, client_status || %{}, now, sessions_map})
     end
 
     {:reply, :ok, state}
@@ -287,6 +361,8 @@ defmodule Gateway.Presence.Store do
     end
   end
 
+  defp to_status_atom(nil), do: nil
+  defp to_status_atom(:preserve), do: :preserve
   defp to_status_atom(s) when is_atom(s), do: s
   defp to_status_atom("dnd"), do: :dnd
   defp to_status_atom("online"), do: :online

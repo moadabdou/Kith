@@ -13,6 +13,8 @@ defmodule Gateway.WS.HandlerTest do
       :ets.delete_all_objects(:gateway_presence_store)
     end
 
+    Gateway.Typing.RateLimiter.reset()
+
     :ok
   end
 
@@ -442,6 +444,61 @@ defmodule Gateway.WS.HandlerTest do
 
       Handler.terminate(:normal, identified_state)
       close_session(session_id)
+    end
+
+    test "TYPING_START rate limits per (user_id, channel_id) and silently drops excess frames" do
+      {:push, _, state} = Handler.init(heartbeat_interval: 10_000)
+      user_id = 87000000000000001
+      token = Gateway.Auth.JWT.issue(user_id, state.jwt_secret, 3600)
+      id_payload = Jason.encode!(%{"op" => 2, "d" => %{"token" => token}})
+
+      {:push, _, identified_state} = Handler.handle_in({id_payload, opcode: :text}, state)
+      session_id = identified_state.session_id
+      channel_id = "87000000000000101"
+
+      typing_payload = Jason.encode!(%{"t" => "TYPING_START", "d" => %{"channel_id" => channel_id}})
+
+      # 1. First typing frame allowed
+      assert {:ok, s1} = Handler.handle_in({typing_payload, opcode: :text}, identified_state)
+      assert s1.close_code == nil
+
+      # 2. Second typing frame within 8s cooldown is silently dropped without closing
+      assert {:ok, s2} = Handler.handle_in({typing_payload, opcode: :text}, s1)
+      assert s2.close_code == nil
+
+      # 3. Third typing frame also silently dropped
+      assert {:ok, s3} = Handler.handle_in({typing_payload, opcode: :text}, s2)
+      assert s3.close_code == nil
+
+      Handler.terminate(:normal, s3)
+      close_session(session_id)
+    end
+
+    test "TYPING_START before IDENTIFY or with missing channel_id is safely ignored" do
+      {:push, _, state} = Handler.init(heartbeat_interval: 10_000)
+
+      # 1. Pre-IDENTIFY typing frame ignored
+      payload1 = Jason.encode!(%{"t" => "TYPING_START", "d" => %{"channel_id" => "123"}})
+      assert {:ok, s1} = Handler.handle_in({payload1, opcode: :text}, state)
+      assert s1.identified == false
+      assert s1.close_code == nil
+
+      # 2. Identified but missing channel_id
+      user_id = 87000000000000001
+      token = Gateway.Auth.JWT.issue(user_id, state.jwt_secret, 3600)
+      id_payload = Jason.encode!(%{"op" => 2, "d" => %{"token" => token}})
+      {:push, _, identified} = Handler.handle_in({id_payload, opcode: :text}, s1)
+
+      payload2 = Jason.encode!(%{"t" => "TYPING_START", "d" => %{}})
+      assert {:ok, s2} = Handler.handle_in({payload2, opcode: :text}, identified)
+      assert s2.close_code == nil
+
+      payload3 = Jason.encode!(%{"t" => "TYPING_START", "d" => "not_a_map"})
+      assert {:ok, s3} = Handler.handle_in({payload3, opcode: :text}, s2)
+      assert s3.close_code == nil
+
+      Handler.terminate(:normal, s3)
+      close_session(identified.session_id)
     end
 
     test "RESUME (op 6) with valid token and seq replays missed frames in sequence" do

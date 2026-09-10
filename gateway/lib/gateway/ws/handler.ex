@@ -72,6 +72,9 @@ defmodule Gateway.WS.Handler do
         {:ok, %{"op" => 6, "d" => d}} ->
           handle_resume(d, state)
 
+        {:ok, %{"t" => "TYPING_START"} = msg} ->
+          handle_typing_start(Map.get(msg, "d"), state)
+
         {:ok, %{"op" => _other_op}} ->
           Logger.warning("Gateway.WS.Handler: unknown or unhandled opcode, closing with 4001")
           close(4001, "Unknown opcode", state)
@@ -233,6 +236,40 @@ defmodule Gateway.WS.Handler do
         end
 
         {:ok, state}
+    end
+  end
+
+  defp handle_typing_start(d, state) do
+    cond do
+      not state.identified or is_nil(state.user_id) ->
+        Logger.warning("Gateway.WS.Handler: TYPING_START received before IDENTIFY, ignoring")
+        {:ok, state}
+
+      not is_map(d) ->
+        Logger.warning("Gateway.WS.Handler: TYPING_START payload is not a map, ignoring")
+        {:ok, state}
+
+      true ->
+        channel_id = d["channel_id"] || d[:channel_id]
+
+        if is_nil(channel_id) or channel_id == "" do
+          Logger.warning("Gateway.WS.Handler: TYPING_START missing channel_id, ignoring")
+          {:ok, state}
+        else
+          case Gateway.Typing.RateLimiter.check_rate(state.user_id, channel_id) do
+            :ok ->
+              Logger.debug("Gateway.WS.Handler: typing allowed for user #{state.user_id} in channel #{channel_id}")
+              {:ok, state}
+
+            {:rate_limited, retry_after_ms} ->
+              Logger.debug(
+                "Gateway.WS.Handler: typing rate limited for user #{state.user_id} in channel #{channel_id} (retry after #{retry_after_ms}ms), dropping frame"
+              )
+
+              # Silently drop excess requests per plan/05 §2
+              {:ok, state}
+          end
+        end
     end
   end
 

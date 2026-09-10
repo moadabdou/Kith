@@ -264,17 +264,27 @@ defmodule Gateway.Presence.Store do
       last_activity_at: now
     }
 
-    case :ets.lookup(@table, uid) do
-      [{^uid, _prev_status, _prev_client_status, _prev_ts, sessions_map}] ->
-        updated_sessions = Map.put(sessions_map, sid, session_entry)
-        agg_status = resolve_status(updated_sessions, norm_status)
-        agg_client_status = resolve_client_status(updated_sessions, client_status || %{})
-        :ets.insert(@table, {uid, agg_status, agg_client_status, now, updated_sessions})
+    {prev_status, prev_activities, prev_client_status, updated_sessions, agg_status, agg_client_status} =
+      case :ets.lookup(@table, uid) do
+        [{^uid, prev_s, prev_cs, _prev_ts, sessions_map}] ->
+          up_sessions = Map.put(sessions_map, sid, session_entry)
+          a_status = resolve_status(up_sessions, norm_status)
+          a_cs = resolve_client_status(up_sessions, client_status || %{})
+          {prev_s, extract_activities(sessions_map), prev_cs, up_sessions, a_status, a_cs}
 
-      [] ->
-        sessions_map = %{sid => session_entry}
-        :ets.insert(@table, {uid, norm_status, client_status || %{}, now, sessions_map})
-    end
+        [] ->
+          up_sessions = %{sid => session_entry}
+          {:offline, [], %{}, up_sessions, norm_status, client_status || %{}}
+      end
+
+    :ets.insert(@table, {uid, agg_status, agg_client_status, now, updated_sessions})
+    new_activities = extract_activities(updated_sessions)
+
+    maybe_broadcast_change(
+      uid,
+      {prev_status, prev_activities, prev_client_status},
+      {agg_status, new_activities, agg_client_status}
+    )
 
     {:reply, :ok, state}
   end
@@ -284,7 +294,9 @@ defmodule Gateway.Presence.Store do
     now = System.system_time(:millisecond)
 
     case :ets.lookup(@table, uid) do
-      [{^uid, status, client_status, _last_activity, sessions_map}] ->
+      [{^uid, prev_status, client_status, _last_activity, sessions_map}] ->
+        prev_activities = extract_activities(sessions_map)
+
         updated_sessions =
           case Map.get(sessions_map, sid) do
             nil ->
@@ -304,8 +316,16 @@ defmodule Gateway.Presence.Store do
               Map.put(sessions_map, sid, %{entry | last_activity_at: ts, status: new_status})
           end
 
-        agg_status = resolve_status(updated_sessions, status)
+        agg_status = resolve_status(updated_sessions, prev_status)
         :ets.insert(@table, {uid, agg_status, client_status, ts, updated_sessions})
+        new_activities = extract_activities(updated_sessions)
+
+        maybe_broadcast_change(
+          uid,
+          {prev_status, prev_activities, client_status},
+          {agg_status, new_activities, client_status}
+        )
+
         {:reply, :ok, state}
 
       [] ->
@@ -326,7 +346,9 @@ defmodule Gateway.Presence.Store do
     activity_ts = since || System.system_time(:millisecond)
 
     case :ets.lookup(@table, uid) do
-      [{^uid, _prev_status, client_status, _prev_ts, sessions_map}] ->
+      [{^uid, prev_status, client_status, _prev_ts, sessions_map}] ->
+        prev_activities = extract_activities(sessions_map)
+
         updated_sessions =
           case Map.get(sessions_map, sid) do
             nil ->
@@ -347,6 +369,14 @@ defmodule Gateway.Presence.Store do
 
         agg_status = resolve_status(updated_sessions, :offline)
         :ets.insert(@table, {uid, agg_status, client_status, activity_ts, updated_sessions})
+        new_activities = extract_activities(updated_sessions)
+
+        maybe_broadcast_change(
+          uid,
+          {prev_status, prev_activities, client_status},
+          {agg_status, new_activities, client_status}
+        )
+
         {:reply, :ok, state}
 
       [] ->
@@ -404,7 +434,9 @@ defmodule Gateway.Presence.Store do
 
     records = :ets.select(table, match_spec)
 
-    Enum.reduce(records, 0, fn {uid, _status, client_status, last_activity, sessions_map}, acc ->
+    Enum.reduce(records, 0, fn {uid, prev_status, client_status, last_activity, sessions_map}, acc ->
+      prev_activities = extract_activities(sessions_map)
+
       {any_updated?, updated_sessions, newly_idle} =
         Enum.reduce(sessions_map, {false, %{}, 0}, fn {sid, session}, {changed, acc_sessions, idle_acc} ->
           if session.status == :online and (now - session.last_activity_at >= threshold_ms) do
@@ -418,6 +450,14 @@ defmodule Gateway.Presence.Store do
       if any_updated? do
         agg_status = resolve_status(updated_sessions, :idle)
         :ets.insert(table, {uid, agg_status, client_status, last_activity, updated_sessions})
+        new_activities = extract_activities(updated_sessions)
+
+        maybe_broadcast_change(
+          uid,
+          {prev_status, prev_activities, client_status},
+          {agg_status, new_activities, client_status}
+        )
+
         acc + newly_idle
       else
         acc
@@ -427,23 +467,48 @@ defmodule Gateway.Presence.Store do
 
   defp do_drop_session(uid, sid) do
     case :ets.lookup(@table, uid) do
-      [{^uid, _status, _client_status, last_activity, sessions_map}] ->
+      [{^uid, prev_status, prev_client_status, last_activity, sessions_map}] ->
+        prev_activities = extract_activities(sessions_map)
         updated_sessions = Map.delete(sessions_map, sid)
 
-        if map_size(updated_sessions) == 0 do
-          # No remaining sessions -> transition to offline
-          :ets.insert(@table, {uid, :offline, %{}, last_activity, %{}})
-        else
-          # Re-resolve status across remaining sessions
-          agg_status = resolve_status(updated_sessions, :offline)
-          agg_client_status = resolve_client_status(updated_sessions, %{})
-          :ets.insert(@table, {uid, agg_status, agg_client_status, last_activity, updated_sessions})
-        end
+        {new_status, new_activities, new_client_status} =
+          if map_size(updated_sessions) == 0 do
+            # No remaining sessions -> transition to offline
+            :ets.insert(@table, {uid, :offline, %{}, last_activity, %{}})
+            {:offline, [], %{}}
+          else
+            # Re-resolve status across remaining sessions
+            agg_status = resolve_status(updated_sessions, :offline)
+            agg_client_status = resolve_client_status(updated_sessions, %{})
+            :ets.insert(@table, {uid, agg_status, agg_client_status, last_activity, updated_sessions})
+            {agg_status, extract_activities(updated_sessions), agg_client_status}
+          end
+
+        maybe_broadcast_change(
+          uid,
+          {prev_status, prev_activities, prev_client_status},
+          {new_status, new_activities, new_client_status}
+        )
 
       [] ->
         :ok
     end
   end
+
+  defp maybe_broadcast_change(uid, prev_tuple, new_tuple) do
+    if prev_tuple != new_tuple do
+      {new_status, new_activities, new_client_status} = new_tuple
+      Gateway.Presence.Broadcaster.broadcast(uid, new_status, new_activities, new_client_status)
+    end
+  end
+
+  defp extract_activities(sessions_map) when is_map(sessions_map) do
+    sessions_map
+    |> Map.values()
+    |> Enum.flat_map(fn s -> Map.get(s, :activities, []) end)
+  end
+
+  defp extract_activities(_), do: []
 
   defp demonitor_session(state, uid, sid) do
     case Map.pop(state.session_monitors, {uid, sid}) do

@@ -378,4 +378,60 @@ defmodule Gateway.Presence.StoreTest do
       assert p_still_idle.sessions[session_id].status == :idle
     end
   end
+
+  describe "Issue #34: event origination and fan-out integration" do
+    test "session_connected, update_status, sweep_idle, and session_disconnected trigger broadcasts" do
+      user_id = "user_store_broadcaster_1"
+      session_id = "sess_sb_1"
+      guild_id = "guild_sb_1"
+
+      Gateway.Guild.Cache.put_member_guilds(user_id, [guild_id])
+
+      # Spawn a listener session in guild_id to receive fanout
+      listener_id = "sess_sb_listener"
+      {:ok, _} =
+        Gateway.Session.get_or_spawn(
+          session_id: listener_id,
+          user_id: "listener_user_sb",
+          guild_ids: [guild_id],
+          ws_pid: self()
+        )
+
+      # 1. session_connected -> broadcasts :online
+      Store.session_connected(user_id, session_id, self(), :online)
+      assert_receive {:send_frame, e1, 1, _}, 1000
+      assert e1["payload"]["status"] == "online"
+      assert e1["payload"]["user"]["id"] == user_id
+
+      # 2. update_status -> broadcasts :dnd with activities
+      acts = [%{"name" => "Coding", "type" => 0}]
+      Store.update_status(user_id, session_id, "dnd", acts)
+      assert_receive {:send_frame, e2, 2, _}, 1000
+      assert e2["payload"]["status"] == "dnd"
+      assert e2["payload"]["activities"] == acts
+
+      # 3. sweep_idle on a session that becomes idle -> broadcasts :idle
+      past_ts = System.system_time(:millisecond) - 700_000
+      # Switch to online first to test idle sweep
+      Store.update_status(user_id, session_id, "online")
+      assert_receive {:send_frame, _e_online, 3, _}, 1000
+
+      # Set old activity timestamp
+      GenServer.call(Store, {:touch_activity, user_id, session_id, past_ts})
+      {:ok, _} = Store.sweep_idle(600_000)
+      assert_receive {:send_frame, e_idle, 4, _}, 1000
+      assert e_idle["payload"]["status"] == "idle"
+
+      # 4. Redundant touch_activity while idle with old timestamp does NOT wake or broadcast
+      Store.touch_activity(user_id, session_id, past_ts)
+      refute_receive {:send_frame, _, _, _}, 100
+
+      # 5. session_disconnected -> broadcasts :offline
+      Store.session_disconnected(user_id, session_id)
+      assert_receive {:send_frame, e_off, 5, _}, 1000
+      assert e_off["payload"]["status"] == "offline"
+
+      Gateway.Session.close(listener_id)
+    end
+  end
 end

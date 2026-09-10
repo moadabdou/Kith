@@ -35,11 +35,84 @@ defmodule Gateway.Guild.Cache do
 
         guild_ids = Enum.map(guilds, & &1["id"])
         :ets.insert(@table, {{:member_guilds, uid}, guild_ids})
+        :ets.insert(@table, {{:member_guilds, to_string(uid)}, guild_ids})
 
         {:ok, user, guilds}
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  @doc """
+  Retrieves cached list of guild_ids for a user.
+  Checks ETS by both integer and string key representation.
+  Falls back to warm_member/1 if user is numeric but not yet cached in ETS.
+  """
+  def get_member_guilds(user_id) do
+    case lookup_member_guilds(user_id) do
+      {:ok, guild_ids} ->
+        {:ok, guild_ids}
+
+      :error ->
+        case Integer.parse(to_string(user_id)) do
+          {int_id, ""} ->
+            case warm_member(int_id) do
+              {:ok, _user, guilds} -> {:ok, Enum.map(guilds, & &1["id"])}
+              {:error, reason} -> {:error, reason}
+            end
+
+          _ ->
+            {:error, :not_found}
+        end
+    end
+  end
+
+  @doc """
+  Directly caches or overrides a user's member guild_ids in ETS.
+  Useful for tests and fast updates.
+  """
+  def put_member_guilds(user_id, guild_ids) when is_list(guild_ids) do
+    normalized_guilds = Enum.map(guild_ids, &to_string/1)
+    :ets.insert(@table, {{:member_guilds, user_id}, normalized_guilds})
+
+    if is_integer(user_id) do
+      :ets.insert(@table, {{:member_guilds, to_string(user_id)}, normalized_guilds})
+    else
+      case Integer.parse(user_id) do
+        {int, ""} -> :ets.insert(@table, {{:member_guilds, int}, normalized_guilds})
+        _ -> :ok
+      end
+    end
+
+    :ok
+  end
+
+  defp lookup_member_guilds(user_id) do
+    case :ets.lookup(@table, {:member_guilds, user_id}) do
+      [{{:member_guilds, _}, guild_ids}] ->
+        {:ok, guild_ids}
+
+      [] ->
+        alt_key =
+          cond do
+            is_integer(user_id) -> to_string(user_id)
+            is_binary(user_id) ->
+              case Integer.parse(user_id) do
+                {int, ""} -> int
+                _ -> nil
+              end
+            true -> nil
+          end
+
+        if alt_key do
+          case :ets.lookup(@table, {:member_guilds, alt_key}) do
+            [{{:member_guilds, _}, guild_ids}] -> {:ok, guild_ids}
+            [] -> :error
+          end
+        else
+          :error
+        end
     end
   end
 

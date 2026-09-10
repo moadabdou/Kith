@@ -41,6 +41,7 @@ defmodule Gateway.Application do
       Gateway.ConnSupervisor,
       Gateway.Guild.Cache,
       Supervisor.child_spec({Postgrex, parse_db_url(database_url())}, id: Gateway.DB),
+      Gateway.Presence.Broadcaster,
       bus_consumer(),
       Supervisor.child_spec({Bandit, plug: Gateway.Router, port: port()}, id: Bandit)
     ]

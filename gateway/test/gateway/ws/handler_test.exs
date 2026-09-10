@@ -458,6 +458,11 @@ defmodule Gateway.WS.HandlerTest do
       session_pid = Gateway.Session.whereis(session_id)
       assert is_pid(session_pid)
 
+      # Allow initial PRESENCE_UPDATE from IDENTIFY to settle at session actor
+      :timer.sleep(50)
+      {:ok, init_info} = Gateway.Session.info(session_id)
+      base_seq = init_info.seq
+
       # 2. Dispatch events 1 and 2 to session
       e1 = %{"type" => "MESSAGE_CREATE", "data" => %{"content" => "first"}}
       e2 = %{"type" => "MESSAGE_CREATE", "data" => %{"content" => "second"}}
@@ -476,7 +481,7 @@ defmodule Gateway.WS.HandlerTest do
       send(session_pid, {:dispatch, e3, 0})
       :timer.sleep(20)
 
-      # 5. Connection 2 reconnects and sends RESUME from seq 1 (missed events 2 and 3)
+      # 5. Connection 2 reconnects and sends RESUME from (base_seq + 1) (missed events 2 and 3)
       {:push, _, conn2} = Handler.init(heartbeat_interval: 10_000)
       resume_payload =
         Jason.encode!(%{
@@ -484,7 +489,7 @@ defmodule Gateway.WS.HandlerTest do
           "d" => %{
             "token" => token,
             "session_id" => session_id,
-            "seq" => 1
+            "seq" => base_seq + 1
           }
         })
 
@@ -493,21 +498,21 @@ defmodule Gateway.WS.HandlerTest do
 
       assert resumed_state.identified == true
       assert resumed_state.session_id == session_id
-      assert resumed_state.seq == 3
+      assert resumed_state.seq == base_seq + 3
 
-      # Verify 2 frames were replayed in exact order with seq 2 and 3
+      # Verify 2 frames were replayed in exact order with seq (base_seq + 2) and (base_seq + 3)
       assert length(replay_frames) == 2
       [{:text, f2_json}, {:text, f3_json}] = replay_frames
 
       assert {:ok, f2} = Jason.decode(f2_json)
       assert f2["op"] == 0
-      assert f2["s"] == 2
+      assert f2["s"] == base_seq + 2
       assert f2["t"] == "MESSAGE_CREATE"
       assert f2["d"]["content"] == "second"
 
       assert {:ok, f3} = Jason.decode(f3_json)
       assert f3["op"] == 0
-      assert f3["s"] == 3
+      assert f3["s"] == base_seq + 3
       assert f3["t"] == "MESSAGE_CREATE"
       assert f3["d"]["content"] == "third"
 

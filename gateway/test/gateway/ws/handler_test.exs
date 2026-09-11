@@ -536,6 +536,12 @@ defmodule Gateway.WS.HandlerTest do
       assert is_integer(payload["timestamp"])
       assert abs(payload["timestamp"] - System.system_time(:second)) <= 5
 
+      # Enrichment (#39): display-name data attached from the IDENTIFY-warmed cache
+      assert payload["user"]["id"] == to_string(user_id)
+      assert payload["user"]["username"] == "moad"
+      assert payload["user"]["discriminator"] == "0001"
+      assert is_nil(payload["nick"]) or is_binary(payload["nick"])
+
       # 2. The dispatch frame encodes to a valid op 0 wire frame
       assert {:push, [{:text, frame_json}], _} = Handler.handle_info({:send_frame, event, seq, bus_ts}, s1)
       assert {:ok, frame} = Jason.decode(frame_json)

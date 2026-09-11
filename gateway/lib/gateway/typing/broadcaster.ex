@@ -36,12 +36,14 @@ defmodule Gateway.Typing.Broadcaster do
         "type" => "TYPING_START",
         "version" => 1,
         "guild_id" => guild_id,
-        "payload" => %{
-          "channel_id" => to_string(channel_id),
-          "user_id" => to_string(user_id),
-          "guild_id" => guild_id,
-          "timestamp" => System.system_time(:second)
-        }
+        "payload" =>
+          %{
+            "channel_id" => to_string(channel_id),
+            "user_id" => to_string(user_id),
+            "guild_id" => guild_id,
+            "timestamp" => System.system_time(:second)
+          }
+          |> maybe_put_user(user_id, guild_id)
       }
 
       Gateway.Guild.Actor.dispatch_event(guild_id, event)
@@ -69,4 +71,28 @@ defmodule Gateway.Typing.Broadcaster do
       {:error, :not_a_member}
     end
   end
+
+  # Enriches the payload with the cached user map and per-guild nickname so
+  # receivers can render display names without extra lookups (Discord's real
+  # TYPING_START carries a member object for the same reason). Two ETS reads,
+  # no DB — the user cache is always warm because typing requires IDENTIFY,
+  # which warms it. Fields are omitted on a cache miss; clients fall back.
+  defp maybe_put_user(payload, user_id, guild_id) do
+    case Gateway.Guild.Cache.get_user(user_id) do
+      {:ok, user} ->
+        payload
+        |> Map.put("user", %{
+          "id" => to_string(user_id),
+          "username" => user["username"],
+          "discriminator" => user["discriminator"]
+        })
+        |> Map.put("nick", Gateway.Guild.Cache.get_member_nick(user_id, guild_id) |> nick_value())
+
+      :error ->
+        payload
+    end
+  end
+
+  defp nick_value({:ok, nick}), do: nick
+  defp nick_value(:error), do: nil
 end

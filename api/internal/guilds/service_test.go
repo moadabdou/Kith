@@ -12,6 +12,7 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/moadabdou/Kith/api/internal/events"
 	"github.com/moadabdou/Kith/api/pkg/snowflake"
 )
 
@@ -37,7 +38,7 @@ func newTestService(t *testing.T) (*Service, *sql.DB, *snowflake.Node, string) {
 		db.Close()
 	})
 	node, _ := snowflake.NewNode(998)
-	return NewService(db, node), db, node, prefix
+	return NewService(db, node, events.NoopPublisher{}), db, node, prefix
 }
 
 func createTestUser(t *testing.T, db *sql.DB, node *snowflake.Node, prefix, suffix string) int64 {
@@ -438,6 +439,146 @@ func TestRoles_Lifecycle(t *testing.T) {
 	}
 	if err := svc.DeleteRole(ctx, owner, gid, arid); !errors.Is(err, ErrUnknownRole) {
 		t.Errorf("DeleteRole(deleted) = %v, want ErrUnknownRole", err)
+	}
+}
+
+// recordingPublisher captures published events for member-lifecycle asserts.
+type recordingPublisher struct {
+	seen []events.Event
+}
+
+func (p *recordingPublisher) Publish(_ context.Context, e events.Event) error {
+	p.seen = append(p.seen, e)
+	return nil
+}
+
+func (p *recordingPublisher) ofType(t string) []events.Event {
+	var out []events.Event
+	for _, e := range p.seen {
+		if e.Type == t {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func TestMemberLifecycleEvents(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	var b [4]byte
+	rand.Read(b[:])
+	prefix := "t" + hex.EncodeToString(b[:])
+	t.Cleanup(func() {
+		db.Exec("DELETE FROM guilds WHERE name LIKE $1", prefix+"%")
+		db.Exec("DELETE FROM users WHERE username LIKE $1", prefix+"%")
+		db.Close()
+	})
+	node, _ := snowflake.NewNode(997)
+
+	pub := &recordingPublisher{}
+	svc := NewService(db, node, pub)
+	ctx := context.Background()
+
+	owner := createTestUser(t, db, node, prefix, "own")
+	joiner := createTestUser(t, db, node, prefix, "joi")
+	kicked := createTestUser(t, db, node, prefix, "kck")
+
+	g, err := svc.CreateGuild(ctx, owner, prefix+"hq")
+	if err != nil {
+		t.Fatalf("CreateGuild: %v", err)
+	}
+	gid, _ := snowflake.Parse(g.ID)
+	ch, err := svc.CreateChannel(ctx, owner, gid, 0, prefix+"general", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	chid, _ := snowflake.Parse(ch.ID)
+
+	// 1. Owner adds a member -> exactly one GUILD_MEMBER_ADD with full payload
+	if err := svc.AddMember(ctx, owner, gid, kicked); err != nil {
+		t.Fatalf("AddMember: %v", err)
+	}
+	adds := pub.ofType(eventTypeMemberAdd)
+	if len(adds) != 1 {
+		t.Fatalf("AddMember published %d ADD events, want 1", len(adds))
+	}
+	if adds[0].GuildID != g.ID {
+		t.Errorf("ADD guild_id = %s, want %s", adds[0].GuildID, g.ID)
+	}
+	payload, ok := adds[0].Payload.(memberAddPayload)
+	if !ok {
+		t.Fatalf("ADD payload type = %T, want memberAddPayload", adds[0].Payload)
+	}
+	if payload.User.ID != fmt.Sprint(kicked) || payload.User.Username == "" {
+		t.Errorf("ADD user = %+v, want id=%d with username", payload.User, kicked)
+	}
+	if payload.Roles == nil {
+		t.Error("ADD roles must be present (empty slice), not nil")
+	}
+	if payload.JoinedAt.IsZero() {
+		t.Error("ADD joined_at must be set")
+	}
+
+	// 2. Idempotent re-add: no duplicate event
+	if err := svc.AddMember(ctx, owner, gid, kicked); err != nil {
+		t.Fatalf("AddMember(idempotent): %v", err)
+	}
+	if got := len(pub.ofType(eventTypeMemberAdd)); got != 1 {
+		t.Errorf("re-add published %d ADD events total, want 1", got)
+	}
+
+	// 3. Invite join -> one more ADD (different user)
+	inv, err := svc.CreateInvite(ctx, owner, chid, 0, 0)
+	if err != nil {
+		t.Fatalf("CreateInvite: %v", err)
+	}
+	if _, err := svc.JoinInvite(ctx, joiner, inv.Code); err != nil {
+		t.Fatalf("JoinInvite: %v", err)
+	}
+	adds = pub.ofType(eventTypeMemberAdd)
+	if len(adds) != 2 {
+		t.Fatalf("JoinInvite published %d ADD events total, want 2", len(adds))
+	}
+	if adds[1].Payload.(memberAddPayload).User.ID != fmt.Sprint(joiner) {
+		t.Errorf("join ADD user = %+v, want id=%d", adds[1].Payload, joiner)
+	}
+
+	// 4. Already-member join: no-op, no event
+	if _, err := svc.JoinInvite(ctx, joiner, inv.Code); err != nil {
+		t.Fatalf("JoinInvite(already member): %v", err)
+	}
+	if got := len(pub.ofType(eventTypeMemberAdd)); got != 2 {
+		t.Errorf("already-member join published %d ADD events total, want 2", got)
+	}
+
+	// 5. Kick -> one GUILD_MEMBER_REMOVE
+	if err := svc.RemoveMember(ctx, owner, gid, kicked); err != nil {
+		t.Fatalf("RemoveMember: %v", err)
+	}
+	removes := pub.ofType(eventTypeMemberRemove)
+	if len(removes) != 1 {
+		t.Fatalf("RemoveMember published %d REMOVE events, want 1", len(removes))
+	}
+	rp, ok := removes[0].Payload.(memberRemovePayload)
+	if !ok {
+		t.Fatalf("REMOVE payload type = %T, want memberRemovePayload", removes[0].Payload)
+	}
+	if rp.GuildID != g.ID || rp.User.ID != fmt.Sprint(kicked) {
+		t.Errorf("REMOVE payload = %+v, want guild %s user %d", rp, g.ID, kicked)
+	}
+
+	// 6. Remove non-member: error, no event
+	if err := svc.RemoveMember(ctx, owner, gid, kicked); !errors.Is(err, ErrUnknownMember) {
+		t.Errorf("RemoveMember(unknown) = %v, want ErrUnknownMember", err)
+	}
+	if got := len(pub.ofType(eventTypeMemberRemove)); got != 1 {
+		t.Errorf("unknown remove published %d REMOVE events total, want 1", got)
 	}
 }
 

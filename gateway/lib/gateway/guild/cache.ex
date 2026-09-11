@@ -32,7 +32,13 @@ defmodule Gateway.Guild.Cache do
         Enum.each(guilds, fn guild ->
           :ets.insert(@table, {{:guild, guild["id"]}, guild})
           index_guild_channels(guild)
+
+          if guild["nickname"] != nil do
+            :ets.insert(@table, {{:member_nick, to_string(user["id"]), guild["id"]}, guild["nickname"]})
+          end
         end)
+
+        :ets.insert(@table, {{:user, to_string(user["id"])}, user})
 
         guild_ids = Enum.map(guilds, & &1["id"])
         :ets.insert(@table, {{:member_guilds, uid}, guild_ids})
@@ -162,6 +168,35 @@ defmodule Gateway.Guild.Cache do
 
   def get_channel_guild(channel_id) when is_integer(channel_id), do: get_channel_guild(to_string(channel_id))
 
+  @doc """
+  Retrieves a cached user map (`%{"id", "username", "discriminator"}`) by
+  user_id, warm from IDENTIFY. Returns `{:ok, user}` or `:error`.
+  """
+  def get_user(user_id) do
+    case :ets.lookup(@table, {:user, to_string(user_id)}) do
+      [{{:user, _uid}, user}] -> {:ok, user}
+      [] -> :error
+    end
+  end
+
+  @doc """
+  Retrieves the user's nickname in a specific guild from cache, or nil.
+  Returns `{:ok, nick | nil}` (nil = member has no nickname) or `:error` when
+  the user/guild combination is unknown to the cache.
+  """
+  def get_member_nick(user_id, guild_id) do
+    case :ets.lookup(@table, {:user, to_string(user_id)}) do
+      [{_user_key, _}] ->
+        case :ets.lookup(@table, {:member_nick, to_string(user_id), to_string(guild_id)}) do
+          [{{:member_nick, _, _}, nick}] -> {:ok, nick}
+          [] -> {:ok, nil}
+        end
+
+      [] ->
+        :error
+    end
+  end
+
   defp index_guild_channels(%{"id" => guild_id, "channels" => channels}) when is_list(channels) do
     gid = to_string(guild_id)
 
@@ -211,13 +246,12 @@ defmodule Gateway.Guild.Cache do
 
   defp fetch_guilds_with_channels(user_id) do
     guild_query = """
-    SELECT g.id, g.name, g.owner_id
+    SELECT g.id, g.name, g.owner_id, m.nickname
     FROM guilds g
     INNER JOIN members m ON m.guild_id = g.id
     WHERE m.user_id = $1
     ORDER BY g.id ASC
     """
-
     channel_query = """
     SELECT c.id, c.guild_id, c.type, c.name, c.position
     FROM channels c
@@ -245,13 +279,14 @@ defmodule Gateway.Guild.Cache do
         )
 
       guilds =
-        Enum.map(guild_rows, fn [gid, name, owner_id] ->
+        Enum.map(guild_rows, fn [gid, name, owner_id, nickname] ->
           gid_str = to_string(gid)
 
           %{
             "id" => gid_str,
             "name" => name,
             "owner_id" => to_string(owner_id),
+            "nickname" => nickname,
             "channels" => Map.get(channels_by_guild, gid_str, [])
           }
         end)

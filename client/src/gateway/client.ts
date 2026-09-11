@@ -1,4 +1,11 @@
-import type { MemberChunkPayload, Message, PresenceUpdatePayload } from '../types'
+import type {
+  MemberAddPayload,
+  MemberChunkPayload,
+  MemberRemovePayload,
+  Message,
+  PresenceUpdatePayload,
+  TypingStartPayload,
+} from '../types'
 
 export type GatewayStatus =
   | 'disconnected'
@@ -56,6 +63,9 @@ export const IDLE_THRESHOLD_MS = Number.isFinite(envIdleMs) && envIdleMs > 0 ? e
 
 const ACTIVITY_EVENTS = ['mousemove', 'mousedown', 'keydown', 'wheel', 'touchstart', 'scroll'] as const
 
+/** Client-side typing trigger throttle — matches the gateway's 8s cooldown. */
+export const TYPING_THROTTLE_MS = 8_000
+
 export class GatewayClient {
   public ws: WebSocket | null = null
   private token: string | null = null
@@ -81,6 +91,9 @@ export class GatewayClient {
   // input. Heartbeats alone (connection liveness) must not count as activity.
   private lastActivityAt: number = Date.now()
   private activityBound = false
+
+  // Typing throttle state: channel_id -> last sent timestamp (ms)
+  private typingLastSentAt: Map<string, number> = new Map()
 
   public getStatus(): GatewayStatus {
     return this.status
@@ -177,6 +190,37 @@ export class GatewayClient {
 
   public onPresenceUpdate(callback: (update: PresenceUpdatePayload) => void): () => void {
     return this.on('PRESENCE_UPDATE', callback)
+  }
+
+  public onTypingStart(callback: (typing: TypingStartPayload) => void): () => void {
+    return this.on('TYPING_START', callback)
+  }
+
+  public onGuildMemberAdd(callback: (payload: MemberAddPayload) => void): () => void {
+    return this.on('GUILD_MEMBER_ADD', callback)
+  }
+
+  public onGuildMemberRemove(callback: (payload: MemberRemovePayload) => void): () => void {
+    return this.on('GUILD_MEMBER_REMOVE', callback)
+  }
+
+  /**
+   * Sends a TYPING_START trigger for a channel, client-throttled to one per
+   * 8s per channel (matching the server-side (user, channel) cooldown —
+   * excess frames are silently dropped there anyway). The frame intentionally
+   * carries no `op` field: the gateway routes typing frames by `t`.
+   * Returns true when sent, false when throttled.
+   */
+  public sendTyping(channelId: string): boolean {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false
+
+    const now = Date.now()
+    const last = this.typingLastSentAt.get(channelId)
+    if (last !== undefined && now - last < TYPING_THROTTLE_MS) return false
+
+    this.typingLastSentAt.set(channelId, now)
+    this.ws.send(JSON.stringify({ t: 'TYPING_START', d: { channel_id: channelId } }))
+    return true
   }
 
   /**

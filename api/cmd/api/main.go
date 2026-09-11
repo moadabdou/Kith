@@ -84,7 +84,6 @@ func main() {
 	authSvc := auth.NewService(db, node, jwt, refreshTokenTTL)
 	authHandler := &auth.Handler{Svc: authSvc}
 	usersHandler := &users.Handler{DB: db}
-	guildsHandler := &guilds.Handler{Svc: guilds.NewService(db, node)}
 	// Phase 1: NATS JetStream (default) and Redis Streams behind events.Publisher (EVENTS_BUS=nats|redis|noop).
 	eventsBus := envOr("EVENTS_BUS", "nats")
 	var publisher events.Publisher
@@ -116,6 +115,7 @@ func main() {
 		slog.Error("invalid EVENTS_BUS configuration", "bus", eventsBus)
 		os.Exit(1)
 	}
+	guildsHandler := &guilds.Handler{Svc: guilds.NewService(db, node, publisher)}
 	messagesHandler := &messages.Handler{Svc: messages.NewService(db, node, publisher)}
 
 	mux := http.NewServeMux()

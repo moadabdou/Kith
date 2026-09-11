@@ -1,6 +1,13 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { useAuth } from '../context/useAuth'
-import type { MemberChunkPayload, Message, PresenceUpdatePayload } from '../types'
+import type {
+  MemberAddPayload,
+  MemberChunkPayload,
+  MemberRemovePayload,
+  Message,
+  PresenceUpdatePayload,
+  TypingStartPayload,
+} from '../types'
 import { gatewayClient, type GatewayStatus, type ReconnectState } from './client'
 import { GatewayContext } from './gateway-context-def'
 import type { RequestGuildMembersOptions } from './gateway-context-def'
@@ -51,6 +58,22 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
     return gatewayClient.onPresenceUpdate(callback)
   }
 
+  const sendTyping = (channelId: string) => {
+    return gatewayClient.sendTyping(channelId)
+  }
+
+  const subscribeToTyping = (callback: (typing: TypingStartPayload) => void) => {
+    return gatewayClient.onTypingStart(callback)
+  }
+
+  const subscribeToMemberAdds = (callback: (payload: MemberAddPayload) => void) => {
+    return gatewayClient.onGuildMemberAdd(callback)
+  }
+
+  const subscribeToMemberRemoves = (callback: (payload: MemberRemovePayload) => void) => {
+    return gatewayClient.onGuildMemberRemove(callback)
+  }
+
   const reconnectNow = () => {
     gatewayClient.reconnectNow()
   }
@@ -69,6 +92,10 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
         requestGuildMembers,
         subscribeToMemberChunks,
         subscribeToPresenceUpdates,
+        sendTyping,
+        subscribeToTyping,
+        subscribeToMemberAdds,
+        subscribeToMemberRemoves,
       }}
     >
       {children}

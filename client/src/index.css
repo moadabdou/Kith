@@ -525,6 +525,62 @@ body {
   color: var(--text-muted);
 }
 
+/* ── Typing Indicator (#39) ─────────────────────────── */
+.typing-indicator {
+  height: 24px;
+  padding: 0 16px;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.typing-indicator-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.typing-dots {
+  display: inline-flex;
+  gap: 3px;
+  margin-left: 2px;
+}
+
+.typing-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background-color: var(--text-muted);
+  animation: typing-dot-pulse 1.2s ease-in-out infinite;
+}
+
+.typing-dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.typing-dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes typing-dot-pulse {
+  0%,
+  60%,
+  100% {
+    opacity: 0.3;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+
 /* ── Modals & Dialogs ──────────────────────────────── */
 .modal-overlay {
   position: fixed;

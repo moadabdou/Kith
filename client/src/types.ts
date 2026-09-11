@@ -112,3 +112,21 @@ export interface PresenceUpdatePayload {
   activities: unknown[]
   client_status: Record<string, string>
 }
+
+export interface TypingStartPayload {
+  channel_id: string
+  user_id: string
+  guild_id: string
+  timestamp: number // unix seconds, server-stamped — indicator TTL derives from it
+  user?: { id: string; username: string; discriminator: string }
+  nick?: string | null
+}
+
+export interface MemberAddPayload extends Member {
+  guild_id: string
+}
+
+export interface MemberRemovePayload {
+  guild_id: string
+  user: { id: string }
+}

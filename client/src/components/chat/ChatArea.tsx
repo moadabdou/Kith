@@ -1,21 +1,30 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { AlertCircle, Hash, Send } from 'lucide-react'
 import { api } from '../../api'
-import type { Channel, Guild, Message } from '../../types'
-
+import { useAuth } from '../../context/useAuth'
 import { useGateway } from '../../gateway/useGateway'
+import { remainingMs, typingDisplayName, typingIndicatorText } from '../../lib/typing'
+import type { Channel, Guild, Message } from '../../types'
 
 interface ChatAreaProps {
   currentGuild: Guild | null
   currentChannel: Channel | null
 }
 
+interface ActiveTyper {
+  channelId: string
+  name: string
+  expiresAt: number
+}
+
 export function ChatArea({ currentGuild, currentChannel }: ChatAreaProps) {
-  const { subscribeToMessages, connected, onSessionReset } = useGateway()
+  const { user } = useAuth()
+  const { subscribeToMessages, subscribeToTyping, sendTyping, connected, onSessionReset } = useGateway()
   const [messages, setMessages] = useState<Message[]>([])
   const [inputText, setInputText] = useState('')
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [typers, setTypers] = useState<Map<string, ActiveTyper>>(new Map())
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   const scrollToBottom = (smooth = false) => {
@@ -92,6 +101,59 @@ export function ChatArea({ currentGuild, currentChannel }: ChatAreaProps) {
     scrollToBottom(true)
   }, [messages.length])
 
+  // Typing indicators (#39): track active typers per channel. Indicator
+  // lifetime derives from the payload's server timestamp — never arrival time —
+  // so replayed/stale events are dead on arrival. Entries carry their channel:
+  // switching channels filters them at render instead of resetting state.
+  useEffect(() => {
+    if (!currentChannel) return
+    const channelId = currentChannel.id
+
+    return subscribeToTyping((typing) => {
+      if (typing.channel_id !== channelId) return
+      if (typing.user_id === user?.id) return // own typing renders locally only
+
+      const remaining = remainingMs(typing)
+      if (remaining <= 0) return
+
+      setTypers((prev) => {
+        const next = new Map(prev)
+        next.set(typing.user_id, {
+          channelId,
+          name: typingDisplayName(typing),
+          expiresAt: Date.now() + remaining,
+        })
+        return next
+      })
+    })
+  }, [currentChannel, subscribeToTyping, user?.id])
+
+  // Expiry sweep: one interval for all typers (re-arm-race-free "per-typer
+  // timeout"). A fresh TYPING_START simply overwrites expiresAt.
+  useEffect(() => {
+    const sweep = setInterval(() => {
+      setTypers((prev) => {
+        const now = Date.now()
+        let changed = false
+        const next = new Map<string, ActiveTyper>()
+        for (const [userId, typer] of prev) {
+          if (typer.expiresAt > now) {
+            next.set(userId, typer)
+          } else {
+            changed = true
+          }
+        }
+        return changed ? next : prev
+      })
+    }, 500)
+    return () => clearInterval(sweep)
+  }, [])
+
+  // Session reset: replay may re-deliver typing, but stale ones are DoA — just clear.
+  useEffect(() => {
+    return onSessionReset(() => setTypers(new Map()))
+  }, [onSessionReset])
+
   const handleSend = async (e: FormEvent) => {
     e.preventDefault()
     if (!inputText.trim() || !currentGuild || !currentChannel || sending) return
@@ -120,10 +182,25 @@ export function ChatArea({ currentGuild, currentChannel }: ChatAreaProps) {
     }
   }
 
+  const handleInputChange = (value: string) => {
+    setInputText(value)
+    // Typing trigger on real keystrokes with non-empty input (Discord
+    // semantics); sendTyping itself throttles to 1 per 8s per channel.
+    if (value.length > 0 && currentChannel) {
+      sendTyping(currentChannel.id)
+    }
+  }
+
   const formatTime = (ts: string) => {
     const d = new Date(ts)
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   }
+
+  const typingText = typingIndicatorText(
+    Array.from(typers.values())
+      .filter((t) => currentChannel && t.channelId === currentChannel.id)
+      .map((t) => t.name),
+  )
 
   if (!currentGuild || !currentChannel) {
     return (
@@ -217,6 +294,20 @@ export function ChatArea({ currentGuild, currentChannel }: ChatAreaProps) {
         </div>
       )}
 
+      {/* Typing indicator (fixed height — no layout jump when it appears) */}
+      <div className="typing-indicator" aria-live="polite">
+        {typingText && (
+          <span className="typing-indicator-text">
+            {typingText}
+            <span className="typing-dots" aria-hidden="true">
+              <span className="typing-dot" />
+              <span className="typing-dot" />
+              <span className="typing-dot" />
+            </span>
+          </span>
+        )}
+      </div>
+
       {/* Message Input Box */}
       <div className="chat-input-container">
         <form onSubmit={handleSend} className="chat-input-bar">
@@ -224,7 +315,7 @@ export function ChatArea({ currentGuild, currentChannel }: ChatAreaProps) {
             type="text"
             className="chat-input"
             value={inputText}
-            onChange={(e) => setInputText(e.target.value)}
+            onChange={(e) => handleInputChange(e.target.value)}
             placeholder={`Message #${currentChannel.name}`}
             disabled={sending}
             autoFocus

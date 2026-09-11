@@ -10,11 +10,13 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"errors"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/moadabdou/Kith/api/internal/events"
 	"github.com/moadabdou/Kith/api/pkg/snowflake"
 )
 
@@ -33,12 +35,37 @@ var (
 
 // Service owns all guild-domain persistence.
 type Service struct {
-	db *sql.DB
-	sf *snowflake.Node
+	db  *sql.DB
+	sf  *snowflake.Node
+	pub events.Publisher
 }
 
-func NewService(db *sql.DB, sf *snowflake.Node) *Service {
-	return &Service{db: db, sf: sf}
+func NewService(db *sql.DB, sf *snowflake.Node, pub events.Publisher) *Service {
+	return &Service{db: db, sf: sf, pub: pub}
+}
+
+// Member lifecycle events (plan/01 §3). The gateway routes these generically
+// by guild_id — subscribers learn about joins/leaves in real time, which the
+// member sidebar (op 8 snapshot) otherwise could not.
+const (
+	eventTypeMemberAdd    = "GUILD_MEMBER_ADD"
+	eventTypeMemberRemove = "GUILD_MEMBER_REMOVE"
+	eventVersion          = 1
+)
+
+// memberAddPayload mirrors the GUILD_MEMBERS_CHUNK member shape so clients
+// handle both with the same code path.
+type memberAddPayload struct {
+	GuildID  string    `json:"guild_id"`
+	User     UserRef   `json:"user"`
+	Nick     *string   `json:"nick"`
+	Roles    []string  `json:"roles"`
+	JoinedAt time.Time `json:"joined_at"`
+}
+
+type memberRemovePayload struct {
+	GuildID string  `json:"guild_id"`
+	User    UserRef `json:"user"`
 }
 
 // ── types (wire shapes; IDs are strings like Discord) ─────────────────────
@@ -380,6 +407,8 @@ func (s *Service) ListMembers(ctx context.Context, userID, guildID int64) ([]Mem
 }
 
 // AddMember puts a user into a guild (owner only until Phase 4; idempotent).
+// Publishes GUILD_MEMBER_ADD only when the insert actually happened — the
+// idempotent re-add path is a no-op, not an event.
 func (s *Service) AddMember(ctx context.Context, actorID, guildID, targetID int64) error {
 	if err := s.requireOwner(ctx, guildID, actorID); err != nil {
 		return err
@@ -392,10 +421,47 @@ func (s *Service) AddMember(ctx context.Context, actorID, guildID, targetID int6
 	if !exists {
 		return ErrUnknownUser
 	}
-	_, err := s.db.ExecContext(ctx, `
+	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO members (guild_id, user_id) VALUES ($1, $2)
 		ON CONFLICT DO NOTHING`, guildID, targetID)
-	return err
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil
+	}
+	s.publishMemberAdd(ctx, guildID, targetID)
+	return nil
+}
+
+// publishMemberAdd builds the ADD payload from the committed row and fans it
+// out after the fact. Publish failures are logged, not fatal — the row is
+// committed truth (same policy as the messages service).
+func (s *Service) publishMemberAdd(ctx context.Context, guildID, userID int64) {
+	var p memberAddPayload
+	p.GuildID = strconv.FormatInt(guildID, 10)
+	err := s.db.QueryRowContext(ctx, `
+		SELECT u.id::text, u.username, to_char(u.discriminator, 'FM0000'),
+		       m.nickname, m.joined_at
+		FROM members m
+		JOIN users u ON u.id = m.user_id
+		WHERE m.guild_id = $1 AND m.user_id = $2`, guildID, userID,
+	).Scan(&p.User.ID, &p.User.Username, &p.User.Discriminator, &p.Nick, &p.JoinedAt)
+	if err != nil {
+		slog.ErrorContext(ctx, "failed to build member_add payload",
+			"guild_id", guildID, "user_id", userID, "error", err)
+		return
+	}
+	p.Roles = []string{}
+	if err := s.pub.Publish(ctx, events.Event{
+		Type:    eventTypeMemberAdd,
+		Version: eventVersion,
+		GuildID: p.GuildID,
+		Payload: p,
+	}); err != nil {
+		slog.ErrorContext(ctx, "failed to publish event",
+			"type", eventTypeMemberAdd, "guild_id", p.GuildID, "error", err)
+	}
 }
 
 // RemoveMember kicks (owner) or self-leaves. The owner is untouchable.
@@ -423,7 +489,26 @@ func (s *Service) RemoveMember(ctx context.Context, actorID, guildID, targetID i
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrUnknownMember
 	}
+
+	s.publishMemberRemove(ctx, guildID, targetID)
 	return nil
+}
+
+func (s *Service) publishMemberRemove(ctx context.Context, guildID, userID int64) {
+	gid := strconv.FormatInt(guildID, 10)
+	uid := strconv.FormatInt(userID, 10)
+	if err := s.pub.Publish(ctx, events.Event{
+		Type:    eventTypeMemberRemove,
+		Version: eventVersion,
+		GuildID: gid,
+		Payload: memberRemovePayload{
+			GuildID: gid,
+			User:    UserRef{ID: uid},
+		},
+	}); err != nil {
+		slog.ErrorContext(ctx, "failed to publish event",
+			"type", eventTypeMemberRemove, "guild_id", gid, "error", err)
+	}
 }
 
 // ── invites ───────────────────────────────────────────────────────────────
@@ -524,6 +609,9 @@ func (s *Service) JoinInvite(ctx context.Context, userID int64, code string) (*G
 	if err != nil {
 		return nil, err
 	}
+
+	// The RETURNING insert fired — this call is the one that joined.
+	s.publishMemberAdd(ctx, guildID, userID)
 	return s.guildByID(ctx, guildID)
 }
 

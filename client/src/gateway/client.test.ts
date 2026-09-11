@@ -328,4 +328,51 @@ describe('Gateway Client Reconnection & RESUME (#26)', () => {
       expect(ws.sentData.length).toBe(sentBefore)
     })
   })
+
+  describe('Typing trigger throttling (#39)', () => {
+    const typingFrames = (ws: MockWebSocket) =>
+      ws.sentData.map((raw) => JSON.parse(raw)).filter((f) => f.t === 'TYPING_START')
+
+    it('sends a TYPING_START frame with no op field and throttles to 1 per 8s per channel', () => {
+      const client = new GatewayClient()
+      client.connect('mock-jwt-token')
+      const ws = MockWebSocket.instances[0]
+      ws.receiveJson({ op: 10, d: { heartbeat_interval: 30000 } })
+      expect(typingFrames(ws).length).toBe(0)
+
+      // First keystroke dispatch: sent
+      expect(client.sendTyping('chan-1')).toBe(true)
+      const frames = typingFrames(ws)
+      expect(frames.length).toBe(1)
+      expect(frames[0].d.channel_id).toBe('chan-1')
+      expect(frames[0].op).toBeUndefined() // gateway routes typing by `t`, not op
+
+      // Immediate re-dispatch: throttled, no new frame
+      expect(client.sendTyping('chan-1')).toBe(false)
+      expect(typingFrames(ws).length).toBe(1)
+
+      // Within the window: still throttled
+      vi.advanceTimersByTime(7_999)
+      expect(client.sendTyping('chan-1')).toBe(false)
+      expect(typingFrames(ws).length).toBe(1)
+
+      // After 8s: sends again
+      vi.advanceTimersByTime(1)
+      expect(client.sendTyping('chan-1')).toBe(true)
+      expect(typingFrames(ws).length).toBe(2)
+    })
+
+    it('throttles per channel independently', () => {
+      const client = new GatewayClient()
+      client.connect('mock-jwt-token')
+      const ws = MockWebSocket.instances[0]
+      ws.receiveJson({ op: 10, d: { heartbeat_interval: 30000 } })
+      expect(typingFrames(ws).length).toBe(0)
+
+      expect(client.sendTyping('chan-1')).toBe(true)
+      expect(client.sendTyping('chan-1')).toBe(false) // same channel throttled
+      expect(client.sendTyping('chan-2')).toBe(true) // different channel passes
+      expect(typingFrames(ws).length).toBe(2)
+    })
+  })
 })

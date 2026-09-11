@@ -27,8 +27,15 @@ const DOT_COLORS: Record<string, string> = {
  * - Live presence via PRESENCE_UPDATE (absence from snapshot = offline).
  */
 export function MemberSidebar({ guildId }: MemberSidebarProps) {
-  const { connected, requestGuildMembers, subscribeToMemberChunks, subscribeToPresenceUpdates, onSessionReset } =
-    useGateway()
+  const {
+    connected,
+    requestGuildMembers,
+    subscribeToMemberChunks,
+    subscribeToPresenceUpdates,
+    subscribeToMemberAdds,
+    subscribeToMemberRemoves,
+    onSessionReset,
+  } = useGateway()
 
   const [roles, setRoles] = useState<Role[]>([])
   const [members, setMembers] = useState<Member[]>([])
@@ -125,6 +132,35 @@ export function MemberSidebar({ guildId }: MemberSidebarProps) {
       setStreamDone(false)
     })
   }, [onSessionReset])
+
+  // Live membership changes: the op 8 snapshot is point-in-time, so joins and
+  // leaves arrive as GUILD_MEMBER_ADD / GUILD_MEMBER_REMOVE dispatches from the
+  // REST side (published after commit). Without these, a member who joins after
+  // the snapshot is invisible — their PRESENCE_UPDATE has no row to attach to.
+  useEffect(() => {
+    if (!guildId) return
+    return subscribeToMemberAdds((payload) => {
+      if (payload.guild_id !== guildId || !payload.user?.id) return
+      setMembers((prev) => {
+        if (prev.some((m) => m.user.id === payload.user.id)) return prev
+        return [...prev, payload]
+      })
+    })
+  }, [guildId, subscribeToMemberAdds])
+
+  useEffect(() => {
+    if (!guildId) return
+    return subscribeToMemberRemoves((payload) => {
+      if (payload.guild_id !== guildId || !payload.user?.id) return
+      setMembers((prev) => prev.filter((m) => m.user.id !== payload.user.id))
+      setPresences((prev) => {
+        if (!prev.has(payload.user.id)) return prev
+        const map = new Map(prev)
+        map.delete(payload.user.id)
+        return map
+      })
+    })
+  }, [guildId, subscribeToMemberRemoves])
 
   // After a fresh IDENTIFY (READY), re-request this guild's members.
   // RESUME doesn't emit READY — missed chunks replay through the subscription.

@@ -64,6 +64,10 @@ defmodule Gateway.Typing.BroadcasterTest do
     seed_guild(guild_id, [channel_id])
     Cache.put_member_guilds(typer_id, [guild_id])
 
+    # Warm user + nick cache entries as IDENTIFY would (typer_1 has a nick here)
+    :ets.insert(:gateway_guild_cache, {{:user, typer_id}, %{"id" => typer_id, "username" => "alice", "discriminator" => "0001"}})
+    :ets.insert(:gateway_guild_cache, {{:member_nick, typer_id, guild_id}, "Ali"})
+
     # Subscriber session co-member in the guild
     {:ok, _} =
       Session.get_or_spawn(
@@ -101,8 +105,48 @@ defmodule Gateway.Typing.BroadcasterTest do
     assert is_integer(payload["timestamp"])
     assert payload["timestamp"] in before_ts..after_ts
 
+    # Enrichment: receivers get display-name data without extra lookups (#39)
+    assert payload["user"] == %{"id" => typer_id, "username" => "alice", "discriminator" => "0001"}
+    assert payload["nick"] == "Ali"
+
     # No TYPING_START ever reaches the unrelated guild subscriber
     refute_receive {:send_frame, %{"type" => "TYPING_START"}, _, _}, 100
+  end
+
+  test "broadcast omits user/nick enrichment on cache miss and nick defaults to nil" do
+    guild_id = "guild_typing_3"
+    channel_id = "chan_typing_3"
+    typer_id = "typer_3"
+
+    seed_guild(guild_id, [channel_id])
+    Cache.put_member_guilds(typer_id, [guild_id])
+
+    # User cached, but no nickname entry -> nick is nil; username present
+    :ets.insert(:gateway_guild_cache, {{:user, typer_id}, %{"id" => typer_id, "username" => "bob", "discriminator" => "0002"}})
+
+    assert {:ok, _} =
+             Session.get_or_spawn(
+               session_id: "sess_typing_listener_3",
+               user_id: "listener_3",
+               guild_ids: [guild_id],
+               ws_pid: self()
+             )
+
+    assert :ok = Broadcaster.broadcast(typer_id, channel_id)
+    assert_receive {:send_frame, event, _, _}, 1000
+
+    payload = event["payload"]
+    assert payload["user"]["username"] == "bob"
+    assert payload["nick"] == nil
+
+    # Uncached user -> user/nick keys omitted entirely, user_id still present
+    ghost_id = "typer_ghost"
+    Cache.put_member_guilds(ghost_id, [guild_id])
+    assert :ok = Broadcaster.broadcast(ghost_id, channel_id)
+    assert_receive {:send_frame, event2, _, _}, 1000
+    refute Map.has_key?(event2["payload"], "user")
+    refute Map.has_key?(event2["payload"], "nick")
+    assert event2["payload"]["user_id"] == ghost_id
   end
 
   test "broadcast drops unknown channels and non-members without closing anything" do

@@ -140,6 +140,9 @@ defmodule Gateway.WS.HandlerTest do
       assert {:ok, cached_guild} = Gateway.Guild.Cache.get_guild("87000000000000100")
       assert cached_guild["name"] == "Kith HQ"
 
+      # Verify channel → guild index was warmed
+      assert {:ok, "87000000000000100"} = Gateway.Guild.Cache.get_channel_guild("87000000000000201")
+
       Handler.terminate(:normal, new_state)
       Gateway.Session.close(new_state.session_id)
     end
@@ -446,7 +449,7 @@ defmodule Gateway.WS.HandlerTest do
       close_session(session_id)
     end
 
-    test "TYPING_START rate limits per (user_id, channel_id) and silently drops excess frames" do
+    test "TYPING_START broadcasts dispatch frame to guild subscribers once per 8s cooldown window" do
       {:push, _, state} = Handler.init(heartbeat_interval: 10_000)
       user_id = 87000000000000001
       token = Gateway.Auth.JWT.issue(user_id, state.jwt_secret, 3600)
@@ -454,27 +457,55 @@ defmodule Gateway.WS.HandlerTest do
 
       {:push, _, identified_state} = Handler.handle_in({id_payload, opcode: :text}, state)
       session_id = identified_state.session_id
-      channel_id = "87000000000000101"
+      # Real seeded channel of Kith HQ (guild 87000000000000100), warm in cache after IDENTIFY
+      channel_id = "87000000000000201"
 
       typing_payload = Jason.encode!(%{"t" => "TYPING_START", "d" => %{"channel_id" => channel_id}})
 
-      # 1. First typing frame allowed
+      # 1. First typing frame passes the rate limiter and is broadcast:
+      #    the typer's own session (ws_pid = test process) receives the dispatch
       assert {:ok, s1} = Handler.handle_in({typing_payload, opcode: :text}, identified_state)
       assert s1.close_code == nil
 
-      # 2. Second typing frame within 8s cooldown is silently dropped without closing
+      assert_receive {:send_frame, event, seq, bus_ts}, 1000
+
+      assert event["type"] == "TYPING_START"
+      assert event["version"] == 1
+      assert event["guild_id"] == "87000000000000100"
+      assert is_nil(bus_ts)
+      assert is_integer(seq)
+
+      payload = event["payload"]
+      assert payload["channel_id"] == channel_id
+      assert payload["user_id"] == to_string(user_id)
+      assert payload["guild_id"] == "87000000000000100"
+      assert is_integer(payload["timestamp"])
+      assert abs(payload["timestamp"] - System.system_time(:second)) <= 5
+
+      # 2. The dispatch frame encodes to a valid op 0 wire frame
+      assert {:push, [{:text, frame_json}], _} = Handler.handle_info({:send_frame, event, seq, bus_ts}, s1)
+      assert {:ok, frame} = Jason.decode(frame_json)
+      assert frame["t"] == "TYPING_START"
+      assert frame["op"] == 0
+      assert frame["s"] == seq
+      assert frame["d"]["channel_id"] == channel_id
+      assert frame["d"]["user_id"] == to_string(user_id)
+      assert is_integer(frame["d"]["timestamp"])
+
+      # 3. Second and third typing frames within the 8s cooldown are silently
+      #    dropped: no close, no additional TYPING_START dispatch
       assert {:ok, s2} = Handler.handle_in({typing_payload, opcode: :text}, s1)
       assert s2.close_code == nil
-
-      # 3. Third typing frame also silently dropped
       assert {:ok, s3} = Handler.handle_in({typing_payload, opcode: :text}, s2)
       assert s3.close_code == nil
+
+      refute_receive {:send_frame, %{"type" => "TYPING_START"}, _, _}, 200
 
       Handler.terminate(:normal, s3)
       close_session(session_id)
     end
 
-    test "TYPING_START before IDENTIFY or with missing channel_id is safely ignored" do
+    test "TYPING_START before IDENTIFY, with missing/unknown channel_id is safely ignored" do
       {:push, _, state} = Handler.init(heartbeat_interval: 10_000)
 
       # 1. Pre-IDENTIFY typing frame ignored
@@ -497,7 +528,15 @@ defmodule Gateway.WS.HandlerTest do
       assert {:ok, s3} = Handler.handle_in({payload3, opcode: :text}, s2)
       assert s3.close_code == nil
 
-      Handler.terminate(:normal, s3)
+      # 3. Unknown channel: guild resolution fails and the frame is dropped
+      #    without closing the connection or emitting any dispatch
+      payload4 = Jason.encode!(%{"t" => "TYPING_START", "d" => %{"channel_id" => "99999999999999999"}})
+      assert {:ok, s4} = Handler.handle_in({payload4, opcode: :text}, s3)
+      assert s4.close_code == nil
+
+      refute_receive {:send_frame, %{"type" => "TYPING_START"}, _, _}, 200
+
+      Handler.terminate(:normal, s4)
       close_session(identified.session_id)
     end
 

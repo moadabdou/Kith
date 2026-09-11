@@ -259,6 +259,7 @@ defmodule Gateway.WS.Handler do
           case Gateway.Typing.RateLimiter.check_rate(state.user_id, channel_id) do
             :ok ->
               Logger.debug("Gateway.WS.Handler: typing allowed for user #{state.user_id} in channel #{channel_id}")
+              Gateway.Typing.Broadcaster.broadcast(state.user_id, channel_id)
               {:ok, state}
 
             {:rate_limited, retry_after_ms} ->

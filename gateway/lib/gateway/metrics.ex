@@ -60,6 +60,12 @@ defmodule Gateway.Metrics do
     end)
   end
 
+  def incr_typing_broadcast do
+    Agent.update(__MODULE__, fn state ->
+      %{state | typing_broadcasts: state.typing_broadcasts + 1}
+    end)
+  end
+
   def get_resumes do
     Agent.get(__MODULE__, fn state -> state.resumes end)
   end
@@ -226,9 +232,12 @@ defmodule Gateway.Metrics do
           "# HELP gateway_identifies_total Total IDENTIFY payloads received.",
           "# TYPE gateway_identifies_total counter",
           "gateway_identifies_total #{state.identifies}",
-          "# HELP gateway_resumes_total Total RESUME payloads processed successfully.",
-          "# TYPE gateway_resumes_total counter",
-          "gateway_resumes_total #{state.resumes}",
+           "# HELP gateway_resumes_total Total RESUME payloads processed successfully.",
+           "# TYPE gateway_resumes_total counter",
+           "gateway_resumes_total #{state.resumes}",
+           "# HELP gateway_typing_broadcasts_total Total TYPING_START events dispatched to guild subscribers.",
+           "# TYPE gateway_typing_broadcasts_total counter",
+           "gateway_typing_broadcasts_total #{state.typing_broadcasts}",
           "# HELP gateway_events_consumed_total Total events consumed and acknowledged from event bus.",
           "# TYPE gateway_events_consumed_total counter",
           "gateway_events_consumed_total #{state.events_consumed}",
@@ -315,6 +324,7 @@ defmodule Gateway.Metrics do
       slow_consumer_drops: 0,
       identifies: 0,
       resumes: 0,
+      typing_broadcasts: 0,
       close_codes: %{},
       fanout_latency: %{sum: 0.0, count: 0, buckets: %{}},
       send_queue_depth: %{sum: 0, count: 0, buckets: %{}},

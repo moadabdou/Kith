@@ -31,6 +31,7 @@ defmodule Gateway.Guild.Cache do
         # Cache in ETS
         Enum.each(guilds, fn guild ->
           :ets.insert(@table, {{:guild, guild["id"]}, guild})
+          index_guild_channels(guild)
         end)
 
         guild_ids = Enum.map(guilds, & &1["id"])
@@ -133,8 +134,33 @@ defmodule Gateway.Guild.Cache do
   """
   def put_guild(%{"id" => guild_id} = guild) do
     :ets.insert(@table, {{:guild, to_string(guild_id)}, guild})
+    index_guild_channels(guild)
     :ok
   end
+
+  @doc """
+  Resolves the owning guild_id for a channel_id from the ETS channel index.
+  Returns `{:ok, guild_id}` or `:error` when the channel is not cached.
+  """
+  def get_channel_guild(channel_id) when is_binary(channel_id) do
+    case :ets.lookup(@table, {:channel, channel_id}) do
+      [{{:channel, ^channel_id}, guild_id}] -> {:ok, guild_id}
+      [] -> :error
+    end
+  end
+
+  def get_channel_guild(channel_id) when is_integer(channel_id), do: get_channel_guild(to_string(channel_id))
+
+  defp index_guild_channels(%{"id" => guild_id, "channels" => channels}) when is_list(channels) do
+    gid = to_string(guild_id)
+
+    Enum.each(channels, fn
+      %{"id" => channel_id} -> :ets.insert(@table, {{:channel, to_string(channel_id)}, gid})
+      _other -> :ok
+    end)
+  end
+
+  defp index_guild_channels(_guild), do: :ok
 
   # ── Private Database Fetching ───────────────────────────────────────────────
 

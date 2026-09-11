@@ -199,6 +199,38 @@ defmodule Gateway.Session do
 
     ref = Process.monitor(new_ws_pid)
 
+    if state.user_id do
+      {initial_status, client_status} =
+        case Gateway.Presence.Store.get_presence(state.user_id) do
+          {:ok, %{sessions: sessions}} ->
+            case Map.get(sessions, state.session_id) do
+              %{declared_status: ds, client_status: cs} when ds not in [nil, :offline] ->
+                {ds, cs || %{}}
+
+              %{status: s, client_status: cs} when s not in [nil, :offline] ->
+                {s, cs || %{}}
+
+              %{client_status: cs} ->
+                {:online, cs || %{}}
+
+              _ ->
+                {:online, %{}}
+            end
+
+          _ ->
+            {:online, %{}}
+        end
+
+      Gateway.Presence.Store.session_connected(
+        state.user_id,
+        state.session_id,
+        new_ws_pid,
+        initial_status,
+        client_status,
+        self()
+      )
+    end
+
     {:reply, {:ok, state.seq},
      %{state | ws_pid: new_ws_pid, ws_ref: ref, ttl_timer: nil}}
   end
@@ -232,6 +264,38 @@ defmodule Gateway.Session do
             end
 
             ref = Process.monitor(new_ws_pid)
+
+            if state.user_id do
+              {initial_status, client_status} =
+                case Gateway.Presence.Store.get_presence(state.user_id) do
+                  {:ok, %{sessions: sessions}} ->
+                    case Map.get(sessions, state.session_id) do
+                      %{declared_status: ds, client_status: cs} when ds not in [nil, :offline] ->
+                        {ds, cs || %{}}
+
+                      %{status: s, client_status: cs} when s not in [nil, :offline] ->
+                        {s, cs || %{}}
+
+                      %{client_status: cs} ->
+                        {:online, cs || %{}}
+
+                      _ ->
+                        {:online, %{}}
+                    end
+
+                  _ ->
+                    {:online, %{}}
+                end
+
+              Gateway.Presence.Store.session_connected(
+                state.user_id,
+                state.session_id,
+                new_ws_pid,
+                initial_status,
+                client_status,
+                self()
+              )
+            end
 
             Logger.info(
               "Gateway.Session [#{state.session_id}]: resumed by user #{state.user_id} with #{length(missed_frames)} replayed frames (client_seq=#{client_seq}, current_seq=#{state.seq})"
@@ -322,6 +386,11 @@ defmodule Gateway.Session do
   def handle_info({:DOWN, ref, :process, pid, reason}, %{ws_ref: ref} = state) do
     Logger.debug("Gateway.Session [#{state.session_id}]: socket #{inspect(pid)} down (#{inspect(reason)}); arming disconnect TTL timer")
     timer = Process.send_after(self(), :session_timeout, state.disconnect_ttl_ms)
+
+    if state.user_id do
+      Gateway.Presence.Store.session_disconnected(state.user_id, state.session_id)
+    end
+
     {:noreply, %{state | ws_pid: nil, ws_ref: nil, ttl_timer: timer}}
   end
 

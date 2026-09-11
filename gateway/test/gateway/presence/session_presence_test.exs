@@ -135,5 +135,46 @@ defmodule Gateway.Presence.SessionPresenceTest do
       assert p_reconnect.sessions[session_id].status == :dnd
       assert p_reconnect.sessions[session_id].client_status == %{"desktop" => "dnd"}
     end
+
+    test "socket drop transitions presence to :offline while session remains alive, and RESUME restores :online" do
+      session_id = "sess_resume_presence_transition"
+      user_id = "user_resume_presence_transition"
+
+      dummy_socket = spawn(fn -> receive do :stop -> :ok end end)
+
+      {:ok, session_pid} =
+        Session.get_or_spawn(
+          session_id: session_id,
+          user_id: user_id,
+          guild_ids: [],
+          ws_pid: dummy_socket
+        )
+
+      on_exit(fn -> Session.close(session_id) end)
+
+      # 1. Connected: user is :online
+      {:ok, p1} = Store.get_presence(user_id)
+      assert p1.status == :online
+
+      # 2. Socket process dies (simulating TCP drop / kill -9 / zombie 4009)
+      Process.exit(dummy_socket, :kill)
+      :timer.sleep(30)
+
+      # Session actor is still alive!
+      assert Process.alive?(session_pid)
+
+      # Presence transitioned to :offline during disconnect window
+      {:ok, p2} = Store.get_presence(user_id)
+      assert p2.status == :offline
+
+      # 3. Client reconnects and RESUMEs
+      new_socket = spawn(fn -> receive do :stop -> :ok end end)
+      assert {:ok, _seq, _missed} = Session.resume(session_id, new_socket, 0, user_id)
+
+      # Presence transitioned back to :online!
+      {:ok, p3} = Store.get_presence(user_id)
+      assert p3.status == :online
+      assert p3.sessions[session_id].status == :online
+    end
   end
 end

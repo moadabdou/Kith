@@ -1,4 +1,4 @@
-import type { Message } from '../types'
+import type { MemberChunkPayload, Message, PresenceUpdatePayload } from '../types'
 
 export type GatewayStatus =
   | 'disconnected'
@@ -44,6 +44,18 @@ export interface ReconnectState {
   countdownMs: number
 }
 
+/**
+ * Idle threshold for the instant-wake heuristic: input after a gap of at least
+ * this length sends op 3 online immediately. Must match the gateway's idle
+ * sweeper threshold (plan/05 §1: 10 min default; VITE_IDLE_THRESHOLD_MS
+ * overrides it — compose sets 120000 so idle is observable in ~2 min).
+ */
+const DEFAULT_IDLE_THRESHOLD_MS = 10 * 60 * 1000
+const envIdleMs = Number(import.meta.env?.VITE_IDLE_THRESHOLD_MS)
+export const IDLE_THRESHOLD_MS = Number.isFinite(envIdleMs) && envIdleMs > 0 ? envIdleMs : DEFAULT_IDLE_THRESHOLD_MS
+
+const ACTIVITY_EVENTS = ['mousemove', 'mousedown', 'keydown', 'wheel', 'touchstart', 'scroll'] as const
+
 export class GatewayClient {
   public ws: WebSocket | null = null
   private token: string | null = null
@@ -63,6 +75,12 @@ export class GatewayClient {
   private reconnectTimeoutId: any = null
   private countdownIntervalId: any = null
   private targetReconnectTime: number | null = null
+
+  // User activity tracking (plan/05 §1 idle detection): the heartbeat carries
+  // last_activity so the gateway can mark the user idle after 10 min of no
+  // input. Heartbeats alone (connection liveness) must not count as activity.
+  private lastActivityAt: number = Date.now()
+  private activityBound = false
 
   public getStatus(): GatewayStatus {
     return this.status
@@ -149,6 +167,44 @@ export class GatewayClient {
     return this.on('SESSION_RESET', callback)
   }
 
+  public onReady(callback: () => void): () => void {
+    return this.on('READY', callback)
+  }
+
+  public onMemberChunk(callback: (chunk: MemberChunkPayload) => void): () => void {
+    return this.on('GUILD_MEMBERS_CHUNK', callback)
+  }
+
+  public onPresenceUpdate(callback: (update: PresenceUpdatePayload) => void): () => void {
+    return this.on('PRESENCE_UPDATE', callback)
+  }
+
+  /**
+   * Sends Opcode 8 REQUEST_GUILD_MEMBERS. The server streams GUILD_MEMBERS_CHUNK
+   * dispatches back; zero matches still emit one empty chunk (chunk_count 1) as
+   * the done-signal. Only one in-flight request per connection — the server
+   * silently ignores op 8 while a stream is still running.
+   */
+  public requestGuildMembers(
+    guildId: string,
+    opts?: { query?: string; limit?: number; presences?: boolean },
+  ) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      console.warn('[Gateway] requestGuildMembers skipped: socket not open')
+      return
+    }
+    const payload = {
+      op: 8,
+      d: {
+        guild_id: guildId,
+        query: opts?.query ?? '',
+        limit: opts?.limit ?? 0, // 0 = all
+        presences: opts?.presences ?? true,
+      },
+    }
+    this.ws.send(JSON.stringify(payload))
+  }
+
   private emit(event: string, data?: any) {
     const callbacks = this.listeners.get(event)
     if (!callbacks) return
@@ -182,6 +238,7 @@ export class GatewayClient {
     this.clearReconnectTimers()
     this.explicitDisconnect = false
     this.token = token
+    this.bindActivityListeners()
 
     // Clean up previous socket if any before creating a new one
     if (this.ws) {
@@ -455,7 +512,42 @@ export class GatewayClient {
     }
 
     this.lastHeartbeatAck = false
-    this.ws.send(JSON.stringify({ op: 1, d: this.lastSeq }))
+    // d carries the user's last real input time — the gateway refreshes
+    // presence activity from it and sweeps to idle when it goes stale.
+    this.ws.send(JSON.stringify({ op: 1, d: { seq: this.lastSeq, last_activity: this.lastActivityAt } }))
+  }
+
+  /**
+   * Declares a presence status (op 3). Used to wake from idle instantly on
+   * user input instead of waiting for the next heartbeat to carry activity.
+   */
+  public sendStatusUpdate(status: 'online' | 'idle' | 'dnd' | 'invisible', opts?: { since?: number; afk?: boolean }) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return
+    const d: Record<string, unknown> = { status }
+    if (opts?.since !== undefined) d.since = opts.since
+    if (opts?.afk !== undefined) d.afk = opts.afk
+    this.ws.send(JSON.stringify({ op: 3, d }))
+  }
+
+  /**
+   * Records a user input event. Exposed for tests. When input arrives after
+   * an idle-length gap, immediately declares online (op 3) so other clients
+   * see the wake without waiting for the next heartbeat.
+   */
+  public noteUserActivity(at: number = Date.now()) {
+    const wasIdle = at - this.lastActivityAt >= IDLE_THRESHOLD_MS
+    this.lastActivityAt = at
+    if (wasIdle) {
+      this.sendStatusUpdate('online', { since: at, afk: false })
+    }
+  }
+
+  private bindActivityListeners() {
+    if (this.activityBound || typeof window === 'undefined') return
+    this.activityBound = true
+    for (const event of ACTIVITY_EVENTS) {
+      window.addEventListener(event, () => this.noteUserActivity(), { passive: true })
+    }
   }
 
   private cleanupHeartbeat() {

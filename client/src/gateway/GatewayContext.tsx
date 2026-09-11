@@ -1,8 +1,9 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { useAuth } from '../context/useAuth'
-import type { Message } from '../types'
+import type { MemberChunkPayload, Message, PresenceUpdatePayload } from '../types'
 import { gatewayClient, type GatewayStatus, type ReconnectState } from './client'
 import { GatewayContext } from './gateway-context-def'
+import type { RequestGuildMembersOptions } from './gateway-context-def'
 
 export function GatewayProvider({ children }: { children: ReactNode }) {
   const { token } = useAuth()
@@ -38,6 +39,18 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
     return gatewayClient.onSessionReset(callback)
   }
 
+  const requestGuildMembers = (guildId: string, opts?: RequestGuildMembersOptions) => {
+    gatewayClient.requestGuildMembers(guildId, opts)
+  }
+
+  const subscribeToMemberChunks = (callback: (chunk: MemberChunkPayload) => void) => {
+    return gatewayClient.onMemberChunk(callback)
+  }
+
+  const subscribeToPresenceUpdates = (callback: (update: PresenceUpdatePayload) => void) => {
+    return gatewayClient.onPresenceUpdate(callback)
+  }
+
   const reconnectNow = () => {
     gatewayClient.reconnectNow()
   }
@@ -53,6 +66,9 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
         reconnectNow,
         subscribeToMessages,
         onSessionReset,
+        requestGuildMembers,
+        subscribeToMemberChunks,
+        subscribeToPresenceUpdates,
       }}
     >
       {children}

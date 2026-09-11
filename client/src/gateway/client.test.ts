@@ -277,4 +277,55 @@ describe('Gateway Client Reconnection & RESUME (#26)', () => {
       expect(MockWebSocket.instances.length).toBe(1)
     })
   })
+
+  describe('Idle Detection & Activity Reporting (#32/#38 fix)', () => {
+    it('heartbeat carries last_activity so the gateway can track real user input', () => {
+      const client = new GatewayClient()
+      client.connect('mock-jwt-token')
+      const ws = MockWebSocket.instances[0]
+
+      ws.receiveJson({ op: 10, d: { heartbeat_interval: 30000 } })
+      // IDENTIFY is sent on HELLO; advance past jitter + one full interval
+      vi.advanceTimersByTime(50000)
+
+      const frames = ws.sentData.map((raw) => JSON.parse(raw))
+      const heartbeats = frames.filter((f) => f.op === 1)
+      expect(heartbeats.length).toBeGreaterThanOrEqual(1)
+      for (const hb of heartbeats) {
+        expect(typeof hb.d.last_activity).toBe('number')
+        expect(hb.d.seq).toBeNull()
+      }
+    })
+
+    it('sends op 3 online immediately when input arrives after an idle-length gap', () => {
+      const client = new GatewayClient()
+      client.connect('mock-jwt-token')
+      const ws = MockWebSocket.instances[0]
+      ws.receiveJson({ op: 10, d: { heartbeat_interval: 30000 } })
+      expect(ws.sentData.length).toBe(1) // IDENTIFY only
+
+      // Simulate the idle period passing with no input, then fresh input
+      client.noteUserActivity(Date.now() - 11 * 60 * 1000)
+      client.noteUserActivity()
+
+      const wake = JSON.parse(ws.sentData[ws.sentData.length - 1])
+      expect(wake.op).toBe(3)
+      expect(wake.d.status).toBe('online')
+      expect(wake.d.afk).toBe(false)
+    })
+
+    it('does not send op 3 for ordinary frequent input', () => {
+      const client = new GatewayClient()
+      client.connect('mock-jwt-token')
+      const ws = MockWebSocket.instances[0]
+      ws.receiveJson({ op: 10, d: { heartbeat_interval: 30000 } })
+
+      const sentBefore = ws.sentData.length
+      client.noteUserActivity()
+      client.noteUserActivity()
+      client.noteUserActivity()
+
+      expect(ws.sentData.length).toBe(sentBefore)
+    })
+  })
 })

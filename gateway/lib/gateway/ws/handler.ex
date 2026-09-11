@@ -200,9 +200,16 @@ defmodule Gateway.WS.Handler do
   defp handle_heartbeat(d, state) do
     now = System.monotonic_time(:millisecond)
 
+    # Heartbeats are connection liveness, NOT user activity (plan/05 §1: the
+    # client heartbeat *carries* last_activity). Only a heartbeat that reports
+    # an activity timestamp refreshes presence activity — otherwise every
+    # connected client would look permanently active and the idle sweeper
+    # would never mark anyone idle.
     if state.user_id && state.session_id do
-      ts = extract_activity_timestamp(d)
-      Gateway.Presence.Store.touch_activity(state.user_id, state.session_id, ts)
+      case extract_activity_timestamp(d) do
+        nil -> :ok
+        ts -> Gateway.Presence.Store.touch_activity(state.user_id, state.session_id, ts)
+      end
     end
 
     ack =
@@ -216,10 +223,13 @@ defmodule Gateway.WS.Handler do
     {:push, [{:text, ack}], %{state | last_heartbeat_at: now}}
   end
 
+  # Extracts a client-reported activity timestamp (epoch ms) from a heartbeat
+  # payload, or nil when the heartbeat carries no activity information (bare
+  # seq integer, null, or an unrecognized shape).
   defp extract_activity_timestamp(d) when is_integer(d) and d > 1_000_000_000, do: d
   defp extract_activity_timestamp(%{"last_activity" => ts}) when is_integer(ts), do: ts
   defp extract_activity_timestamp(%{"since" => ts}) when is_integer(ts), do: ts
-  defp extract_activity_timestamp(_other), do: System.system_time(:millisecond)
+  defp extract_activity_timestamp(_other), do: nil
 
   defp handle_status_update(d, state) do
     cond do
@@ -265,6 +275,12 @@ defmodule Gateway.WS.Handler do
           Logger.warning("Gateway.WS.Handler: TYPING_START missing channel_id, ignoring")
           {:ok, state}
         else
+          # Typing is definitive gateway-visible user input — refresh presence
+          # activity so an actively-chatting user never sweeps to idle.
+          if state.user_id && state.session_id do
+            Gateway.Presence.Store.touch_activity(state.user_id, state.session_id)
+          end
+
           case Gateway.Typing.RateLimiter.check_rate(state.user_id, channel_id) do
             :ok ->
               Logger.debug("Gateway.WS.Handler: typing allowed for user #{state.user_id} in channel #{channel_id}")

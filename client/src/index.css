@@ -20,6 +20,11 @@
   --danger-hover: #a1282c;
   --success: #23a55a;
 
+  --presence-online: #23a55a;
+  --presence-idle: #f0b232;
+  --presence-dnd: #f23f43;
+  --presence-offline: #80848e;
+
   font-family: 'gg sans', 'Noto Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
   color-scheme: dark;
   color: var(--text-normal);
@@ -417,6 +422,107 @@ body {
   justify-content: space-between;
   border-radius: 4px;
   margin: 0 16px 12px;
+}
+
+/* ── Member Sidebar (right, 240px) ──────────────────── */
+.member-sidebar {
+  width: 240px;
+  background-color: var(--bg-channels);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  border-top-right-radius: 8px;
+  overflow: hidden;
+}
+
+.member-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 8px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.member-count-header {
+  padding: 16px 8px 4px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+
+.member-group-header {
+  padding: 14px 8px 2px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.member-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: default;
+  font-size: 14px;
+  font-weight: 500;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.member-item:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-normal);
+}
+
+.member-avatar-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.member-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background-color: var(--bg-chat);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-normal);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.presence-dot {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 3px solid var(--bg-channels);
+  transition: background-color 0.2s ease;
+}
+
+.member-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.member-empty {
+  padding: 16px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
 }
 
 /* ── Modals & Dialogs ──────────────────────────────── */

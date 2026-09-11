@@ -68,3 +68,47 @@ export interface ApiError {
   retry_after?: number
   errors?: Record<string, { _errors: Array<{ code: string; message: string }> }>
 }
+
+export type PresenceStatus = 'online' | 'idle' | 'dnd' | 'invisible' | 'offline'
+
+export interface Role {
+  id: string
+  guild_id: string
+  name: string
+  color: number // int RGB; 0 = default (no color)
+  hoist: boolean
+  position: number
+  permissions: string
+  mentionable: boolean
+  created_at: string
+}
+
+export interface Member {
+  user: AuthorRef
+  nick: string | null
+  roles: string[] // role IDs; hoisted-role grouping resolves these against Role[]
+  joined_at: string
+}
+
+export interface Presence {
+  user: { id: string }
+  status: PresenceStatus
+  activities: unknown[]
+  client_status: Record<string, string>
+}
+
+export interface MemberChunkPayload {
+  guild_id: string
+  members: Member[]
+  chunk_index: number
+  chunk_count: number
+  presences?: Presence[] // only when requested with presences: true; only non-offline users
+}
+
+export interface PresenceUpdatePayload {
+  user: { id: string }
+  guild_id: string
+  status: PresenceStatus
+  activities: unknown[]
+  client_status: Record<string, string>
+}

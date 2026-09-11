@@ -6,6 +6,7 @@ import { CreateChannelModal } from './components/modals/CreateChannelModal'
 import { CreateGuildModal } from './components/modals/CreateGuildModal'
 import { InviteModal } from './components/modals/InviteModal'
 import { ChannelSidebar } from './components/navigation/ChannelSidebar'
+import { MemberSidebar } from './components/navigation/MemberSidebar'
 import { ServerSidebar } from './components/navigation/ServerSidebar'
 import { ConnectionBanner } from './components/common/ConnectionBanner'
 import { AuthProvider } from './context/AuthContext'
@@ -253,6 +254,10 @@ function Dashboard() {
         currentGuild={currentGuild}
         currentChannel={currentChannel}
       />
+
+      {/* 240px Member Sidebar (right of chat). Keyed by guild so switching
+          guilds remounts it with fresh state instead of hand-rolled resets. */}
+      <MemberSidebar key={selectedGuildId ?? 'none'} guildId={selectedGuildId} />
 
       {/* Modals */}
       <CreateGuildModal

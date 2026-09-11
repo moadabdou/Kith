@@ -228,7 +228,10 @@ defmodule Gateway.Presence.Store do
       sweep_timer: sweep_timer
     }
 
-    Logger.info("Gateway.Presence.Store initialized with ETS table #{@table}")
+    Logger.info(
+      "Gateway.Presence.Store initialized with ETS table #{@table} " <>
+        "(idle_threshold_ms=#{idle_threshold_ms}, sweep_interval_ms=#{sweep_interval_ms})"
+    )
     {:ok, state}
   end
 

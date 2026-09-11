@@ -36,7 +36,7 @@ defmodule Gateway.Application do
       Gateway.Metrics,
       Gateway.Health,
       {Registry, keys: :unique, name: Gateway.Registry},
-      Gateway.Presence.Store,
+      {Gateway.Presence.Store, [idle_threshold_ms: idle_threshold_ms()]},
       Gateway.GuildSupervisor,
       Gateway.ConnSupervisor,
       Gateway.Guild.Cache,
@@ -55,6 +55,24 @@ defmodule Gateway.Application do
     case System.get_env("BUS_TYPE", "nats") do
       "redis" -> Gateway.Bus.Consumer
       _ -> Gateway.Bus.NatsConsumer
+    end
+  end
+
+  # plan/05 §1 specifies a 10-minute idle threshold (Discord parity).
+  # PRESENCE_IDLE_THRESHOLD_MS (epoch ms) overrides it for observation/dev
+  # stacks — compose sets 120000 so idle transitions are observable in ~2 min.
+  @default_idle_threshold_ms 600_000
+
+  defp idle_threshold_ms do
+    case System.get_env("PRESENCE_IDLE_THRESHOLD_MS") do
+      nil ->
+        @default_idle_threshold_ms
+
+      raw ->
+        case Integer.parse(raw) do
+          {ms, ""} when ms > 0 -> ms
+          _ -> @default_idle_threshold_ms
+        end
     end
   end
 

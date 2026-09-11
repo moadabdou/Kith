@@ -333,6 +333,60 @@ defmodule Gateway.WS.HandlerTest do
       Gateway.Session.close(session_id)
     end
 
+    test "HEARTBEAT (op 1) without activity payload does NOT refresh presence activity" do
+      {:push, _, state} = Handler.init(heartbeat_interval: 10_000)
+      user_id = 87000000000000001
+      token = Gateway.Auth.JWT.issue(user_id, state.jwt_secret, 3600)
+      payload = Jason.encode!(%{"op" => 2, "d" => %{"token" => token}})
+
+      {:push, _, identified_state} = Handler.handle_in({payload, opcode: :text}, state)
+      session_id = identified_state.session_id
+
+      # Seed a known (recent, non-idle) activity timestamp
+      {:ok, p_init} = Gateway.Presence.Store.get_presence(user_id)
+      past_ts = p_init.last_activity_at - 5_000
+      :ok = Gateway.Presence.Store.touch_activity(user_id, session_id, past_ts)
+
+      # Bare-seq heartbeat (Discord wire shape) and null-d heartbeat:
+      # connection liveness, not user activity — must leave activity untouched
+      for d <- [7, nil] do
+        hb_payload = Jason.encode!(%{"op" => 1, "d" => d})
+        assert {:push, _, _} = Handler.handle_in({hb_payload, opcode: :text}, identified_state)
+      end
+
+      {:ok, p_after} = Gateway.Presence.Store.get_presence(user_id)
+      assert p_after.last_activity_at == past_ts
+
+      Handler.terminate(:normal, identified_state)
+      Gateway.Session.close(session_id)
+    end
+
+    test "TYPING_START refreshes presence activity" do
+      {:push, _, state} = Handler.init(heartbeat_interval: 10_000)
+      user_id = 87000000000000001
+      token = Gateway.Auth.JWT.issue(user_id, state.jwt_secret, 3600)
+      payload = Jason.encode!(%{"op" => 2, "d" => %{"token" => token}})
+
+      {:push, _, identified_state} = Handler.handle_in({payload, opcode: :text}, state)
+      session_id = identified_state.session_id
+
+      # Seed a known older timestamp, then type
+      {:ok, p_init} = Gateway.Presence.Store.get_presence(user_id)
+      past_ts = p_init.last_activity_at - 5_000
+      :ok = Gateway.Presence.Store.touch_activity(user_id, session_id, past_ts)
+
+      typing_payload = Jason.encode!(%{"t" => "TYPING_START", "d" => %{"channel_id" => "87000000000000201"}})
+      assert {:ok, _} = Handler.handle_in({typing_payload, opcode: :text}, identified_state)
+
+      # Typing is user input: the server stamped fresh activity
+      {:ok, p_after} = Gateway.Presence.Store.get_presence(user_id)
+      assert p_after.last_activity_at > past_ts
+      assert p_after.status == :online
+
+      Handler.terminate(:normal, identified_state)
+      Gateway.Session.close(session_id)
+    end
+
     test "STATUS_UPDATE (op 3) updates presence status and activities when identified" do
       {:push, _, state} = Handler.init(heartbeat_interval: 10_000)
       user_id = 87000000000000001

@@ -121,6 +121,8 @@ services:
       NATS_URL: ${NATS_URL:-nats://nats:4222}
       DATABASE_URL: postgres://${POSTGRES_USER:-discord}:${POSTGRES_PASSWORD:-discord}@postgres:5432/${POSTGRES_DB:-discord}?sslmode=disable
       JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me}
+      # Observation override (default/spec is 10 min, plan/05 §1)
+      PRESENCE_IDLE_THRESHOLD_MS: ${PRESENCE_IDLE_THRESHOLD_MS:-120000}
     depends_on:
       postgres:
         condition: service_healthy
@@ -147,6 +149,8 @@ services:
         NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
     environment:
       VITE_API_BASE: /api
+      # Observation override — must match the gateway's PRESENCE_IDLE_THRESHOLD_MS
+      VITE_IDLE_THRESHOLD_MS: ${PRESENCE_IDLE_THRESHOLD_MS:-120000}
     ports:
       - "127.0.0.1:5173:5173"
     healthcheck:

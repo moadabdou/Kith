@@ -1,4 +1,4 @@
-import type { AuthResponse, Channel, Guild, Message, User } from './types'
+import type { AuthResponse, Channel, Guild, Message, Role, User } from './types'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api'
 
@@ -101,6 +101,10 @@ class ApiClient {
       method: 'POST',
       body: JSON.stringify({ name }),
     })
+  }
+
+  async getRoles(guildId: string): Promise<Role[]> {
+    return this.request<Role[]>(`/guilds/${guildId}/roles`)
   }
 
   // ── Channels ───────────────────────────────────────

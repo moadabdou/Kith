@@ -66,6 +66,18 @@ defmodule Gateway.Metrics do
     end)
   end
 
+  def incr_members_request do
+    Agent.update(__MODULE__, fn state ->
+      %{state | members_requests: state.members_requests + 1}
+    end)
+  end
+
+  def incr_members_chunk do
+    Agent.update(__MODULE__, fn state ->
+      %{state | members_chunks: state.members_chunks + 1}
+    end)
+  end
+
   def get_resumes do
     Agent.get(__MODULE__, fn state -> state.resumes end)
   end
@@ -238,6 +250,12 @@ defmodule Gateway.Metrics do
            "# HELP gateway_typing_broadcasts_total Total TYPING_START events dispatched to guild subscribers.",
            "# TYPE gateway_typing_broadcasts_total counter",
            "gateway_typing_broadcasts_total #{state.typing_broadcasts}",
+           "# HELP gateway_members_requests_total Total Opcode 8 REQUEST_GUILD_MEMBERS payloads accepted for streaming.",
+           "# TYPE gateway_members_requests_total counter",
+           "gateway_members_requests_total #{state.members_requests}",
+           "# HELP gateway_members_chunks_total Total GUILD_MEMBERS_CHUNK events streamed to requesting sessions.",
+           "# TYPE gateway_members_chunks_total counter",
+           "gateway_members_chunks_total #{state.members_chunks}",
           "# HELP gateway_events_consumed_total Total events consumed and acknowledged from event bus.",
           "# TYPE gateway_events_consumed_total counter",
           "gateway_events_consumed_total #{state.events_consumed}",
@@ -325,6 +343,8 @@ defmodule Gateway.Metrics do
       identifies: 0,
       resumes: 0,
       typing_broadcasts: 0,
+      members_requests: 0,
+      members_chunks: 0,
       close_codes: %{},
       fanout_latency: %{sum: 0.0, count: 0, buckets: %{}},
       send_queue_depth: %{sum: 0, count: 0, buckets: %{}},

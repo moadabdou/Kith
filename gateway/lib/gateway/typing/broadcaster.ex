@@ -63,16 +63,10 @@ defmodule Gateway.Typing.Broadcaster do
   end
 
   defp ensure_member(user_id, guild_id) do
-    case Gateway.Guild.Cache.get_member_guilds(user_id) do
-      {:ok, guild_ids} ->
-        if to_string(guild_id) in Enum.map(guild_ids, &to_string/1) do
-          :ok
-        else
-          {:error, :not_a_member}
-        end
-
-      {:error, _reason} ->
-        {:error, :not_a_member}
+    if Gateway.Guild.Cache.member_of?(user_id, guild_id) do
+      :ok
+    else
+      {:error, :not_a_member}
     end
   end
 end

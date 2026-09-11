@@ -118,6 +118,17 @@ defmodule Gateway.Guild.Cache do
   end
 
   @doc """
+  Returns true when `user_id` is a member of `guild_id` per cached member guild
+  lists (with the usual warm-on-miss fallback).
+  """
+  def member_of?(user_id, guild_id) do
+    case get_member_guilds(user_id) do
+      {:ok, guild_ids} -> to_string(guild_id) in Enum.map(guild_ids, &to_string/1)
+      _other -> false
+    end
+  end
+
+  @doc """
   Retrieves cached guild metadata by guild_id.
   """
   def get_guild(guild_id) when is_binary(guild_id) do

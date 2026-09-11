@@ -42,6 +42,7 @@ defmodule Gateway.WS.Handler do
       session_pid: nil,
       seq: 0,
       guild_ids: [],
+      members_stream_ref: nil,
       last_heartbeat_at: boot_at,
       rate_count: 0,
       rate_window_start: boot_at,
@@ -71,6 +72,9 @@ defmodule Gateway.WS.Handler do
 
         {:ok, %{"op" => 6, "d" => d}} ->
           handle_resume(d, state)
+
+        {:ok, %{"op" => 8} = msg} ->
+          handle_request_guild_members(Map.get(msg, "d"), state)
 
         {:ok, %{"t" => "TYPING_START"} = msg} ->
           handle_typing_start(Map.get(msg, "d"), state)
@@ -142,6 +146,11 @@ defmodule Gateway.WS.Handler do
     else
       {:ok, state}
     end
+  end
+
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, %{members_stream_ref: ref} = state) do
+    Logger.debug("Gateway.WS.Handler: member stream task finished, clearing inflight marker")
+    {:ok, %{state | members_stream_ref: nil}}
   end
 
   def handle_info(_other, state) do
@@ -270,6 +279,51 @@ defmodule Gateway.WS.Handler do
               # Silently drop excess requests per plan/05 §2
               {:ok, state}
           end
+        end
+    end
+  end
+
+  defp handle_request_guild_members(d, state) do
+    cond do
+      not state.identified or is_nil(state.user_id) or is_nil(state.session_pid) ->
+        Logger.warning("Gateway.WS.Handler: op 8 REQUEST_GUILD_MEMBERS before IDENTIFY, ignoring")
+        {:ok, state}
+
+      not is_map(d) ->
+        Logger.warning("Gateway.WS.Handler: op 8 payload is not a map, ignoring")
+        {:ok, state}
+
+      true ->
+        guild_id = d["guild_id"]
+
+        cond do
+          is_nil(guild_id) or guild_id == "" ->
+            Logger.warning("Gateway.WS.Handler: op 8 missing guild_id, ignoring")
+            {:ok, state}
+
+          state.members_stream_ref != nil ->
+            Logger.debug("Gateway.WS.Handler: op 8 with a member stream already in flight, ignoring")
+            {:ok, state}
+
+          not Gateway.Guild.Cache.member_of?(state.user_id, guild_id) ->
+            Logger.warning("Gateway.WS.Handler: op 8 for non-member guild #{guild_id}, ignoring")
+            {:ok, state}
+
+          true ->
+            presences? = d["presences"] == true
+            query = if is_binary(d["query"]), do: d["query"], else: ""
+            limit = if is_integer(d["limit"]), do: d["limit"], else: 0
+
+            case Gateway.Guild.Members.request(state.session_pid, guild_id, query, limit, presences?) do
+              {:ok, task_pid} ->
+                Gateway.Metrics.incr_members_request()
+                ref = Process.monitor(task_pid)
+                {:ok, %{state | members_stream_ref: ref}}
+
+              {:error, reason} ->
+                Logger.warning("Gateway.WS.Handler: op 8 failed to start member stream: #{inspect(reason)}, ignoring")
+                {:ok, state}
+            end
         end
     end
   end

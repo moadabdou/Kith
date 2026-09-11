@@ -540,6 +540,109 @@ defmodule Gateway.WS.HandlerTest do
       close_session(identified.session_id)
     end
 
+    test "REQUEST_GUILD_MEMBERS (op 8) streams GUILD_MEMBERS_CHUNK to the requesting session" do
+      {:push, _, state} = Handler.init(heartbeat_interval: 10_000)
+      user_id = 87000000000000001
+      token = Gateway.Auth.JWT.issue(user_id, state.jwt_secret, 3600)
+      id_payload = Jason.encode!(%{"op" => 2, "d" => %{"token" => token}})
+
+      {:push, _, identified_state} = Handler.handle_in({id_payload, opcode: :text}, state)
+      session_id = identified_state.session_id
+
+      op8_payload =
+        Jason.encode!(%{
+          "op" => 8,
+          "d" => %{"guild_id" => "87000000000000100", "query" => "", "limit" => 0, "presences" => true}
+        })
+
+      assert {:ok, s1} = Handler.handle_in({op8_payload, opcode: :text}, identified_state)
+      assert s1.close_code == nil
+      assert is_reference(s1.members_stream_ref)
+
+      # Seeded guild has exactly one member (moad) -> single chunk.
+      # Match on the event type so stray PRESENCE_UPDATE frames cannot collide.
+      assert_receive {:send_frame, %{"type" => "GUILD_MEMBERS_CHUNK"} = event, seq, nil}, 2000
+
+      assert event["version"] == 1
+      assert event["guild_id"] == "87000000000000100"
+
+      payload = event["payload"]
+      assert payload["guild_id"] == "87000000000000100"
+      assert payload["chunk_index"] == 0
+      assert payload["chunk_count"] == 1
+
+      assert [member] = payload["members"]
+      assert member["user"]["id"] == to_string(user_id)
+      assert member["user"]["username"] == "moad"
+      assert is_binary(member["joined_at"])
+      assert is_integer(seq)
+
+      # presences: true -> snapshot contains the identified (online) user
+      presences = payload["presences"]
+      assert [%{"user" => %{"id" => id}} | _] = presences
+      assert id == to_string(user_id)
+
+      # The dispatch frame encodes to a valid op 0 wire frame
+      assert {:push, [{:text, frame_json}], _} = Handler.handle_info({:send_frame, event, seq, nil}, s1)
+      assert {:ok, frame} = Jason.decode(frame_json)
+      assert frame["t"] == "GUILD_MEMBERS_CHUNK"
+      assert frame["op"] == 0
+      assert frame["s"] == seq
+      assert frame["d"]["chunk_index"] == 0
+      assert frame["d"]["chunk_count"] == 1
+      assert length(frame["d"]["members"]) == 1
+
+      # Stream completes: the supervised task exits and its monitor fires
+      stream_ref = s1.members_stream_ref
+      assert_receive {:DOWN, ^stream_ref, :process, _task_pid, _reason}, 2000
+
+      # The DOWN clause clears the inflight marker, allowing a new request
+      assert {:ok, s2} = Handler.handle_info({:DOWN, stream_ref, :process, self(), :normal}, s1)
+      assert s2.members_stream_ref == nil
+
+      Handler.terminate(:normal, s2)
+      close_session(session_id)
+    end
+
+    test "REQUEST_GUILD_MEMBERS (op 8) before IDENTIFY, missing guild_id, or non-member guild is ignored" do
+      {:push, _, state} = Handler.init(heartbeat_interval: 10_000)
+
+      # 1. Pre-IDENTIFY request ignored
+      op8 = Jason.encode!(%{"op" => 8, "d" => %{"guild_id" => "87000000000000100"}})
+      assert {:ok, s1} = Handler.handle_in({op8, opcode: :text}, state)
+      assert s1.members_stream_ref == nil
+      assert s1.close_code == nil
+
+      # 2. IDENTIFY
+      user_id = 87000000000000001
+      token = Gateway.Auth.JWT.issue(user_id, state.jwt_secret, 3600)
+      id_payload = Jason.encode!(%{"op" => 2, "d" => %{"token" => token}})
+      {:push, _, identified} = Handler.handle_in({id_payload, opcode: :text}, s1)
+
+      # 3. Missing guild_id ignored
+      op8b = Jason.encode!(%{"op" => 8, "d" => %{}})
+      assert {:ok, s2} = Handler.handle_in({op8b, opcode: :text}, identified)
+      assert s2.close_code == nil
+      assert s2.members_stream_ref == nil
+
+      # 4. Non-member guild ignored (moad belongs only to Kith HQ)
+      op8c = Jason.encode!(%{"op" => 8, "d" => %{"guild_id" => "12345678901234567"}})
+      assert {:ok, s3} = Handler.handle_in({op8c, opcode: :text}, s2)
+      assert s3.close_code == nil
+      assert s3.members_stream_ref == nil
+
+      # 5. Missing "d" entirely ignored (not an unknown-opcode close)
+      op8d = Jason.encode!(%{"op" => 8})
+      assert {:ok, s4} = Handler.handle_in({op8d, opcode: :text}, s3)
+      assert s4.close_code == nil
+      assert s4.members_stream_ref == nil
+
+      refute_receive {:send_frame, %{"type" => "GUILD_MEMBERS_CHUNK"}, _, _}, 200
+
+      Handler.terminate(:normal, s4)
+      close_session(identified.session_id)
+    end
+
     test "RESUME (op 6) with valid token and seq replays missed frames in sequence" do
       {:push, _, conn1} = Handler.init(heartbeat_interval: 10_000)
       user_id = 87000000000000001

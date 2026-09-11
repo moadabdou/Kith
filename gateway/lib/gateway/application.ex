@@ -44,6 +44,9 @@ defmodule Gateway.Application do
       Gateway.Presence.Broadcaster,
       Gateway.Typing.RateLimiter,
       bus_consumer(),
+      # Supervised streaming tasks (op 8 GUILD_MEMBERS_CHUNK) — after the bus
+      # consumer so a bus restart cannot orphan in-flight streams.
+      {Task.Supervisor, name: Gateway.TaskSupervisor},
       Supervisor.child_spec({Bandit, plug: Gateway.Router, port: port()}, id: Bandit)
     ]
   end

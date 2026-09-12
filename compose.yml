@@ -71,6 +71,30 @@ services:
       timeout: 3s
       retries: 10
 
+  scylla:
+    image: scylladb/scylla:6.2
+    command: --smp 1 --memory 1G --overprovisioned 1
+    ports:
+      - "127.0.0.1:9042:9042"
+    volumes:
+      - scylladata:/var/lib/scylla
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'DESCRIBE KEYSPACES'"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  scylla-init:
+    image: scylladb/scylla:6.2
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["cqlsh scylla 9042 -f /cql/001_create_messages.cql"]
+    volumes:
+      - ./api/cql:/cql:ro
+    depends_on:
+      scylla:
+        condition: service_healthy
+    restart: "no"
+
   api:
     build:
       context: ./api
@@ -209,3 +233,4 @@ volumes:
   pgdata:
   grafana-data:
   redisdata:
+  scylladata:

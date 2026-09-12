@@ -1,0 +1,69 @@
+name: kith-scylla-cluster
+
+services:
+  scylla1:
+    image: scylladb/scylla:6.2
+    command: --seeds=scylla1 --smp 1 --memory 1G --overprovisioned 1
+    ports:
+      - "127.0.0.1:9042:9042"
+    volumes:
+      - scylla1-data:/var/lib/scylla
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'DESCRIBE KEYSPACES'"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  scylla2:
+    image: scylladb/scylla:6.2
+    command: --seeds=scylla1 --smp 1 --memory 1G --overprovisioned 1
+    depends_on:
+      scylla1:
+        condition: service_healthy
+    volumes:
+      - scylla2-data:/var/lib/scylla
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'DESCRIBE KEYSPACES'"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  scylla3:
+    image: scylladb/scylla:6.2
+    command: --seeds=scylla1 --smp 1 --memory 1G --overprovisioned 1
+    depends_on:
+      scylla1:
+        condition: service_healthy
+    volumes:
+      - scylla3-data:/var/lib/scylla
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'DESCRIBE KEYSPACES'"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  scylla-cluster-init:
+    image: scylladb/scylla:6.2
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "Waiting for Scylla cluster nodes to accept queries..."
+        until cqlsh scylla1 9042 -e "DESCRIBE KEYSPACES" > /dev/null 2>&1; do
+          sleep 2
+        done
+        cqlsh scylla1 9042 -f /cql/init-cluster.cql
+    volumes:
+      - ./init-cluster.cql:/cql/init-cluster.cql:ro
+    depends_on:
+      scylla1:
+        condition: service_healthy
+      scylla2:
+        condition: service_healthy
+      scylla3:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  scylla1-data:
+  scylla2-data:
+  scylla3-data:

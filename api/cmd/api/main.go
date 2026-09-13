@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -116,7 +117,32 @@ func main() {
 		os.Exit(1)
 	}
 	guildsHandler := &guilds.Handler{Svc: guilds.NewService(db, node, publisher)}
-	msgStore := messages.NewPostgresStore(db)
+
+	messageStoreType := envOr("MESSAGE_STORE", "postgres")
+	var msgStore messages.Store
+	switch messageStoreType {
+	case "scylla":
+		scyllaHosts := strings.Split(envOr("SCYLLA_HOSTS", "scylla:9042"), ",")
+		scyllaKeyspace := envOr("SCYLLA_KEYSPACE", "kith")
+		scyllaConsistency := messages.ParseConsistency(envOr("SCYLLA_CONSISTENCY", "LOCAL_QUORUM"))
+		scyllaSession, err := messages.NewScyllaSession(messages.ScyllaConfig{
+			Hosts:       scyllaHosts,
+			Keyspace:    scyllaKeyspace,
+			Consistency: scyllaConsistency,
+		})
+		if err != nil {
+			slog.Error("failed to connect to scylladb", "hosts", scyllaHosts, "error", err)
+			os.Exit(1)
+		}
+		defer scyllaSession.Close()
+		hydrator := messages.NewPostgresAuthorHydrator(db)
+		msgStore = messages.NewScyllaStore(scyllaSession, hydrator)
+		slog.Info("message store initialized", "store", "scylla", "hosts", scyllaHosts, "keyspace", scyllaKeyspace, "consistency", scyllaConsistency.String())
+	default:
+		msgStore = messages.NewPostgresStore(db)
+		slog.Info("message store initialized", "store", "postgres")
+	}
+
 	messagesHandler := &messages.Handler{Svc: messages.NewService(db, msgStore, node, publisher)}
 
 	mux := http.NewServeMux()

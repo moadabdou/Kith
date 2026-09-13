@@ -112,6 +112,10 @@ services:
       EVENTS_BUS: ${EVENTS_BUS:-nats}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       NATS_URL: ${NATS_URL:-nats://nats:4222}
+      SCYLLA_HOSTS: ${SCYLLA_HOSTS:-scylla:9042}
+      SCYLLA_KEYSPACE: ${SCYLLA_KEYSPACE:-kith}
+      SCYLLA_CONSISTENCY: ${SCYLLA_CONSISTENCY:-ONE}
+      MESSAGE_STORE: ${MESSAGE_STORE:-postgres}
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:

@@ -17,6 +17,8 @@ services:
   scylla2:
     image: scylladb/scylla:6.2
     command: --seeds=scylla1 --smp 1 --memory 1G --overprovisioned 1
+    ports:
+      - "127.0.0.1:9043:9042"
     depends_on:
       scylla1:
         condition: service_healthy
@@ -31,6 +33,8 @@ services:
   scylla3:
     image: scylladb/scylla:6.2
     command: --seeds=scylla1 --smp 1 --memory 1G --overprovisioned 1
+    ports:
+      - "127.0.0.1:9044:9042"
     depends_on:
       scylla1:
         condition: service_healthy

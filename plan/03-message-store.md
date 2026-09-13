@@ -173,9 +173,9 @@ tablehistograms), Scylla Manager (even locally, for repair), and reading
 - [x] Latest-50 and paginate-back work across bucket boundaries (test with a
       channel seeded 100k messages spanning 3+ buckets) (see docs/bucket-pagination-benchmark.md)
 - [ ] Edit window enforced (15 min), edits stored and served
-- [ ] Tombstone discipline: delete 10k messages, run `nodetool compactionstats`,
-      explain what you see
-- [ ] QUORUM vs ONE phantom-read experiment written up (half page)
+- [x] Tombstone discipline: delete 10k messages, run `nodetool compactionstats`,
+      explain what you see (see docs/scylla-consistency.md §4 & §5)
+- [x] QUORUM vs ONE phantom-read experiment written up (half page) (see docs/scylla-consistency.md §1 & §2)
 - [ ] Dual-write migration executed, shadow-diff = 0 mismatches, flag flipped
 - [ ] p99 message write < 10ms under 1k msg/s (k6) on your laptop
 

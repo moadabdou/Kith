@@ -56,11 +56,11 @@ Scenario B: Read at LOCAL_QUORUM (W = 2, R = 2  ==>  R + W = 4 > N)  [STRICT CON
                                                            (Triggers read-repair on Node 3)
 ```
 
-### Why $W = \text{LOCAL_QUORUM}, R = \text{ONE}$ Yields Phantom Reads
+### Why W = LOCAL_QUORUM, R = ONE Yields Phantom Reads
 When writing at `LOCAL_QUORUM` ($W = \lfloor 3/2 \rfloor + 1 = 2$), the coordinator requires acknowledgments from 2 out of 3 replicas. The third replica might be lagging, undergoing GC, or temporarily partitioned.
 If a client immediately issues a read at `Consistency: ONE` ($R = 1$), the coordinator directs the read to a single replica (often determined by dynamic snitch latency). If that replica is the lagging node, it returns `NotFound` or stale data. The client observes a **phantom read**: they received an HTTP 200 / success confirmation for their message, but immediately cannot read it back.
 
-### Why $W = \text{LOCAL_QUORUM}, R = \text{LOCAL_QUORUM}$ Guarantees Linearizability
+### Why W = LOCAL_QUORUM, R = LOCAL_QUORUM Guarantees Linearizability
 With $R = 2$ and $W = 2$, $R + W = 4 > 3$. By the Pigeonhole Principle, any read quorum of size 2 and any write quorum of size 2 **must overlap** by at least one replica:
 
 $$\{ \text{Write Replicas} \} \cap \{ \text{Read Replicas} \} \neq \emptyset$$
@@ -84,7 +84,7 @@ We executed a live chaos test against a 3-node Scylla cluster (`scripts/chaos/ph
 
 | Metric | Measured Value |
 |---|---|
-| Total Messages Acknowledged ($W = \text{LOCAL_QUORUM}$) | **200** |
+| Total Messages Acknowledged (W = LOCAL_QUORUM) | **200** |
 | Write Failures during Node Partition | **0** (2/3 Quorum intact) |
 | `scylla2` Reads at `Consistency: ONE` (Missing Rows) | **86 PHANTOM READS** |
 | Cluster Reads at `Consistency: LOCAL_QUORUM` (Missing Rows) | **0 PHANTOM READS** (100% found) |

@@ -170,8 +170,8 @@ tablehistograms), Scylla Manager (even locally, for repair), and reading
 
 ## 10. Phase 3 gates
 
-- [ ] Latest-50 and paginate-back work across bucket boundaries (test with a
-      channel seeded 100k messages spanning 3+ buckets)
+- [x] Latest-50 and paginate-back work across bucket boundaries (test with a
+      channel seeded 100k messages spanning 3+ buckets) (see docs/bucket-pagination-benchmark.md)
 - [ ] Edit window enforced (15 min), edits stored and served
 - [ ] Tombstone discipline: delete 10k messages, run `nodetool compactionstats`,
       explain what you see

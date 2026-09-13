@@ -107,7 +107,7 @@ func (h *harness) msgCount(t *testing.T, channelID int64) int {
 func TestSendListPaginate(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
-	svc := NewService(h.db, h.node, NoopRecorder{})
+	svc := NewService(h.db, NewPostgresStore(h.db), h.node, NoopRecorder{})
 	a := h.user(t, "a")
 	_, cid, _ := h.guildWithMember(t, "g", a)
 
@@ -170,7 +170,7 @@ func TestSendListPaginate(t *testing.T) {
 func TestEditDeleteAuthorWindow(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
-	svc := NewService(h.db, h.node, NoopRecorder{})
+	svc := NewService(h.db, NewPostgresStore(h.db), h.node, NoopRecorder{})
 	a := h.user(t, "a")
 	b := h.user(t, "b")
 	_, cid, _ := h.guildWithMember(t, "g", a, b)
@@ -253,7 +253,7 @@ func TestPublishAfterCommit(t *testing.T) {
 	defer other.Close()
 
 	pub := &publishProbe{db: other}
-	svc := NewService(h.db, h.node, pub)
+	svc := NewService(h.db, NewPostgresStore(h.db), h.node, pub)
 	a := h.user(t, "a")
 	gid, cid, _ := h.guildWithMember(t, "g", a)
 
@@ -304,7 +304,7 @@ func TestSendWithRedisPublisher(t *testing.T) {
 	rdb := redis.NewClient(opt)
 	defer rdb.Close()
 
-	svc := NewService(h.db, h.node, pub)
+	svc := NewService(h.db, NewPostgresStore(h.db), h.node, pub)
 	a := h.user(t, "a")
 	gid, cid, _ := h.guildWithMember(t, "g", a)
 

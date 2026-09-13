@@ -116,7 +116,8 @@ func main() {
 		os.Exit(1)
 	}
 	guildsHandler := &guilds.Handler{Svc: guilds.NewService(db, node, publisher)}
-	messagesHandler := &messages.Handler{Svc: messages.NewService(db, node, publisher)}
+	msgStore := messages.NewPostgresStore(db)
+	messagesHandler := &messages.Handler{Svc: messages.NewService(db, msgStore, node, publisher)}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)

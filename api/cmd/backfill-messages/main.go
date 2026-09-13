@@ -34,11 +34,13 @@ func main() {
 		rateLimit     = flag.Int("rate-limit", 5000, "Max messages/sec written to ScyllaDB (0 for unlimited)")
 		resumeFile    = flag.String("resume-file", "/tmp/kith_backfill_cursor.state", "Path to cursor state file for resuming interrupted backfills")
 		resetCursor   = flag.Bool("reset-cursor", false, "Start backfill from newest message, ignoring existing resume file")
-		verifyOnly    = flag.Bool("verify-only", false, "Skip backfill and run parity verification between PostgreSQL and ScyllaDB")
-		verifySamples = flag.Int("verify-samples", 10000, "Number of messages to sample for parity verification (0 for all)")
-		dbURL         = flag.String("db-url", "", "PostgreSQL DATABASE_URL")
-		scyllaHosts   = flag.String("scylla-hosts", "", "ScyllaDB hosts (comma separated)")
-		scyllaKey     = flag.String("scylla-keyspace", "", "ScyllaDB keyspace")
+		verifyOnly         = flag.Bool("verify-only", false, "Skip backfill and run parity verification between PostgreSQL and ScyllaDB")
+		verifySamples      = flag.Int("verify-samples", 10000, "Number of messages to sample for parity verification (0 for all)")
+		strategy           = flag.String("strategy", "simple", "Backfill strategy: 'simple' (individual concurrent writes) or 'partition-batch' (partition-affinity single-partition batching)")
+		partitionBatchSize = flag.Int("partition-batch-size", 50, "Max messages per single-partition CQL batch in partition-batch strategy")
+		dbURL              = flag.String("db-url", "", "PostgreSQL DATABASE_URL")
+		scyllaHosts        = flag.String("scylla-hosts", "", "ScyllaDB hosts (comma separated)")
+		scyllaKey          = flag.String("scylla-keyspace", "", "ScyllaDB keyspace")
 	)
 	flag.Parse()
 
@@ -71,6 +73,10 @@ func main() {
 	fmt.Printf("• PostgreSQL:     %s\n", sanitizeURL(*dbURL))
 	fmt.Printf("• ScyllaDB Hosts: %s (Keyspace: %s)\n", *scyllaHosts, *scyllaKey)
 	if !*verifyOnly {
+		fmt.Printf("• Strategy:       %s\n", *strategy)
+		if *strategy == "partition-batch" || *strategy == "partition_batch" {
+			fmt.Printf("• Partition Batch:%d msgs/batch\n", *partitionBatchSize)
+		}
 		fmt.Printf("• Batch Size:     %d rows\n", *batchSize)
 		fmt.Printf("• Workers:        %d goroutines\n", *workers)
 		if *rateLimit > 0 {
@@ -112,6 +118,11 @@ func main() {
 
 	if *verifyOnly {
 		runParityVerification(pgDB, scyllaSession, *verifySamples, *workers)
+		return
+	}
+
+	if *strategy == "partition-batch" || *strategy == "partition_batch" {
+		runPartitionBackfill(pgDB, scyllaSession, *batchSize, *partitionBatchSize, *workers, *rateLimit, *resumeFile, *resetCursor)
 		return
 	}
 

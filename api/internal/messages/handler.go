@@ -81,11 +81,11 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		errs.Write(w, errs.FormBody("Invalid Form Body: bad channel id"))
 		return
 	}
-	var before int64
+	var before Cursor
 	if b := r.URL.Query().Get("before"); b != "" {
 		var err error
-		before, err = snowflake.Parse(b)
-		if err != nil || before <= 0 {
+		before, err = ParseCursor(b)
+		if err != nil {
 			errs.Write(w, errs.FormBody("Invalid Form Body: bad before cursor"))
 			return
 		}
@@ -103,6 +103,9 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.writeErr(w, err)
 		return
+	}
+	if len(msgs) > 0 {
+		w.Header().Set("X-Next-Cursor", NextCursorToken(msgs))
 	}
 	httpx.JSON(w, http.StatusOK, msgs)
 }

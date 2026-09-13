@@ -108,15 +108,13 @@ func (s *Service) Send(ctx context.Context, userID, channelID int64, content str
 	return m, nil
 }
 
-// List returns messages in a channel, newest-first, paginated by snowflake
-// cursor: before=<id> returns the 50 (default) messages older than that id.
-// Snowflakes are time-sortable, so the cursor needs no state (plan/02 §4).
-func (s *Service) List(ctx context.Context, userID, channelID int64, before int64, limit int) ([]Message, error) {
+// List returns messages in a channel, newest-first, paginated by cursor:
+// before returns messages older than that cursor position across partition buckets (plan/03 §4–5).
+func (s *Service) List(ctx context.Context, userID, channelID int64, before Cursor, limit int) ([]Message, error) {
 	if _, err := s.requireCanView(ctx, userID, channelID); err != nil {
 		return nil, err
 	}
-	cursor := CursorFromMessageID(before)
-	return s.store.List(ctx, channelID, cursor, limit)
+	return s.store.List(ctx, channelID, before, limit)
 }
 
 // Edit patches a message's content. Author only, within the 15-minute

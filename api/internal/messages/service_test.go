@@ -137,7 +137,7 @@ func TestSendListPaginate(t *testing.T) {
 	}
 
 	// default list: newest first
-	page, err := svc.List(ctx, a, cid, 0, 0)
+	page, err := svc.List(ctx, a, cid, Cursor{}, 0)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -146,23 +146,23 @@ func TestSendListPaginate(t *testing.T) {
 	}
 
 	// cursor pagination: 5 at a time
-	p1, _ := svc.List(ctx, a, cid, 0, 5)
+	p1, _ := svc.List(ctx, a, cid, Cursor{}, 5)
 	if len(p1) != 5 || p1[0].Content != "msg 11" {
 		t.Fatalf("page1 = %+v", p1)
 	}
 	cursor, _ := snowflake.Parse(p1[len(p1)-1].ID)
-	p2, _ := svc.List(ctx, a, cid, cursor, 5)
+	p2, _ := svc.List(ctx, a, cid, CursorFromMessageID(cursor), 5)
 	if len(p2) != 5 || p2[0].Content != "msg 06" {
 		t.Fatalf("page2 = %+v", p2)
 	}
 	cursor2, _ := snowflake.Parse(p2[len(p2)-1].ID)
-	p3, _ := svc.List(ctx, a, cid, cursor2, 5)
+	p3, _ := svc.List(ctx, a, cid, CursorFromMessageID(cursor2), 5)
 	if len(p3) != 2 || p3[0].Content != "msg 01" {
 		t.Fatalf("page3 = %+v", p3)
 	}
 
 	// non-member cannot list
-	if _, err := svc.List(ctx, outsider, cid, 0, 0); !errors.Is(err, ErrMissingAccess) {
+	if _, err := svc.List(ctx, outsider, cid, Cursor{}, 0); !errors.Is(err, ErrMissingAccess) {
 		t.Errorf("List(non-member) = %v, want ErrMissingAccess", err)
 	}
 }
@@ -322,7 +322,7 @@ func TestSendWithRedisPublisher(t *testing.T) {
 	}
 
 	// Verify List also returns GuildID
-	list, err := svc.List(ctx, a, cid, 0, 10)
+	list, err := svc.List(ctx, a, cid, Cursor{}, 10)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}

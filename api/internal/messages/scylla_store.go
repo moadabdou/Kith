@@ -256,57 +256,86 @@ func (s *ScyllaStore) Get(ctx context.Context, channelID, messageID int64) (*Mes
 	return msg, nil
 }
 
-// List queries messages within a partition bucket ordered by message_id DESC.
+// List queries messages across partition buckets ordered by message_id DESC (plan/03 §4–5).
+// When a bucket slice returns fewer than limit rows, it seamlessly hops to bucket - 1
+// until the requested batch size is satisfied or the channel creation epoch is reached.
 func (s *ScyllaStore) List(ctx context.Context, channelID int64, before Cursor, limit int) ([]Message, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
 
-	var bucket int32
-	var query *gocql.Query
+	var startBucket int32
+	var currentBeforeID int64
+
 	if before.MessageID > 0 {
-		bucket = before.Bucket
-		if bucket == 0 {
-			bucket = BucketForMessageID(before.MessageID)
+		startBucket = before.Bucket
+		if startBucket == 0 {
+			startBucket = BucketForMessageID(before.MessageID)
 		}
-		query = s.session.Query(cqlListMessagesWithCursor, channelID, bucket, before.MessageID, limit).WithContext(ctx)
+		currentBeforeID = before.MessageID
 	} else {
 		nowOffset := time.Now().UnixMilli() - snowflake.Epoch
 		if nowOffset < 0 {
 			nowOffset = 0
 		}
-		bucket = int32(nowOffset / BucketDurationMs)
-		query = s.session.Query(cqlListLatestMessages, channelID, bucket, limit).WithContext(ctx)
+		startBucket = int32(nowOffset / BucketDurationMs)
+		currentBeforeID = 0
 	}
 
-	scanner := query.Iter().Scanner()
-	msgs := []Message{}
-	for scanner.Next() {
-		var mid, authorID int64
-		var content string
-		var edits []string
-		var msgType int16
+	channelCreationBucket := BucketForMessageID(channelID)
+	if channelCreationBucket > startBucket {
+		channelCreationBucket = 0
+	}
 
-		if err := scanner.Scan(&mid, &authorID, &content, &edits, &msgType); err != nil {
+	msgs := []Message{}
+	currentBucket := startBucket
+
+	for len(msgs) < limit && currentBucket >= channelCreationBucket {
+		remaining := limit - len(msgs)
+
+		var query *gocql.Query
+		if currentBeforeID > 0 {
+			query = s.session.Query(cqlListMessagesWithCursor, channelID, currentBucket, currentBeforeID, remaining).WithContext(ctx)
+		} else {
+			query = s.session.Query(cqlListLatestMessages, channelID, currentBucket, remaining).WithContext(ctx)
+		}
+
+		scanner := query.Iter().Scanner()
+		for scanner.Next() {
+			var mid, authorID int64
+			var content string
+			var edits []string
+			var msgType int16
+
+			if err := scanner.Scan(&mid, &authorID, &content, &edits, &msgType); err != nil {
+				return nil, err
+			}
+
+			createdAt := snowflake.Time(mid)
+			m := Message{
+				ID:        snowflake.String(mid),
+				ChannelID: strconv.FormatInt(channelID, 10),
+				Author:    AuthorRef{ID: strconv.FormatInt(authorID, 10)},
+				Content:   content,
+				CreatedAt: createdAt,
+			}
+			if len(edits) > 0 {
+				editTime := createdAt.Add(time.Minute)
+				m.EditedAt = &editTime
+			}
+			msgs = append(msgs, m)
+		}
+		if err := scanner.Err(); err != nil {
 			return nil, err
 		}
 
-		createdAt := snowflake.Time(mid)
-		m := Message{
-			ID:        snowflake.String(mid),
-			ChannelID: strconv.FormatInt(channelID, 10),
-			Author:    AuthorRef{ID: strconv.FormatInt(authorID, 10)},
-			Content:   content,
-			CreatedAt: createdAt,
+		if len(msgs) >= limit {
+			break
 		}
-		if len(edits) > 0 {
-			editTime := createdAt.Add(time.Minute)
-			m.EditedAt = &editTime
-		}
-		msgs = append(msgs, m)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
+
+		// Step to the previous bucket; in the older bucket, start from its newest messages
+		currentBucket--
+		currentBeforeID = 0
 	}
 
 	if s.hydrator != nil && len(msgs) > 0 {

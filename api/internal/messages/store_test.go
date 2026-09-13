@@ -138,3 +138,89 @@ func TestCursorFromMessageID(t *testing.T) {
 		t.Errorf("zeroCursor = %+v, want all zeros", zeroCursor)
 	}
 }
+
+func TestOpaqueCursorEngine(t *testing.T) {
+	node, _ := snowflake.NewNode(1)
+	msgID, _ := node.Generate()
+	bucket := BucketForMessageID(msgID)
+
+	cursor := Cursor{
+		MessageID: msgID,
+		Bucket:    bucket,
+	}
+
+	// 1. Encode to opaque token
+	token := cursor.Encode()
+	if token == "" {
+		t.Fatalf("cursor.Encode() returned empty string")
+	}
+
+	// 2. Decode opaque token
+	parsed, err := ParseCursor(token)
+	if err != nil {
+		t.Fatalf("ParseCursor(token): %v", err)
+	}
+	if parsed.MessageID != msgID {
+		t.Errorf("parsed.MessageID = %d, want %d", parsed.MessageID, msgID)
+	}
+	if parsed.Bucket != bucket {
+		t.Errorf("parsed.Bucket = %d, want %d", parsed.Bucket, bucket)
+	}
+
+	// 3. Backward compatibility with legacy Snowflake ID string
+	legacyStr := snowflake.String(msgID)
+	legacyParsed, err := ParseCursor(legacyStr)
+	if err != nil {
+		t.Fatalf("ParseCursor(legacyStr): %v", err)
+	}
+	if legacyParsed.MessageID != msgID {
+		t.Errorf("legacyParsed.MessageID = %d, want %d", legacyParsed.MessageID, msgID)
+	}
+	if legacyParsed.Bucket != bucket {
+		t.Errorf("legacyParsed.Bucket = %d, want %d", legacyParsed.Bucket, bucket)
+	}
+
+	// 4. Empty string
+	empty, err := ParseCursor("")
+	if err != nil {
+		t.Errorf("ParseCursor(\"\") error = %v", err)
+	}
+	if empty.MessageID != 0 || empty.Bucket != 0 {
+		t.Errorf("empty cursor = %+v, want zeros", empty)
+	}
+
+	// 5. Invalid string
+	if _, err := ParseCursor("invalid-not-base64-or-id!@#$%"); err == nil {
+		t.Errorf("ParseCursor(invalid) should error, got nil")
+	}
+}
+
+func TestNextCursor(t *testing.T) {
+	node, _ := snowflake.NewNode(1)
+	id1, _ := node.Generate()
+	time.Sleep(2 * time.Millisecond)
+	id2, _ := node.Generate()
+
+	msgs := []Message{
+		{ID: snowflake.String(id2)},
+		{ID: snowflake.String(id1)}, // oldest is at the end of DESC slice
+	}
+
+	c := NextCursor(msgs)
+	if c.MessageID != id1 {
+		t.Errorf("NextCursor ID = %d, want %d", c.MessageID, id1)
+	}
+	if c.Bucket != BucketForMessageID(id1) {
+		t.Errorf("NextCursor Bucket = %d, want %d", c.Bucket, BucketForMessageID(id1))
+	}
+
+	token := NextCursorToken(msgs)
+	if token != c.Encode() {
+		t.Errorf("NextCursorToken = %q, want %q", token, c.Encode())
+	}
+
+	// Empty slice
+	if empty := NextCursor(nil); empty.MessageID != 0 {
+		t.Errorf("NextCursor(nil) = %+v, want empty", empty)
+	}
+}

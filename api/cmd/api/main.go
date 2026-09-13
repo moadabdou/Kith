@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gocql/gocql"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/moadabdou/Kith/api/internal/auth"
 	"github.com/moadabdou/Kith/api/internal/events"
@@ -118,10 +119,7 @@ func main() {
 	}
 	guildsHandler := &guilds.Handler{Svc: guilds.NewService(db, node, publisher)}
 
-	messageStoreType := envOr("MESSAGE_STORE", "postgres")
-	var msgStore messages.Store
-	switch messageStoreType {
-	case "scylla":
+	initScylla := func() (*messages.ScyllaStore, *gocql.Session) {
 		scyllaHosts := strings.Split(envOr("SCYLLA_HOSTS", "scylla:9042"), ",")
 		scyllaKeyspace := envOr("SCYLLA_KEYSPACE", "kith")
 		scyllaConsistency := messages.ParseConsistency(envOr("SCYLLA_CONSISTENCY", "LOCAL_QUORUM"))
@@ -134,13 +132,37 @@ func main() {
 			slog.Error("failed to connect to scylladb", "hosts", scyllaHosts, "error", err)
 			os.Exit(1)
 		}
-		defer scyllaSession.Close()
 		hydrator := messages.NewPostgresAuthorHydrator(db)
-		msgStore = messages.NewScyllaStore(scyllaSession, hydrator)
-		slog.Info("message store initialized", "store", "scylla", "hosts", scyllaHosts, "keyspace", scyllaKeyspace, "consistency", scyllaConsistency.String())
+		return messages.NewScyllaStore(scyllaSession, hydrator), scyllaSession
+	}
+
+	storeModeRaw := os.Getenv("MESSAGES_STORE_MODE")
+	if storeModeRaw == "" {
+		storeModeRaw = envOr("MESSAGE_STORE", "postgres")
+	}
+	mode := messages.ParseDualWriteMode(storeModeRaw)
+
+	var msgStore messages.Store
+	switch mode {
+	case messages.ModeScyllaOnly:
+		scyllaStore, scyllaSession := initScylla()
+		defer scyllaSession.Close()
+		msgStore = scyllaStore
+		slog.Info("message store initialized", "mode", "scylla_only", "store", "scylla")
+	case messages.ModeDualWritePGPrimary, messages.ModeDualWriteScyllaPrimary:
+		pgStore := messages.NewPostgresStore(db)
+		scyllaStore, scyllaSession := initScylla()
+		defer scyllaSession.Close()
+		dualStore := messages.NewDualWriteStore(mode, pgStore, scyllaStore)
+		msgStore = dualStore
+		slog.Info("message store initialized",
+			"mode", string(mode),
+			"primary", dualStore.PrimaryName(),
+			"secondary", dualStore.SecondaryName(),
+		)
 	default:
 		msgStore = messages.NewPostgresStore(db)
-		slog.Info("message store initialized", "store", "postgres")
+		slog.Info("message store initialized", "mode", "postgres_only", "store", "postgres")
 	}
 
 	messagesHandler := &messages.Handler{Svc: messages.NewService(db, msgStore, node, publisher)}

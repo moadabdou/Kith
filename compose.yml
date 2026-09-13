@@ -116,6 +116,7 @@ services:
       SCYLLA_KEYSPACE: ${SCYLLA_KEYSPACE:-kith}
       SCYLLA_CONSISTENCY: ${SCYLLA_CONSISTENCY:-ONE}
       MESSAGE_STORE: ${MESSAGE_STORE:-postgres}
+      MESSAGES_STORE_MODE: ${MESSAGES_STORE_MODE:-}
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:

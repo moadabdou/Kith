@@ -148,6 +148,7 @@ func (idx *Indexer) Start(ctx context.Context) error {
 				}
 			},
 			nats.Durable(idx.cfg.ConsumerName),
+			nats.DeliverAll(),
 			nats.ManualAck(),
 			nats.AckWait(30*time.Second),
 		)

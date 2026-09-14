@@ -811,7 +811,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 5, "w": 5, "x": 9, "y": 39 },
+      "gridPos": { "h": 5, "w": 4, "x": 8, "y": 39 },
       "id": 15,
       "options": {
         "colorMode": "value",
@@ -864,7 +864,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 5, "w": 5, "x": 14, "y": 39 },
+      "gridPos": { "h": 5, "w": 4, "x": 12, "y": 39 },
       "id": 16,
       "options": {
         "colorMode": "background",
@@ -905,35 +905,66 @@
           },
           "unit": "short"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "succeeded" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "processing" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "enqueued" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "yellow", "mode": "fixed" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "failed" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "canceled" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "semi-dark-gray", "mode": "fixed" } }
+            ]
+          }
+        ]
       },
-      "gridPos": { "h": 5, "w": 5, "x": 19, "y": 39 },
+      "gridPos": { "h": 5, "w": 8, "x": 16, "y": 39 },
       "id": 17,
       "options": {
         "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
         "reduceOptions": {
           "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
-        "textMode": "auto"
+        "textMode": "value_and_name"
       },
       "pluginVersion": "12.1.1",
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
           "editorMode": "code",
-          "expr": "sum(meilisearch_nb_tasks{kind=\"statuses\"}) or vector(0)",
+          "expr": "meilisearch_nb_tasks{kind=\"statuses\"}",
           "instant": true,
-          "legendFormat": "Total Tasks",
+          "legendFormat": "{{value}}",
           "range": false,
           "refId": "A"
         }
       ],
-      "title": "Total Tasks",
+      "title": "Tasks by Status",
       "type": "stat"
     },
     {

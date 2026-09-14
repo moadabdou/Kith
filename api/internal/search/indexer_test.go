@@ -266,3 +266,56 @@ func TestParseTimestamp(t *testing.T) {
 		t.Errorf("expected non-zero fallback timestamp, got %d", tsEmpty)
 	}
 }
+
+func TestIndexer_WhitespaceFiltered(t *testing.T) {
+	mock := newMockDocIndexer()
+	cfg := IndexerConfig{
+		IndexName:   "messages",
+		BatchSize:   10,
+		FlushWindow: 50 * time.Millisecond,
+	}
+
+	idx := NewIndexer(cfg, mock, nil, nil)
+	if err := idx.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer idx.Stop()
+
+	// 1. Whitespace only on CREATE -> should be skipped
+	whiteMsg := makeTestMsg(t, "MESSAGE_CREATE", messagePayload{
+		ID:        "white_1",
+		ChannelID: "c1",
+		GuildID:   "g1",
+		Author:    authorPayload{ID: "u1"},
+		Content:   "   \t\n  ",
+		Timestamp: json.RawMessage(`1700000000`),
+	}, "g1")
+
+	// 2. Normal message -> should be indexed
+	validMsg := makeTestMsg(t, "MESSAGE_CREATE", messagePayload{
+		ID:        "valid_1",
+		ChannelID: "c1",
+		GuildID:   "g1",
+		Author:    authorPayload{ID: "u1"},
+		Content:   "valid text",
+		Timestamp: json.RawMessage(`1700000000`),
+	}, "g1")
+
+	idx.msgChan <- whiteMsg
+	idx.msgChan <- validMsg
+
+	select {
+	case <-mock.flushNotify:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for batch flush")
+	}
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if len(mock.indexedDocs) != 1 {
+		t.Fatalf("expected exactly 1 indexed doc (skipping whitespace), got %d", len(mock.indexedDocs))
+	}
+	if mock.indexedDocs[0].ID != "valid_1" {
+		t.Fatalf("expected doc 'valid_1', got %s", mock.indexedDocs[0].ID)
+	}
+}

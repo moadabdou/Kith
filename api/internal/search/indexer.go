@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -254,6 +255,24 @@ func (idx *Indexer) processMsg(m *nats.Msg, batch *pendingBatch) {
 		if p.ID == "" {
 			return
 		}
+
+		trimmed := strings.TrimSpace(p.Content)
+		if trimmed == "" {
+			// If an update cleared content, purge it from the search index
+			if ev.Type == "MESSAGE_UPDATE" {
+				delete(batch.upserts, p.ID)
+				batch.deletes[p.ID] = struct{}{}
+				ProcessedEventsTotal.WithLabelValues("delete").Inc()
+			}
+			return
+		}
+
+		// Enforce bounded content length (max 2000 chars)
+		content := p.Content
+		if len(content) > 2000 {
+			content = content[:2000]
+		}
+
 		guildID := p.GuildID
 		if guildID == "" {
 			guildID = ev.GuildID
@@ -264,7 +283,7 @@ func (idx *Indexer) processMsg(m *nats.Msg, batch *pendingBatch) {
 			GuildID:   guildID,
 			ChannelID: p.ChannelID,
 			AuthorID:  p.Author.ID,
-			Content:   p.Content,
+			Content:   content,
 			Timestamp: parseTimestamp(p.Timestamp),
 		}
 

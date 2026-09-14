@@ -147,3 +147,73 @@ func (c *MeiliClient) GetDocument(ctx context.Context, index, id string) (*Messa
 	}
 	return &doc, nil
 }
+
+// SearchQuery defines parameters for querying Meilisearch.
+type SearchQuery struct {
+	Query                string   `json:"q"`
+	Filter               string   `json:"filter,omitempty"`
+	Limit                int      `json:"limit,omitempty"`
+	Offset               int      `json:"offset,omitempty"`
+	Sort                 []string `json:"sort,omitempty"`
+	AttributesToRetrieve []string `json:"attributesToRetrieve,omitempty"`
+}
+
+// SearchHit represents a hit returned by Meilisearch.
+type SearchHit struct {
+	ID        string `json:"id"`
+	GuildID   string `json:"guild_id,omitempty"`
+	ChannelID string `json:"channel_id,omitempty"`
+	AuthorID  string `json:"author_id,omitempty"`
+	Content   string `json:"content,omitempty"`
+	Timestamp int64  `json:"timestamp,omitempty"`
+}
+
+// SearchResult represents the Meilisearch search response envelope.
+type SearchResult struct {
+	Hits               []SearchHit `json:"hits"`
+	EstimatedTotalHits int         `json:"estimatedTotalHits"`
+	Limit              int         `json:"limit"`
+	Offset             int         `json:"offset"`
+	ProcessingTimeMs   int         `json:"processingTimeMs"`
+	Query              string      `json:"query"`
+}
+
+// Search executes a search query against the specified index.
+// By default, if AttributesToRetrieve is empty, it requests only the "id" field
+// to support lightweight retrieval and ScyllaDB hydration ("Search-Index-Only").
+func (c *MeiliClient) Search(ctx context.Context, index string, q SearchQuery) (*SearchResult, error) {
+	if len(q.AttributesToRetrieve) == 0 {
+		q.AttributesToRetrieve = []string{"id"}
+	}
+	body, err := json.Marshal(q)
+	if err != nil {
+		return nil, fmt.Errorf("meilisearch: marshal search query: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/indexes/%s/search", c.baseURL, index)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("meilisearch: new request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("meilisearch: do request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("meilisearch: search failed (status %d): %s", resp.StatusCode, string(respBody))
+	}
+
+	var res SearchResult
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return nil, fmt.Errorf("meilisearch: decode search response: %w", err)
+	}
+	return &res, nil
+}

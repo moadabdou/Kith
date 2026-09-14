@@ -69,11 +69,24 @@ printf "${YELLOW}→ [3/4] Configuring schema settings for '%s'...${NC}\n" "$IND
 printf "  • Filterable Attributes: guild_id, channel_id, author_id, timestamp\n"
 printf "  • Searchable Attributes: content\n"
 printf "  • Sortable Attributes:   timestamp\n"
+printf "  • Typo Tolerance:        oneTypo: 6, twoTypos: 10 (disabled on protocols/words)\n"
+printf "  • Pagination:            maxTotalHits: 1000\n"
 
 settings_payload='{
   "filterableAttributes": ["guild_id", "channel_id", "author_id", "timestamp"],
   "searchableAttributes": ["content"],
-  "sortableAttributes": ["timestamp"]
+  "sortableAttributes": ["timestamp"],
+  "typoTolerance": {
+    "enabled": true,
+    "minWordSizeForTypos": {
+      "oneTypo": 6,
+      "twoTypos": 10
+    },
+    "disableOnWords": ["http", "https", "discord", "channel"]
+  },
+  "pagination": {
+    "maxTotalHits": 1000
+  }
 }'
 
 settings_resp=$(curl -s -X PATCH "${MEILI_HOST}/indexes/${INDEX_UID}/settings" \
@@ -110,7 +123,7 @@ printf "${YELLOW}→ [4/4] Verifying active settings for '%s'...${NC}\n" "$INDEX
 active_settings=$(curl -s -H "Authorization: Bearer ${MEILI_MASTER_KEY}" "${MEILI_HOST}/indexes/${INDEX_UID}/settings")
 
 if command -v jq >/dev/null 2>&1; then
-  echo "$active_settings" | jq '{filterableAttributes, searchableAttributes, sortableAttributes}'
+  echo "$active_settings" | jq '{filterableAttributes, searchableAttributes, sortableAttributes, typoTolerance, pagination}'
 else
   echo "$active_settings"
 fi

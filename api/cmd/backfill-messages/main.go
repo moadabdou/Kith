@@ -29,11 +29,11 @@ type pgMessage struct {
 
 func main() {
 	var (
-		batchSize     = flag.Int("batch-size", 1000, "Number of rows to fetch per PostgreSQL cursor batch")
-		workers       = flag.Int("workers", 16, "Number of concurrent insertion workers for ScyllaDB")
-		rateLimit     = flag.Int("rate-limit", 5000, "Max messages/sec written to ScyllaDB (0 for unlimited)")
-		resumeFile    = flag.String("resume-file", "/tmp/kith_backfill_cursor.state", "Path to cursor state file for resuming interrupted backfills")
-		resetCursor   = flag.Bool("reset-cursor", false, "Start backfill from newest message, ignoring existing resume file")
+		batchSize          = flag.Int("batch-size", 1000, "Number of rows to fetch per PostgreSQL cursor batch")
+		workers            = flag.Int("workers", 16, "Number of concurrent insertion workers for ScyllaDB")
+		rateLimit          = flag.Int("rate-limit", 5000, "Max messages/sec written to ScyllaDB (0 for unlimited)")
+		resumeFile         = flag.String("resume-file", "/tmp/kith_backfill_cursor.state", "Path to cursor state file for resuming interrupted backfills")
+		resetCursor        = flag.Bool("reset-cursor", false, "Start backfill from newest message, ignoring existing resume file")
 		verifyOnly         = flag.Bool("verify-only", false, "Skip backfill and run parity verification between PostgreSQL and ScyllaDB")
 		verifySamples      = flag.Int("verify-samples", 10000, "Number of messages to sample for parity verification (0 for all)")
 		strategy           = flag.String("strategy", "simple", "Backfill strategy: 'simple' (individual concurrent writes) or 'partition-batch' (partition-affinity single-partition batching)")

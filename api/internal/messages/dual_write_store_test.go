@@ -13,7 +13,7 @@ import (
 
 // mockStore is an in-memory Store implementation for unit testing DualWriteStore.
 type mockStore struct {
-	messages map[int64]Message
+	messages  map[int64]Message
 	insertErr error
 	editErr   error
 	deleteErr error

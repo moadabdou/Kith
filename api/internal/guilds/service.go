@@ -844,4 +844,3 @@ func (s *Service) DeleteRole(ctx context.Context, userID, guildID, roleID int64)
 	}
 	return nil
 }
-

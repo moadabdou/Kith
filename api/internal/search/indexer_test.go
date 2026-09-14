@@ -11,12 +11,12 @@ import (
 )
 
 type mockDocIndexer struct {
-	mu           sync.Mutex
-	indexedDocs  []MessageDocument
-	deletedIDs   []string
-	indexCalls   int
-	deleteCalls  int
-	flushNotify  chan struct{}
+	mu          sync.Mutex
+	indexedDocs []MessageDocument
+	deletedIDs  []string
+	indexCalls  int
+	deleteCalls int
+	flushNotify chan struct{}
 }
 
 func newMockDocIndexer() *mockDocIndexer {

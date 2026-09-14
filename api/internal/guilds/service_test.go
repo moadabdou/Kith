@@ -351,9 +351,9 @@ func TestInviteLifecycle(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
-func boolPtr(b bool) *bool     { return &b }
-func int32Ptr(i int32) *int32  { return &i }
-func int64Ptr(i int64) *int64  { return &i }
+func boolPtr(b bool) *bool    { return &b }
+func int32Ptr(i int32) *int32 { return &i }
+func int64Ptr(i int64) *int64 { return &i }
 
 func TestRoles_Lifecycle(t *testing.T) {
 	svc, db, node, prefix := newTestService(t)
@@ -581,4 +581,3 @@ func TestMemberLifecycleEvents(t *testing.T) {
 		t.Errorf("unknown remove published %d REMOVE events total, want 1", got)
 	}
 }
-

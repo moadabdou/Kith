@@ -30,13 +30,13 @@ type DocIndexer interface {
 
 // IndexerConfig holds configuration for the search indexer.
 type IndexerConfig struct {
-	StreamName    string
-	ConsumerName  string
-	IndexName     string
-	BatchSize     int
-	FlushWindow   time.Duration
-	NatsURL       string
-	Subject       string
+	StreamName   string
+	ConsumerName string
+	IndexName    string
+	BatchSize    int
+	FlushWindow  time.Duration
+	NatsURL      string
+	Subject      string
 }
 
 // Indexer consumes NATS JetStream message events and flushes them to Meilisearch in micro-batches.

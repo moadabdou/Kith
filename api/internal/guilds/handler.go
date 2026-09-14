@@ -555,4 +555,3 @@ func parsePermissions(val any) (*int64, error) {
 		return nil, errors.New("invalid permissions")
 	}
 }
-

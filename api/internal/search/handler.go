@@ -3,6 +3,7 @@ package search
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -14,11 +15,39 @@ import (
 
 // Handler serves HTTP requests for the search API (plan/04 §4).
 type Handler struct {
-	Svc *Service
+	Svc        *Service
+	Reconciler *Reconciler
 }
 
-func NewHandler(svc *Service) *Handler {
-	return &Handler{Svc: svc}
+func NewHandler(svc *Service, reconciler *Reconciler) *Handler {
+	return &Handler{
+		Svc:        svc,
+		Reconciler: reconciler,
+	}
+}
+
+// Reconcile handles POST /api/guilds/{id}/messages/search/reconcile.
+func (h *Handler) Reconcile(w http.ResponseWriter, r *http.Request) {
+	guildIDStr := r.PathValue("id")
+	guildID, err := strconv.ParseInt(guildIDStr, 10, 64)
+	if err != nil {
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad guild id"))
+		return
+	}
+
+	if h.Reconciler == nil {
+		errs.Write(w, errs.Internal())
+		return
+	}
+
+	report, err := h.Reconciler.Run(r.Context(), guildID)
+	if err != nil {
+		slog.Error("search reconcile error", "guild_id", guildID, "error", err)
+		errs.Write(w, errs.Internal())
+		return
+	}
+
+	httpx.JSON(w, http.StatusOK, report)
 }
 
 // Search handles GET /api/guilds/{id}/messages/search.

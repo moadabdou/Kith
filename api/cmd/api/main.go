@@ -173,14 +173,36 @@ func main() {
 	}
 
 	messagesHandler := &messages.Handler{Svc: messages.NewService(db, msgStore, node, publisher)}
-	searchHandler := search.NewHandler(search.NewService(db))
 
-	// Search indexer: Asynchronous NATS JetStream consumer -> Meilisearch (plan/04 §3, Issue #54)
+	// Search Rung 2: Meilisearch query engine with ScyllaDB hydration & reconciliation scanner (plan/04 §3–4)
 	meiliURL := envOr("MEILISEARCH_URL", "")
 	meiliKey := envOr("MEILISEARCH_KEY", "")
+	var meiliClient *search.MeiliClient
+	if meiliURL != "" {
+		meiliClient = search.NewMeiliClient(meiliURL, meiliKey)
+	}
+
+	searchOpts := []search.ServiceOption{
+		search.WithMessageStore(msgStore),
+	}
+	if meiliClient != nil {
+		searchOpts = append(searchOpts, search.WithSearchClient(meiliClient))
+	}
+	searchSvc := search.NewService(db, searchOpts...)
+
+	var reconciler *search.Reconciler
+	if meiliClient != nil {
+		reconciler = search.NewReconciler(search.ReconcilerConfig{
+			IndexName:  search.DefaultIndexName,
+			SampleSize: 100,
+			AutoRepair: true,
+		}, db, msgStore, meiliClient)
+	}
+	searchHandler := search.NewHandler(searchSvc, reconciler)
+
+	// Search indexer: Asynchronous NATS JetStream consumer -> Meilisearch (plan/04 §3, Issue #54)
 	searchIndexerEnabled := envOr("SEARCH_INDEXER_ENABLED", "true") == "true"
-	if natsPub != nil && meiliURL != "" && searchIndexerEnabled {
-		meiliClient := search.NewMeiliClient(meiliURL, meiliKey)
+	if natsPub != nil && meiliClient != nil && searchIndexerEnabled {
 		indexer := search.NewIndexer(search.IndexerConfig{
 			StreamName:   events.DefaultStreamName,
 			ConsumerName: search.DefaultConsumerName,
@@ -266,6 +288,8 @@ func main() {
 			},
 			"search-messages",
 			http.HandlerFunc(searchHandler.Search))))
+	mux.Handle("POST /api/guilds/{id}/messages/search/reconcile",
+		auth.RequireAuth(jwt, http.HandlerFunc(searchHandler.Reconcile)))
 
 	srv := &http.Server{
 		Addr:              ":" + port,

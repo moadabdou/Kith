@@ -29,7 +29,79 @@ type ReconcilerConfig struct {
 	AutoRepair bool
 }
 
-// Reconciler compares primary message storage against Meilisearch to detect and repair consistency drift (plan/04 §3).
+// Package search provides full-text search indexing, querying, and reconciliation.
+//
+// =====================================================================================
+// ARCHITECTURAL SPECIFICATION: SEARCH RECONCILIATION AT SCALE (DISCORD MODEL)
+// =====================================================================================
+//
+// 1. SYSTEM MODEL: DERIVED INVERTED INDEX VS. SOURCE OF TRUTH
+//    In high-throughput messaging architectures (e.g. Discord, Slack), the full-text
+//    search cluster (Meilisearch, Elasticsearch, Lucene) is NEVER the authoritative
+//    source of truth. It is a secondary, derived, eventually-consistent inverted index.
+//    The authoritative source of truth resides in distributed primary storage
+//    (ScyllaDB / Cassandra / PostgreSQL), partitioned by channel_id and sorted by
+//    Snowflake ID timestamp buckets.
+//
+// 2. THE TRILLION-MESSAGE PROBLEM: WHY FULL-TABLE SCANS ARE AN ANTI-PATTERN
+//    At scale (hundreds of billions to trillions of messages across millions of guilds):
+//    - Linear Scans Are Mathematically Infeasible:
+//      Crawling trillions of records with N+1 existence queries across a distributed
+//      database and a search cluster would require months of continuous execution,
+//      exhaust petabytes of network bandwidth, and cost hundreds of thousands of dollars
+//      in wasted I/O.
+//    - Storage Degradation:
+//      In wide-column distributed engines like ScyllaDB or Cassandra, performing full
+//      range scans triggers severe partition read amplification and tombstone warnings,
+//      crippling latency on active chat hot-paths.
+//    - Memory Leak Anti-Pattern (Indexer In-Memory Stores):
+//      Attempting to reconcile or track out-of-order mutations using unbounded in-memory
+//      maps (e.g. tracking recent deletes or mutation logs in API/indexer process RAM)
+//      inevitably causes OOM crashes, fails across process restarts, and diverges across
+//      distributed horizontal replicas.
+//
+// 3. MULTI-TIER PRODUCTION RECONCILIATION PATTERN (DISCORD MODEL)
+//    Production architectures maintain eventual consistency through four complementary tiers:
+//
+//    TIER 1: Inline Read-Repair During Hydration (Primary Defense — Implemented in service.go)
+//      - Search indexes operate in "Index-Only" mode (indexing search tokens and Snowflake IDs).
+//      - When a user performs a search, the search engine returns matching document IDs.
+//      - The API hydrates full message entities directly from primary storage (ScyllaDB).
+//      - If primary storage returns RowNotFound (indicating a delete mutation was dropped or
+//        delayed during an outage), the hydration path drops the hit from the response and
+//        dispatches an asynchronous background DeleteDocuments eviction to the search cluster.
+//      - Benefit: High-traffic guilds continuously self-heal on active read traffic with ZERO
+//        background database scanning overhead.
+//
+//    TIER 2: Stream Buffer & Consumer Lag Auditing (Telemetry Defense — Implemented in indexer.go)
+//      - Mutations flow through durable streaming logs (NATS JetStream / Apache Kafka).
+//      - During downstream search outages (e.g. 60-second engine freeze), the indexer uses
+//        m.InProgress() heartbeat extensions to prevent message re-delivery churn and avoid
+//        thundering-herd tombstone resurrects.
+//      - In-batch deduplication ensures updates supersede creates and deletes purge upserts
+//        before flushing downstream.
+//      - Operational health is verified via telemetry (search_indexer_nats_consumer_lag and
+//        search_indexer_nats_pending_ack) rather than database sweeps.
+//
+//    TIER 3: Scoped Partition & Bucket Re-indexing (Disaster Recovery)
+//      - When an index partition or single guild suffers severe data loss, reindexing is
+//        strictly bounded by (guild_id, channel_id, snowflake_bucket_range).
+//      - Full-cluster scans are architecturally forbidden; repairs operate as targeted,
+//        rate-limited jobs against single channel token ranges.
+//
+//    TIER 4: Hierarchical Merkle Trees / Content Hash Diffing (Offline Verification)
+//      - At massive scale, batch verification jobs avoid comparing raw rows.
+//      - Both primary storage and index maintain hierarchical Merkle tree hashes across key
+//        ranges. Reconcilers only traverse and synchronize partitions where the root hashes differ.
+//
+// 4. SCOPED ROLE OF THIS RECONCILER IN KITH (PHASE 3)
+//    The Reconciler defined in this file serves as an on-demand administrative verification
+//    and disaster recovery harness (accessible via CLI cmd/reconcile-search and admin API
+//    POST /api/guilds/{id}/messages/search/reconcile).
+//    - It operates with bounded sample windows (SampleSize, typically 100-1000 messages).
+//    - It is designed to validate chaos drills (e.g. validating zero-loss after a 60-second
+//      Meilisearch freeze) and perform spot checks for an isolated guild.
+//    - It is explicitly NOT a 24/7 background database crawler.
 type Reconciler struct {
 	cfg         ReconcilerConfig
 	db          *sql.DB
@@ -64,7 +136,7 @@ type SampleMessage struct {
 }
 
 // Run executes the reconciliation scan against a guild or across all channels.
-func (r *Reconciler) Run(ctx context.Context, guildID int64) (*ReconciliationReport, error) {
+func (r *Reconciler) Run(ctx context.Context, guildID int64, sampleSize ...int) (*ReconciliationReport, error) {
 	start := time.Now()
 	report := &ReconciliationReport{}
 
@@ -72,8 +144,13 @@ func (r *Reconciler) Run(ctx context.Context, guildID int64) (*ReconciliationRep
 		return nil, errors.New("reconciler: meilisearch client not configured")
 	}
 
+	limit := r.cfg.SampleSize
+	if len(sampleSize) > 0 && sampleSize[0] > 0 {
+		limit = sampleSize[0]
+	}
+
 	// 1. Sample primary storage messages
-	sampleMsgs, err := r.samplePrimaryMessages(ctx, guildID, r.cfg.SampleSize)
+	sampleMsgs, err := r.samplePrimaryMessages(ctx, guildID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("reconciler: sample primary messages: %w", err)
 	}
@@ -146,7 +223,7 @@ func (r *Reconciler) Run(ctx context.Context, guildID int64) (*ReconciliationRep
 	}
 
 	// 3. Scan for undeleted tombstones (ghost documents in Meilisearch deleted from primary store)
-	if err := r.purgeTombstones(ctx, guildID, report); err != nil {
+	if err := r.purgeTombstones(ctx, guildID, limit, report); err != nil {
 		slog.Warn("reconciliation: tombstone scan error", "error", err)
 	}
 
@@ -189,7 +266,7 @@ func (r *Reconciler) samplePrimaryMessages(ctx context.Context, guildID int64, l
 	return msgs, rows.Err()
 }
 
-func (r *Reconciler) purgeTombstones(ctx context.Context, guildID int64, report *ReconciliationReport) error {
+func (r *Reconciler) purgeTombstones(ctx context.Context, guildID int64, limit int, report *ReconciliationReport) error {
 	var filter string
 	if guildID != 0 {
 		filter = fmt.Sprintf("guild_id = '%d'", guildID)
@@ -198,7 +275,7 @@ func (r *Reconciler) purgeTombstones(ctx context.Context, guildID int64, report 
 	res, err := r.meiliClient.Search(ctx, r.cfg.IndexName, SearchQuery{
 		Query:                "",
 		Filter:               filter,
-		Limit:                r.cfg.SampleSize,
+		Limit:                limit,
 		AttributesToRetrieve: []string{"id", "channel_id"},
 	})
 	if err != nil {

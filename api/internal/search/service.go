@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/moadabdou/Kith/api/internal/messages"
 	"github.com/moadabdou/Kith/api/pkg/snowflake"
@@ -170,6 +172,18 @@ func (s *Service) searchMeilisearch(ctx context.Context, guildID int64, params S
 		}
 		if msg != nil {
 			resMessages = append(resMessages, *msg)
+		} else {
+			// Read-Repair (Discord scale hydration pattern):
+			// If Meilisearch returned an index hit but primary store (ScyllaDB/Postgres) returned nil,
+			// the document was deleted during an outage or dropped event. Evict it immediately
+			// so the search index self-heals in real time without background table scans.
+			go func(ghostID string) {
+				repairCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := s.meiliClient.DeleteDocuments(repairCtx, DefaultIndexName, []string{ghostID}); err != nil {
+					slog.Warn("search read-repair: failed to evict ghost document", "message_id", ghostID, "error", err)
+				}
+			}(hit.ID)
 		}
 	}
 

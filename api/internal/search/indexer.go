@@ -150,7 +150,7 @@ func (idx *Indexer) Start(ctx context.Context) error {
 			nats.Durable(idx.cfg.ConsumerName),
 			nats.DeliverAll(),
 			nats.ManualAck(),
-			nats.AckWait(30*time.Second),
+			nats.AckWait(90*time.Second),
 		)
 		if err != nil {
 			cancel()
@@ -202,13 +202,23 @@ func (idx *Indexer) runBatcher(ctx context.Context) {
 	ticker := time.NewTicker(idx.cfg.FlushWindow)
 	defer ticker.Stop()
 
+	metricsTicker := time.NewTicker(2 * time.Second)
+	defer metricsTicker.Stop()
+
 	batch := newPendingBatch()
 
 	flush := func() {
 		if batch.size() == 0 && len(batch.msgs) == 0 {
 			return
 		}
-		idx.flushBatch(ctx, batch)
+		if err := idx.flushBatch(ctx, batch); err != nil {
+			// On flush failure, keep batch intact to preserve event ordering and deduplication.
+			select {
+			case <-time.After(250 * time.Millisecond):
+			case <-ctx.Done():
+			}
+			return
+		}
 		batch = newPendingBatch()
 	}
 
@@ -220,11 +230,24 @@ func (idx *Indexer) runBatcher(ctx context.Context) {
 				m := <-idx.msgChan
 				idx.processMsg(m, batch)
 			}
-			flush()
+			if err := idx.flushBatch(ctx, batch); err != nil {
+				// If final flush fails on shutdown, Nak so another worker will process them
+				for _, m := range batch.msgs {
+					if m.Sub != nil {
+						_ = m.Nak()
+					}
+				}
+			}
 			return
 
 		case m := <-idx.msgChan:
 			idx.processMsg(m, batch)
+			// Drain any additional messages queued in channel buffer so they can be deduplicated
+			// in-flight and covered under the same InProgress heartbeat window during downstream stalls.
+			for len(idx.msgChan) > 0 {
+				extra := <-idx.msgChan
+				idx.processMsg(extra, batch)
+			}
 			if batch.size() >= idx.cfg.BatchSize {
 				flush()
 			}
@@ -233,6 +256,9 @@ func (idx *Indexer) runBatcher(ctx context.Context) {
 			if batch.size() > 0 || len(batch.msgs) > 0 {
 				flush()
 			}
+
+		case <-metricsTicker.C:
+			idx.updateConsumerMetrics()
 		}
 	}
 }
@@ -288,6 +314,16 @@ func (idx *Indexer) processMsg(m *nats.Msg, batch *pendingBatch) {
 			Timestamp: parseTimestamp(p.Timestamp),
 		}
 
+		// In-batch idempotency: If already deleted or updated in this batch, redundant CREATE cannot overwrite.
+		if ev.Type == "MESSAGE_CREATE" {
+			if _, deleted := batch.deletes[p.ID]; deleted {
+				return
+			}
+			if _, exists := batch.upserts[p.ID]; exists {
+				return
+			}
+		}
+
 		// Idempotent upsert: if previously deleted in same batch, upsert supersedes
 		delete(batch.deletes, p.ID)
 		batch.upserts[p.ID] = doc
@@ -315,7 +351,7 @@ func (idx *Indexer) processMsg(m *nats.Msg, batch *pendingBatch) {
 	}
 }
 
-func (idx *Indexer) flushBatch(ctx context.Context, batch *pendingBatch) {
+func (idx *Indexer) flushBatch(ctx context.Context, batch *pendingBatch) error {
 	totalItems := batch.size()
 	BatchSize.Observe(float64(totalItems))
 
@@ -324,7 +360,7 @@ func (idx *Indexer) flushBatch(ctx context.Context, batch *pendingBatch) {
 		FlushDuration.Observe(time.Since(start).Seconds())
 	}()
 
-	flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	flushCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
 	var flushErr error
@@ -351,15 +387,15 @@ func (idx *Indexer) flushBatch(ctx context.Context, batch *pendingBatch) {
 		}
 	}
 
-	// 3. Ack or Nak NATS messages
+	// 3. Ack or retain on failure
 	if flushErr != nil {
-		slog.Error("search indexer: batch flush failed, naking messages for redelivery", "error", flushErr, "messages", len(batch.msgs))
+		slog.Warn("search indexer: batch flush failed, retaining batch for retry", "error", flushErr, "messages", len(batch.msgs))
 		for _, m := range batch.msgs {
 			if m.Sub != nil {
-				_ = m.Nak()
+				_ = m.InProgress()
 			}
 		}
-		return
+		return flushErr
 	}
 
 	for _, m := range batch.msgs {
@@ -369,6 +405,19 @@ func (idx *Indexer) flushBatch(ctx context.Context, batch *pendingBatch) {
 			}
 		}
 	}
+	return nil
+}
+
+func (idx *Indexer) updateConsumerMetrics() {
+	if idx.js == nil || idx.cfg.StreamName == "" || idx.cfg.ConsumerName == "" {
+		return
+	}
+	info, err := idx.js.ConsumerInfo(idx.cfg.StreamName, idx.cfg.ConsumerName)
+	if err != nil {
+		return
+	}
+	ConsumerLag.Set(float64(info.NumPending))
+	PendingAck.Set(float64(info.NumAckPending))
 }
 
 func parseTimestamp(raw json.RawMessage) int64 {

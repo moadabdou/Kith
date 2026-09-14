@@ -247,6 +247,72 @@ func TestIndexer_DeleteHandling(t *testing.T) {
 	}
 }
 
+func TestIndexer_RedeliveredCreateDoesNotRevertUpdateOrResurrectDelete(t *testing.T) {
+	mock := newMockDocIndexer()
+	cfg := IndexerConfig{
+		IndexName:   "messages",
+		BatchSize:   10,
+		FlushWindow: 50 * time.Millisecond,
+	}
+
+	idx := NewIndexer(cfg, mock, nil, nil)
+	if err := idx.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer idx.Stop()
+
+	// 1. UPDATE followed by duplicate redelivered CREATE
+	msgUpdate := makeTestMsg(t, "MESSAGE_UPDATE", messagePayload{
+		ID:        "msg_updated",
+		ChannelID: "c1",
+		GuildID:   "g1",
+		Content:   "newly edited content",
+	}, "g1")
+	msgRedeliveredCreate := makeTestMsg(t, "MESSAGE_CREATE", messagePayload{
+		ID:        "msg_updated",
+		ChannelID: "c1",
+		GuildID:   "g1",
+		Content:   "original old content",
+	}, "g1")
+
+	// 2. DELETE followed by duplicate redelivered CREATE
+	msgDelete := makeTestMsg(t, "MESSAGE_DELETE", deletePayload{
+		ID:        "msg_deleted",
+		ChannelID: "c1",
+		GuildID:   "g1",
+	}, "g1")
+	msgResurrectCreate := makeTestMsg(t, "MESSAGE_CREATE", messagePayload{
+		ID:        "msg_deleted",
+		ChannelID: "c1",
+		GuildID:   "g1",
+		Content:   "resurrected content",
+	}, "g1")
+
+	idx.msgChan <- msgUpdate
+	idx.msgChan <- msgRedeliveredCreate
+	idx.msgChan <- msgDelete
+	idx.msgChan <- msgResurrectCreate
+
+	select {
+	case <-mock.flushNotify:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for batch flush")
+	}
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+
+	// msg_updated must preserve "newly edited content"
+	if len(mock.indexedDocs) != 1 || mock.indexedDocs[0].Content != "newly edited content" {
+		t.Fatalf("expected 1 doc with 'newly edited content', got %+v", mock.indexedDocs)
+	}
+
+	// msg_deleted must remain deleted and NOT be resurrected
+	if len(mock.deletedIDs) != 1 || mock.deletedIDs[0] != "msg_deleted" {
+		t.Fatalf("expected deleted ID 'msg_deleted', got %+v", mock.deletedIDs)
+	}
+}
+
 func TestParseTimestamp(t *testing.T) {
 	// ISO8601 string
 	ts := parseTimestamp(json.RawMessage(`"2026-09-14T12:30:00Z"`))

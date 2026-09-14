@@ -40,7 +40,14 @@ func (h *Handler) Reconcile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	report, err := h.Reconciler.Run(r.Context(), guildID)
+	sampleSize := 0
+	if s := r.URL.Query().Get("sample_size"); s != "" {
+		if val, err := strconv.Atoi(s); err == nil && val > 0 {
+			sampleSize = val
+		}
+	}
+
+	report, err := h.Reconciler.Run(r.Context(), guildID, sampleSize)
 	if err != nil {
 		slog.Error("search reconcile error", "guild_id", guildID, "error", err)
 		errs.Write(w, errs.Internal())

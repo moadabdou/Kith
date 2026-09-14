@@ -35,6 +35,21 @@ var (
 			Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0},
 		},
 	)
+	// ConsumerLag measures the number of messages waiting in the JetStream consumer.
+	ConsumerLag = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "search_indexer_nats_consumer_lag",
+			Help: "Number of pending unconsumed messages in the JetStream search consumer",
+		},
+	)
+
+	// PendingAck measures the number of in-flight messages delivered but not yet acknowledged.
+	PendingAck = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "search_indexer_nats_pending_ack",
+			Help: "Number of delivered messages currently awaiting acknowledgement",
+		},
+	)
 )
 
 // RegisterMetrics registers the indexer Prometheus metrics idempotently.
@@ -43,5 +58,7 @@ func RegisterMetrics() {
 		prometheus.MustRegister(ProcessedEventsTotal)
 		prometheus.MustRegister(BatchSize)
 		prometheus.MustRegister(FlushDuration)
+		prometheus.MustRegister(ConsumerLag)
+		prometheus.MustRegister(PendingAck)
 	})
 }

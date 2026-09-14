@@ -221,3 +221,67 @@ func TestReconciler_DetectAndRepair(t *testing.T) {
 		t.Fatalf("expected restored document, got %v", doc)
 	}
 }
+
+func TestSearch_ReadRepairGhostEviction(t *testing.T) {
+	mockClient := newMockSearchClient()
+	mockStore := newMockMessageStore()
+
+	// Seed one valid message and leave one ghost message missing in store
+	mockStore.messages["200:1001"] = &messages.Message{
+		ID:        "1001",
+		ChannelID: "200",
+		Content:   "valid message",
+		Author: messages.AuthorRef{
+			ID:       "50",
+			Username: "alice",
+		},
+		CreatedAt: time.Now(),
+	}
+
+	// Meilisearch returns two hits: 1001 (exists in store) and 1002 (ghost/deleted from store)
+	mockClient.searchRes = &SearchResult{
+		Hits: []SearchHit{
+			{ID: "1001", ChannelID: "200"},
+			{ID: "1002", ChannelID: "200"},
+		},
+		EstimatedTotalHits: 2,
+	}
+
+	svc := NewService(nil, WithSearchClient(mockClient), WithMessageStore(mockStore))
+
+	res, err := svc.SearchGuildMessages(context.Background(), 1, 999, SearchParams{
+		Query: "hello",
+	})
+	if err != nil {
+		t.Fatalf("SearchGuildMessages failed: %v", err)
+	}
+
+	// Verify that ghost document 1002 was filtered out from response
+	if len(res.Messages) != 1 {
+		t.Fatalf("expected 1 hydrated message, got %d", len(res.Messages))
+	}
+	if res.Messages[0].ID != "1001" {
+		t.Errorf("expected message 1001, got %s", res.Messages[0].ID)
+	}
+
+	// Wait briefly for the asynchronous read-repair eviction goroutine to execute
+	deadline := time.Now().Add(500 * time.Millisecond)
+	evicted := false
+	for time.Now().Before(deadline) {
+		for _, id := range mockClient.deletedIDs {
+			if id == "1002" {
+				evicted = true
+				break
+			}
+		}
+		if evicted {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if !evicted {
+		t.Errorf("expected ghost document 1002 to be asynchronously evicted via DeleteDocuments, deletedIDs=%v", mockClient.deletedIDs)
+	}
+}
+

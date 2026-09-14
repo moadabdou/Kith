@@ -941,16 +941,19 @@
       "gridPos": { "h": 5, "w": 8, "x": 16, "y": 39 },
       "id": 17,
       "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "center",
+        "displayMode": "gradient",
+        "minVizHeight": 10,
+        "minVizWidth": 0,
+        "namePlacement": "auto",
         "orientation": "horizontal",
         "reduceOptions": {
           "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
-        "textMode": "value_and_name"
+        "showUnfilled": true,
+        "sizing": "auto",
+        "valueMode": "color"
       },
       "pluginVersion": "12.1.1",
       "targets": [
@@ -965,7 +968,7 @@
         }
       ],
       "title": "Tasks by Status",
-      "type": "stat"
+      "type": "bargauge"
     },
     {
       "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },

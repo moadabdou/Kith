@@ -33,6 +33,10 @@ type AuthorHydrator interface {
 }
 
 // PostgresAuthorHydrator resolves author metadata from the PostgreSQL users table.
+//
+// NOTE on caching: An in-memory cache without cross-process/cross-node invalidation
+// introduces permanent stale user profile data if users update username/discriminator.
+// Safe production caching requires an invalidation bus (e.g. USER_UPDATE event stream).
 type PostgresAuthorHydrator struct {
 	db *sql.DB
 }

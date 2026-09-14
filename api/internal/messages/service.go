@@ -161,8 +161,10 @@ type ChannelRef struct {
 // and returns its ChannelRef in a single database round-trip. This avoids a redundant
 // SELECT for guild_id on the message hot path.
 //
-// Phase 4 will replace this membership placeholder with pkg/permissions.CanSend(user, channel)
-// once channel and member permissions are resolved via in-memory bitwise operations.
+// NOTE on caching: In-memory caching without a dedicated cache invalidation mechanism
+// risks permanent stale permissions when roles, channel overwrites, or kicks occur.
+// Phase 4 will replace this placeholder with pkg/permissions.CanSend(user, channel)
+// using bitwise operations and real-time invalidation.
 func (s *Service) requireCanView(ctx context.Context, userID, channelID int64) (ChannelRef, error) {
 	var guildID sql.NullInt64
 	err := s.db.QueryRowContext(ctx, `

@@ -117,8 +117,10 @@ services:
       SCYLLA_CONSISTENCY: ${SCYLLA_CONSISTENCY:-ONE}
       MESSAGE_STORE: ${MESSAGE_STORE:-postgres}
       MESSAGES_STORE_MODE: ${MESSAGES_STORE_MODE:-}
+      PPROF_PORT: ${PPROF_PORT:-6060}
     ports:
       - "127.0.0.1:8080:8080"
+      - "127.0.0.1:6060:6060"
     depends_on:
       postgres:
         condition: service_healthy

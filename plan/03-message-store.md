@@ -177,7 +177,7 @@ tablehistograms), Scylla Manager (even locally, for repair), and reading
       explain what you see (see docs/scylla-consistency.md §4 & §5)
 - [x] QUORUM vs ONE phantom-read experiment written up (half page) (see docs/scylla-consistency.md §1 & §2)
 - [ ] Dual-write migration executed, shadow-diff = 0 mismatches, flag flipped
-- [ ] p99 message write < 10ms under 1k msg/s (k6) on your laptop
+- [x] p99 message write < 10ms under 1k msg/s (k6) on your laptop (see docs/scylla-load-profile.md)
 
 ## 11. Reading
 

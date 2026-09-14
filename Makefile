@@ -36,4 +36,10 @@ smoke:
 chaos-phase0:
 	./scripts/chaos/phase0_kill_api.sh
 
-.PHONY: migrate-up migrate-down migrate-force psql cqlsh scylla-status gateway-test smoke chaos-phase0
+bench-messages-setup:
+	./scripts/bench/setup_bench.sh
+
+bench-messages-load:
+	./scripts/bench/run_load_test.sh
+
+.PHONY: migrate-up migrate-down migrate-force psql cqlsh scylla-status gateway-test smoke chaos-phase0 bench-messages-setup bench-messages-load

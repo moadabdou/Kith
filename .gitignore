@@ -16,3 +16,8 @@ erl_crash.dump
 
 *.log
 .DS_Store
+
+# Benchmark outputs and telemetry
+/scripts/bench/results/
+/scripts/bench/bench_config.json
+*.pprof

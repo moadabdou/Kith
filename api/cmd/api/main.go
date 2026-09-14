@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
 	"strconv"
@@ -81,6 +82,9 @@ func main() {
 		slog.Error("failed to open database", "error", err)
 		os.Exit(1)
 	}
+	db.SetMaxOpenConns(50)
+	db.SetMaxIdleConns(50)
+	db.SetConnMaxLifetime(5 * time.Minute)
 
 	jwt := auth.NewJWTManager([]byte(jwtSecret), accessTokenTTL)
 	authSvc := auth.NewService(db, node, jwt, refreshTokenTTL)
@@ -231,6 +235,29 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
+	// Isolated pprof debug server on dedicated internal port (plan/architecture: keep business port 8080 separate)
+	pprofPort := envOr("PPROF_PORT", "6060")
+	var pprofSrv *http.Server
+	if pprofPort != "" && pprofPort != "none" {
+		pprofMux := http.NewServeMux()
+		pprofMux.HandleFunc("GET /debug/pprof/", pprof.Index)
+		pprofMux.HandleFunc("GET /debug/pprof/cmdline", pprof.Cmdline)
+		pprofMux.HandleFunc("GET /debug/pprof/profile", pprof.Profile)
+		pprofMux.HandleFunc("GET /debug/pprof/symbol", pprof.Symbol)
+		pprofMux.HandleFunc("GET /debug/pprof/trace", pprof.Trace)
+		pprofSrv = &http.Server{
+			Addr:              ":" + pprofPort,
+			Handler:           pprofMux,
+			ReadHeaderTimeout: 5 * time.Second,
+		}
+		go func() {
+			slog.Info("isolated pprof debug server listening", "port", pprofPort)
+			if err := pprofSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				slog.Warn("pprof debug server exited", "error", err)
+			}
+		}()
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -246,6 +273,9 @@ func main() {
 	slog.Info("shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	if pprofSrv != nil {
+		_ = pprofSrv.Shutdown(shutdownCtx)
+	}
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("shutdown failed", "error", err)
 	}

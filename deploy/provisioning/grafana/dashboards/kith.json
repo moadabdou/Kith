@@ -926,10 +926,10 @@
         {
           "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
           "editorMode": "code",
-          "expr": "meilisearch_nb_tasks or vector(0)",
-          "instant": false,
-          "legendFormat": "Processed Tasks",
-          "range": true,
+          "expr": "sum(meilisearch_nb_tasks{kind=\"statuses\"}) or vector(0)",
+          "instant": true,
+          "legendFormat": "Total Tasks",
+          "range": false,
           "refId": "A"
         }
       ],

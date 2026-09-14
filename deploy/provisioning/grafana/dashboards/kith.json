@@ -764,7 +764,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 5, "w": 5, "x": 4, "y": 39 },
+      "gridPos": { "h": 5, "w": 4, "x": 4, "y": 39 },
       "id": 14,
       "options": {
         "colorMode": "value",
@@ -783,10 +783,10 @@
         {
           "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
           "editorMode": "code",
-          "expr": "meilisearch_index_docs_count{index=\"messages\"} or vector(0)",
-          "instant": false,
+          "expr": "meilisearch_index_docs_count{index=\"messages\"}",
+          "instant": true,
           "legendFormat": "Indexed Docs",
-          "range": true,
+          "range": false,
           "refId": "A"
         }
       ],
@@ -830,10 +830,10 @@
         {
           "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
           "editorMode": "code",
-          "expr": "meilisearch_used_db_size_bytes or vector(0)",
-          "instant": false,
+          "expr": "meilisearch_used_db_size_bytes",
+          "instant": true,
           "legendFormat": "Used DB Size",
-          "range": true,
+          "range": false,
           "refId": "A"
         }
       ],
@@ -883,7 +883,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
           "editorMode": "code",
-          "expr": "meilisearch_is_indexing or vector(0)",
+          "expr": "meilisearch_is_indexing",
           "instant": true,
           "legendFormat": "Indexing Status",
           "range": false,

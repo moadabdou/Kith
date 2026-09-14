@@ -21,6 +21,7 @@ import (
 	"github.com/moadabdou/Kith/api/internal/guilds"
 	"github.com/moadabdou/Kith/api/internal/httpx"
 	"github.com/moadabdou/Kith/api/internal/messages"
+	"github.com/moadabdou/Kith/api/internal/search"
 	"github.com/moadabdou/Kith/api/internal/users"
 	"github.com/moadabdou/Kith/api/pkg/ratelimit"
 	"github.com/moadabdou/Kith/api/pkg/snowflake"
@@ -170,6 +171,7 @@ func main() {
 	}
 
 	messagesHandler := &messages.Handler{Svc: messages.NewService(db, msgStore, node, publisher)}
+	searchHandler := search.NewHandler(search.NewService(db))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
@@ -228,6 +230,18 @@ func main() {
 		auth.RequireAuth(jwt, http.HandlerFunc(messagesHandler.Edit)))
 	mux.Handle("DELETE /api/channels/{cid}/messages/{mid}",
 		auth.RequireAuth(jwt, http.HandlerFunc(messagesHandler.Delete)))
+
+	// search — Search Rung 1: PostgreSQL pg_trgm full-text search (plan/04 §2, §4).
+	// Hard rate limit: 1 req/s per user to prevent search worker starvation.
+	searchLimiter := ratelimit.NewLimiter(1, time.Second)
+	mux.Handle("GET /api/guilds/{id}/messages/search",
+		auth.RequireAuth(jwt, searchLimiter.Middleware(
+			func(r *http.Request) string {
+				uid, _ := auth.UserIDFrom(r.Context())
+				return strconv.FormatInt(uid, 10)
+			},
+			"search-messages",
+			http.HandlerFunc(searchHandler.Search))))
 
 	srv := &http.Server{
 		Addr:              ":" + port,

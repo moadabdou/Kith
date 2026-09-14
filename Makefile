@@ -42,4 +42,7 @@ bench-messages-setup:
 bench-messages-load:
 	./scripts/bench/run_load_test.sh
 
-.PHONY: migrate-up migrate-down migrate-force psql cqlsh scylla-status gateway-test smoke chaos-phase0 bench-messages-setup bench-messages-load
+bench-search-cliff:
+	./scripts/bench/pg_trgm_cliff.sh
+
+.PHONY: migrate-up migrate-down migrate-force psql cqlsh scylla-status gateway-test smoke chaos-phase0 bench-messages-setup bench-messages-load bench-search-cliff

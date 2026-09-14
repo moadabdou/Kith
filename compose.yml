@@ -95,6 +95,22 @@ services:
         condition: service_healthy
     restart: "no"
 
+  meilisearch:
+    image: getmeili/meilisearch:v1.12
+    environment:
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-dev-master-key}
+      MEILI_ENV: development
+      MEILI_EXPERIMENTAL_ENABLE_METRICS: "true"
+    ports:
+      - "127.0.0.1:7700:7700"
+    volumes:
+      - meilidata:/meili_data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:7700/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   api:
     build:
       context: ./api
@@ -118,6 +134,8 @@ services:
       MESSAGE_STORE: ${MESSAGE_STORE:-postgres}
       MESSAGES_STORE_MODE: ${MESSAGES_STORE_MODE:-}
       PPROF_PORT: ${PPROF_PORT:-6060}
+      MEILISEARCH_URL: ${MEILISEARCH_URL:-http://meilisearch:7700}
+      MEILISEARCH_KEY: ${MEILI_MASTER_KEY:-dev-master-key}
     ports:
       - "127.0.0.1:8080:8080"
       - "127.0.0.1:6060:6060"
@@ -241,3 +259,4 @@ volumes:
   grafana-data:
   redisdata:
   scylladata:
+  meilidata:

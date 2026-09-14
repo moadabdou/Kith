@@ -46,8 +46,18 @@ type AuthorRef struct {
 	Discriminator string `json:"discriminator"`
 }
 
-const eventTypeMessageCreate = "MESSAGE_CREATE"
-const eventVersion = 1
+const (
+	eventTypeMessageCreate = "MESSAGE_CREATE"
+	eventTypeMessageUpdate = "MESSAGE_UPDATE"
+	eventTypeMessageDelete = "MESSAGE_DELETE"
+	eventVersion           = 1
+)
+
+type MessageDeletePayload struct {
+	ID        string `json:"id"`
+	ChannelID string `json:"channel_id"`
+	GuildID   string `json:"guild_id,omitempty"`
+}
 
 type Service struct {
 	db    *sql.DB
@@ -121,7 +131,8 @@ func (s *Service) List(ctx context.Context, userID, channelID int64, before Curs
 // window. The REST response shape stays a plain Message (Discord returns
 // MESSAGE_UPDATE on the gateway; that distinction is Phase 1's).
 func (s *Service) Edit(ctx context.Context, userID, channelID, messageID int64, content string) (*Message, error) {
-	if _, err := s.requireCanView(ctx, userID, channelID); err != nil {
+	channel, err := s.requireCanView(ctx, userID, channelID)
+	if err != nil {
 		return nil, err
 	}
 	if content == "" {
@@ -139,16 +150,61 @@ func (s *Service) Edit(ctx context.Context, userID, channelID, messageID int64, 
 		return nil, ErrEditWindowOver
 	}
 
-	return s.store.Edit(ctx, channelID, messageID, content)
+	edited, err := s.store.Edit(ctx, channelID, messageID, content)
+	if err != nil {
+		return nil, err
+	}
+
+	if channel.GuildID > 0 {
+		edited.GuildID = strconv.FormatInt(channel.GuildID, 10)
+	}
+
+	if s.pub != nil {
+		if err := s.pub.Publish(ctx, events.Event{
+			Type:    eventTypeMessageUpdate,
+			Version: eventVersion,
+			GuildID: edited.GuildID,
+			Payload: edited,
+		}); err != nil {
+			slog.ErrorContext(ctx, "failed to publish event", "type", eventTypeMessageUpdate, "guild_id", edited.GuildID, "error", err)
+		}
+	}
+
+	return edited, nil
 }
 
 // Delete removes a message. Author only, within the 15-minute window
 // (moderator delete is Phase 4).
 func (s *Service) Delete(ctx context.Context, userID, channelID, messageID int64) error {
-	if _, err := s.requireCanView(ctx, userID, channelID); err != nil {
+	channel, err := s.requireCanView(ctx, userID, channelID)
+	if err != nil {
 		return err
 	}
-	return s.store.Delete(ctx, channelID, messageID, userID)
+	if err := s.store.Delete(ctx, channelID, messageID, userID); err != nil {
+		return err
+	}
+
+	var gid string
+	if channel.GuildID > 0 {
+		gid = strconv.FormatInt(channel.GuildID, 10)
+	}
+
+	if s.pub != nil {
+		if err := s.pub.Publish(ctx, events.Event{
+			Type:    eventTypeMessageDelete,
+			Version: eventVersion,
+			GuildID: gid,
+			Payload: MessageDeletePayload{
+				ID:        strconv.FormatInt(messageID, 10),
+				ChannelID: strconv.FormatInt(channelID, 10),
+				GuildID:   gid,
+			},
+		}); err != nil {
+			slog.ErrorContext(ctx, "failed to publish event", "type", eventTypeMessageDelete, "guild_id", gid, "error", err)
+		}
+	}
+
+	return nil
 }
 
 // ChannelRef carries the minimal channel context resolved during access checks,

@@ -94,10 +94,12 @@ func main() {
 	// Phase 1: NATS JetStream (default) and Redis Streams behind events.Publisher (EVENTS_BUS=nats|redis|noop).
 	eventsBus := envOr("EVENTS_BUS", "nats")
 	var publisher events.Publisher
+	var natsPub *events.NatsPublisher
 	switch eventsBus {
 	case "nats":
 		natsURL := envOr("NATS_URL", "nats://127.0.0.1:4222")
-		natsPub, err := events.NewNatsPublisher(natsURL)
+		var err error
+		natsPub, err = events.NewNatsPublisher(natsURL)
 		if err != nil {
 			slog.Error("failed to initialize nats publisher", "url", natsURL, "error", err)
 			os.Exit(1)
@@ -172,6 +174,28 @@ func main() {
 
 	messagesHandler := &messages.Handler{Svc: messages.NewService(db, msgStore, node, publisher)}
 	searchHandler := search.NewHandler(search.NewService(db))
+
+	// Search indexer: Asynchronous NATS JetStream consumer -> Meilisearch (plan/04 §3, Issue #54)
+	meiliURL := envOr("MEILISEARCH_URL", "")
+	meiliKey := envOr("MEILISEARCH_KEY", "")
+	searchIndexerEnabled := envOr("SEARCH_INDEXER_ENABLED", "true") == "true"
+	if natsPub != nil && meiliURL != "" && searchIndexerEnabled {
+		meiliClient := search.NewMeiliClient(meiliURL, meiliKey)
+		indexer := search.NewIndexer(search.IndexerConfig{
+			StreamName:   events.DefaultStreamName,
+			ConsumerName: search.DefaultConsumerName,
+			IndexName:    search.DefaultIndexName,
+			BatchSize:    search.DefaultBatchSize,
+			FlushWindow:  search.DefaultFlushWindow,
+			Subject:      events.DefaultStreamSubject,
+		}, meiliClient, natsPub.Conn(), natsPub.JetStream())
+
+		if err := indexer.Start(context.Background()); err != nil {
+			slog.Error("failed to start search indexer", "error", err)
+		} else {
+			defer indexer.Stop()
+		}
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)

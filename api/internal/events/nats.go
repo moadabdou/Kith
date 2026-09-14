@@ -156,6 +156,16 @@ func (p *NatsPublisher) Publish(ctx context.Context, e Event) error {
 	return nil
 }
 
+// Conn returns the underlying NATS connection.
+func (p *NatsPublisher) Conn() *nats.Conn {
+	return p.nc
+}
+
+// JetStream returns the underlying JetStream context.
+func (p *NatsPublisher) JetStream() nats.JetStreamContext {
+	return p.js
+}
+
 // Close closes the underlying NATS connection if created by NewNatsPublisher.
 func (p *NatsPublisher) Close() error {
 	if p.nc != nil {

@@ -85,7 +85,7 @@ GET /guilds/:id/messages/search?q=term+term&author_id=&channel_id=
 
 ## 5. Phase 3 gate
 
-- [ ] Indexer survives kill/freeze drills with zero loss (verified by reconciliation)
-- [ ] Search p99 < 150ms on 10M docs
-- [ ] Delete-from-index test green
-- [ ] Consumer lag dashboard exists and was stared at during a freeze drill
+- [x] Indexer survives kill/freeze drills with zero loss (verified by reconciliation) (see docs/chaos-phase3.md)
+- [x] Search p99 < 150ms on 10M docs (see docs/search-evolution.md & global_sort_test.go)
+- [x] Delete-from-index test green (see internal/search/indexer_test.go & reconciliation.go)
+- [x] Consumer lag dashboard exists and was stared at during a freeze drill (see docs/chaos-phase3.md)

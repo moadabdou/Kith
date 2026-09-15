@@ -67,7 +67,7 @@ server-side throttle holds.
 - [ ] presence state machine correct incl. zombie timeout
 - [ ] 10k-member seeded guild chunks without gateway memory blowup
 - [ ] three-tier consistency comparison written (typing vs presence vs messages)
-- [ ] member sidebar renders online members grouped by hoisted role
+- [x] member sidebar renders online members grouped by hoisted role (see postmortems/phase-2.md)
 
 ## Phase 3 — Messages at scale + search (wk 8–10)
 
@@ -83,6 +83,7 @@ your spec), 03 + 04.
 zero lost docs (verified by reconciliation job). Kill a Scylla node mid-write-burst.
 
 **Gate:** see `03-message-store.md` §10 and `04-search.md` §5 — all boxes.
+- [x] Phase 3 completed and all 10 gates signed off (see [postmortems/phase-3.md](../postmortems/phase-3.md))
 
 ## Phase 4 — Roles & permissions (wk 11–12)
 

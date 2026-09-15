@@ -259,6 +259,23 @@ func (d *DualWriteStore) List(ctx context.Context, channelID int64, before Curso
 	return primaryMsgs, primaryErr
 }
 
+// ListAfter queries primary store for newer messages.
+func (d *DualWriteStore) ListAfter(ctx context.Context, channelID int64, after Cursor, limit int) ([]Message, error) {
+	primaryMsgs, primaryErr := d.primary.ListAfter(ctx, channelID, after, limit)
+
+	if d.secondary != nil {
+		d.runAsync(func() {
+			shadowCtx, cancel := context.WithTimeout(context.Background(), d.shadowTimeout)
+			defer cancel()
+
+			secMsgs, secErr := d.secondary.ListAfter(shadowCtx, channelID, after, limit)
+			d.diffList(channelID, after, limit, primaryMsgs, primaryErr, secMsgs, secErr)
+		})
+	}
+
+	return primaryMsgs, primaryErr
+}
+
 func (d *DualWriteStore) diffGet(channelID, messageID int64, pMsg *Message, pErr error, sMsg *Message, sErr error) {
 	// 1. Error parity check
 	pNotFound := errors.Is(pErr, ErrUnknownMessage)

@@ -292,3 +292,129 @@ func TestCrossBucketPagination(t *testing.T) {
 		t.Errorf("exhaustPage len = %d, want 5", len(exhaustPage))
 	}
 }
+
+func TestScyllaStore_BeforeAndAfterPagination(t *testing.T) {
+	session := newTestScyllaSession(t)
+	ctx := context.Background()
+
+	node, _ := snowflake.NewNode(2)
+	channelID, _ := node.Generate()
+	authorID, _ := node.Generate()
+
+	store := NewScyllaStore(session, nil)
+
+	// Insert 7 messages in chronological order with distinct IDs
+	var messageIDs []int64
+	for i := 1; i <= 7; i++ {
+		time.Sleep(2 * time.Millisecond)
+		mid, err := node.Generate()
+		if err != nil {
+			t.Fatalf("Generate snowflake: %v", err)
+		}
+		messageIDs = append(messageIDs, mid)
+		msg := &Message{
+			ID:        strconv.FormatInt(mid, 10),
+			ChannelID: strconv.FormatInt(channelID, 10),
+			Author:    AuthorRef{ID: strconv.FormatInt(authorID, 10)},
+			Content:   fmt.Sprintf("Message #%d", i),
+		}
+		if err := store.Insert(ctx, msg); err != nil {
+			t.Fatalf("Insert #%d: %v", i, err)
+		}
+	}
+
+	// Target message is Message #4 (index 3)
+	targetMID := messageIDs[3]
+	targetCursor := CursorFromMessageID(targetMID)
+
+	// 1. Backward pagination (before target): must return Message 3, 2, 1 in DESC order
+	olderMsgs, err := store.List(ctx, channelID, targetCursor, 10)
+	if err != nil {
+		t.Fatalf("List before target: %v", err)
+	}
+	if len(olderMsgs) != 3 {
+		t.Fatalf("olderMsgs count = %d, want 3", len(olderMsgs))
+	}
+	expectedOlder := []int64{messageIDs[2], messageIDs[1], messageIDs[0]}
+	for i, expected := range expectedOlder {
+		got, _ := strconv.ParseInt(olderMsgs[i].ID, 10, 64)
+		if got != expected {
+			t.Errorf("olderMsgs[%d] = %d, want %d", i, got, expected)
+		}
+	}
+
+	// 2. Forward pagination (after target): must return Message 5, 6, 7 in ASC order
+	newerMsgs, err := store.ListAfter(ctx, channelID, targetCursor, 10)
+	if err != nil {
+		t.Fatalf("ListAfter target: %v", err)
+	}
+	if len(newerMsgs) != 3 {
+		t.Fatalf("newerMsgs count = %d, want 3", len(newerMsgs))
+	}
+	expectedNewer := []int64{messageIDs[4], messageIDs[5], messageIDs[6]}
+	for i, expected := range expectedNewer {
+		got, _ := strconv.ParseInt(newerMsgs[i].ID, 10, 64)
+		if got != expected {
+			t.Errorf("newerMsgs[%d] = %d, want %d", i, got, expected)
+		}
+	}
+
+	// 3. Verify Context Window reconstruction (older reversed + target + newer)
+	// This mirrors the frontend jump behavior:
+	reversedOlder := make([]int64, len(olderMsgs))
+	for i := range olderMsgs {
+		reversedOlder[i], _ = strconv.ParseInt(olderMsgs[len(olderMsgs)-1-i].ID, 10, 64)
+	}
+	var fullWindow []int64
+	fullWindow = append(fullWindow, reversedOlder...)
+	fullWindow = append(fullWindow, targetMID)
+	for _, m := range newerMsgs {
+		id, _ := strconv.ParseInt(m.ID, 10, 64)
+		fullWindow = append(fullWindow, id)
+	}
+
+	if len(fullWindow) != 7 {
+		t.Fatalf("reconstructed context window len = %d, want 7", len(fullWindow))
+	}
+	for i, expected := range messageIDs {
+		if fullWindow[i] != expected {
+			t.Errorf("fullWindow[%d] = %d, want %d", i, fullWindow[i], expected)
+		}
+	}
+
+	// 4. Test Forward Pagination Limits and Chaining
+	// Fetch 2 messages after target (should get 5 and 6)
+	page1, err := store.ListAfter(ctx, channelID, targetCursor, 2)
+	if err != nil {
+		t.Fatalf("ListAfter page 1: %v", err)
+	}
+	if len(page1) != 2 {
+		t.Fatalf("page 1 count = %d, want 2", len(page1))
+	}
+	p1LastID, _ := strconv.ParseInt(page1[1].ID, 10, 64)
+	if p1LastID != messageIDs[5] {
+		t.Errorf("page 1 last ID = %d, want %d (msg 6)", p1LastID, messageIDs[5])
+	}
+
+	// Next page using cursor of last item (should get msg 7)
+	page2, err := store.ListAfter(ctx, channelID, CursorFromMessageID(p1LastID), 2)
+	if err != nil {
+		t.Fatalf("ListAfter page 2: %v", err)
+	}
+	if len(page2) != 1 {
+		t.Fatalf("page 2 count = %d, want 1", len(page2))
+	}
+	p2ID, _ := strconv.ParseInt(page2[0].ID, 10, 64)
+	if p2ID != messageIDs[6] {
+		t.Errorf("page 2 ID = %d, want %d (msg 7)", p2ID, messageIDs[6])
+	}
+
+	// Next page from msg 7 should be empty (reached present)
+	page3, err := store.ListAfter(ctx, channelID, CursorFromMessageID(p2ID), 2)
+	if err != nil {
+		t.Fatalf("ListAfter page 3: %v", err)
+	}
+	if len(page3) != 0 {
+		t.Errorf("page 3 count = %d, want 0", len(page3))
+	}
+}

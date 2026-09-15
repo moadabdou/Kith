@@ -34,6 +34,7 @@ type SearchParams struct {
 	AuthorID  int64
 	Before    int64
 	Limit     int
+	Offset    int
 }
 
 // SearchResponse matches Discord's message search envelope.
@@ -113,13 +114,11 @@ func (s *Service) SearchGuildMessages(ctx context.Context, userID, guildID int64
 		limit = 100
 	}
 
-	// Search Rung 2: Meilisearch query engine with primary store hydration (plan/04 §3–4)
-	if s.meiliClient != nil {
-		return s.searchMeilisearch(ctx, guildID, params, limit)
+	if s.meiliClient == nil {
+		return nil, errors.New("search engine unavailable: meilisearch client not configured")
 	}
 
-	// Search Rung 1: PostgreSQL ILIKE query accelerated by pg_trgm GIN index (plan/04 §2)
-	return s.searchPostgres(ctx, guildID, params, limit)
+	return s.searchMeilisearch(ctx, guildID, params, limit)
 }
 
 func (s *Service) searchMeilisearch(ctx context.Context, guildID int64, params SearchParams, limit int) (*SearchResponse, error) {
@@ -142,6 +141,7 @@ func (s *Service) searchMeilisearch(ctx context.Context, guildID int64, params S
 		Query:                params.Query,
 		Filter:               filterExpr,
 		Limit:                limit,
+		Offset:               params.Offset,
 		Sort:                 []string{"timestamp:desc"},
 		AttributesToRetrieve: []string{"id", "channel_id"},
 	}
@@ -167,9 +167,6 @@ func (s *Service) searchMeilisearch(ctx context.Context, guildID int64, params S
 				msg = m
 			}
 		}
-		if msg == nil && s.db != nil {
-			msg = s.getMessageFromDB(ctx, mid)
-		}
 		if msg != nil {
 			resMessages = append(resMessages, *msg)
 		} else {
@@ -189,98 +186,6 @@ func (s *Service) searchMeilisearch(ctx context.Context, guildID int64, params S
 
 	return &SearchResponse{
 		TotalResults: res.EstimatedTotalHits,
-		Messages:     resMessages,
-	}, nil
-}
-
-func (s *Service) getMessageFromDB(ctx context.Context, mid int64) *messages.Message {
-	query := `
-		SELECT m.id, m.channel_id, c.guild_id, m.author_id, u.username, to_char(u.discriminator, 'FM0000'),
-		       m.content, m.created_at, m.edited_at
-		FROM messages m
-		JOIN channels c ON c.id = m.channel_id
-		JOIN users u ON u.id = m.author_id
-		WHERE m.id = $1;
-	`
-	var m messages.Message
-	var gid sql.NullString
-	err := s.db.QueryRowContext(ctx, query, mid).Scan(
-		&m.ID,
-		&m.ChannelID,
-		&gid,
-		&m.Author.ID,
-		&m.Author.Username,
-		&m.Author.Discriminator,
-		&m.Content,
-		&m.CreatedAt,
-		&m.EditedAt,
-	)
-	if err != nil {
-		return nil
-	}
-	if gid.Valid {
-		m.GuildID = gid.String
-	}
-	return &m
-}
-
-func (s *Service) searchPostgres(ctx context.Context, guildID int64, params SearchParams, limit int) (*SearchResponse, error) {
-	query := `
-		SELECT m.id, m.channel_id, c.guild_id, m.author_id, u.username, to_char(u.discriminator, 'FM0000'),
-		       m.content, m.created_at, m.edited_at
-		FROM messages m
-		JOIN channels c ON c.id = m.channel_id
-		JOIN users u ON u.id = m.author_id
-		WHERE c.guild_id = $1
-		  AND m.content ILIKE '%' || $2 || '%'
-		  AND ($3 = 0 OR m.channel_id = $3)
-		  AND ($4 = 0 OR m.author_id = $4)
-		  AND ($5 = 0 OR m.id < $5)
-		ORDER BY m.id DESC
-		LIMIT $6;
-	`
-
-	rows, err := s.db.QueryContext(ctx, query,
-		guildID,
-		params.Query,
-		params.ChannelID,
-		params.AuthorID,
-		params.Before,
-		limit,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("search query failed: %w", err)
-	}
-	defer rows.Close()
-
-	resMessages := make([]messages.Message, 0)
-	for rows.Next() {
-		var m messages.Message
-		var gid sql.NullString
-		if err := rows.Scan(
-			&m.ID,
-			&m.ChannelID,
-			&gid,
-			&m.Author.ID,
-			&m.Author.Username,
-			&m.Author.Discriminator,
-			&m.Content,
-			&m.CreatedAt,
-			&m.EditedAt,
-		); err != nil {
-			return nil, fmt.Errorf("failed to scan search message row: %w", err)
-		}
-		if gid.Valid {
-			m.GuildID = gid.String
-		}
-		resMessages = append(resMessages, m)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows iteration error: %w", err)
-	}
-
-	return &SearchResponse{
-		TotalResults: len(resMessages),
 		Messages:     resMessages,
 	}, nil
 }

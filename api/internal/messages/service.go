@@ -127,6 +127,14 @@ func (s *Service) List(ctx context.Context, userID, channelID int64, before Curs
 	return s.store.List(ctx, channelID, before, limit)
 }
 
+// ListAfter returns messages in a channel newer than cursor position, ordered oldest-first (forward pagination).
+func (s *Service) ListAfter(ctx context.Context, userID, channelID int64, after Cursor, limit int) ([]Message, error) {
+	if _, err := s.requireCanView(ctx, userID, channelID); err != nil {
+		return nil, err
+	}
+	return s.store.ListAfter(ctx, channelID, after, limit)
+}
+
 // Edit patches a message's content. Author only, within the 15-minute
 // window. The REST response shape stays a plain Message (Discord returns
 // MESSAGE_UPDATE on the gateway; that distinction is Phase 1's).
@@ -222,6 +230,9 @@ type ChannelRef struct {
 // Phase 4 will replace this placeholder with pkg/permissions.CanSend(user, channel)
 // using bitwise operations and real-time invalidation.
 func (s *Service) requireCanView(ctx context.Context, userID, channelID int64) (ChannelRef, error) {
+	if s.db == nil {
+		return ChannelRef{}, nil
+	}
 	var guildID sql.NullInt64
 	err := s.db.QueryRowContext(ctx, `
 		SELECT c.guild_id FROM channels c

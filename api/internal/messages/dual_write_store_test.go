@@ -50,6 +50,10 @@ func (m *mockStore) List(ctx context.Context, channelID int64, before Cursor, li
 	return res, nil
 }
 
+func (m *mockStore) ListAfter(ctx context.Context, channelID int64, after Cursor, limit int) ([]Message, error) {
+	return m.List(ctx, channelID, after, limit)
+}
+
 func (m *mockStore) Edit(ctx context.Context, channelID, messageID int64, content string) (*Message, error) {
 	if m.editErr != nil {
 		return nil, m.editErr

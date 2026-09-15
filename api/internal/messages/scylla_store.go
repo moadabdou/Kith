@@ -19,6 +19,7 @@ var _ Store = (*ScyllaStore)(nil)
 const (
 	cqlInsertMessage          = `INSERT INTO messages (channel_id, bucket, message_id, author_id, content, type) VALUES (?, ?, ?, ?, ?, ?)`
 	cqlListMessagesWithCursor = `SELECT message_id, author_id, content, edits, type FROM messages WHERE channel_id = ? AND bucket = ? AND message_id < ? LIMIT ?`
+	cqlListMessagesAfter      = `SELECT message_id, author_id, content, edits, type FROM messages WHERE channel_id = ? AND bucket = ? AND message_id > ? ORDER BY message_id ASC LIMIT ?`
 	cqlListLatestMessages     = `SELECT message_id, author_id, content, edits, type FROM messages WHERE channel_id = ? AND bucket = ? LIMIT ?`
 	cqlGetMessage             = `SELECT author_id, content, edits, type FROM messages WHERE channel_id = ? AND bucket = ? AND message_id = ?`
 	cqlEditMessage            = `UPDATE messages SET content = ?, edits = edits + [?] WHERE channel_id = ? AND bucket = ? AND message_id = ?`
@@ -340,6 +341,74 @@ func (s *ScyllaStore) List(ctx context.Context, channelID int64, before Cursor, 
 		// Step to the previous bucket; in the older bucket, start from its newest messages
 		currentBucket--
 		currentBeforeID = 0
+	}
+
+	if s.hydrator != nil && len(msgs) > 0 {
+		_ = s.hydrator.HydrateBatch(ctx, msgs)
+	}
+
+	return msgs, nil
+}
+
+// ListAfter queries messages across partition buckets ordered by message_id ASC (newer messages).
+func (s *ScyllaStore) ListAfter(ctx context.Context, channelID int64, after Cursor, limit int) ([]Message, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+
+	startBucket := after.Bucket
+	if startBucket == 0 {
+		startBucket = BucketForMessageID(after.MessageID)
+	}
+	currentAfterID := after.MessageID
+
+	nowOffset := time.Now().UnixMilli() - snowflake.Epoch
+	if nowOffset < 0 {
+		nowOffset = 0
+	}
+	maxBucket := int32(nowOffset / BucketDurationMs)
+
+	msgs := []Message{}
+	currentBucket := startBucket
+
+	for len(msgs) < limit && currentBucket <= maxBucket {
+		remaining := limit - len(msgs)
+
+		scanner := s.session.Query(cqlListMessagesAfter, channelID, currentBucket, currentAfterID, remaining).WithContext(ctx).Iter().Scanner()
+		for scanner.Next() {
+			var mid, authorID int64
+			var content string
+			var edits []string
+			var msgType int16
+
+			if err := scanner.Scan(&mid, &authorID, &content, &edits, &msgType); err != nil {
+				return nil, err
+			}
+
+			createdAt := snowflake.Time(mid)
+			m := Message{
+				ID:        snowflake.String(mid),
+				ChannelID: strconv.FormatInt(channelID, 10),
+				Author:    AuthorRef{ID: strconv.FormatInt(authorID, 10)},
+				Content:   content,
+				CreatedAt: createdAt,
+			}
+			if len(edits) > 0 {
+				editTime := createdAt.Add(time.Minute)
+				m.EditedAt = &editTime
+			}
+			msgs = append(msgs, m)
+		}
+		if err := scanner.Err(); err != nil {
+			return nil, err
+		}
+
+		if len(msgs) >= limit {
+			break
+		}
+
+		currentBucket++
+		currentAfterID = 0
 	}
 
 	if s.hydrator != nil && len(msgs) > 0 {

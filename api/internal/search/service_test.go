@@ -83,6 +83,10 @@ func (m *mockMessageStore) List(ctx context.Context, channelID int64, before mes
 	return nil, nil
 }
 
+func (m *mockMessageStore) ListAfter(ctx context.Context, channelID int64, after messages.Cursor, limit int) ([]messages.Message, error) {
+	return nil, nil
+}
+
 func (m *mockMessageStore) Edit(ctx context.Context, channelID, messageID int64, content string) (*messages.Message, error) {
 	return nil, nil
 }

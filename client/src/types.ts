@@ -45,6 +45,20 @@ export interface Message {
   edited_timestamp?: string | null
 }
 
+export interface SearchResponse {
+  total_results: number
+  messages: Message[]
+}
+
+export interface SearchFilters {
+  channelId?: string
+  authorId?: string
+  before?: string
+  limit?: number
+  offset?: number
+  signal?: AbortSignal
+}
+
 export interface Invite {
   code: string
   guild: {

@@ -90,6 +90,15 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	var after Cursor
+	if a := r.URL.Query().Get("after"); a != "" {
+		var err error
+		after, err = ParseCursor(a)
+		if err != nil {
+			errs.Write(w, errs.FormBody("Invalid Form Body: bad after cursor"))
+			return
+		}
+	}
 	limit := 50
 	if l := r.URL.Query().Get("limit"); l != "" {
 		var err error
@@ -99,7 +108,14 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	msgs, err := h.Svc.List(r.Context(), mustUser(r), cid, before, limit)
+
+	var msgs []Message
+	var err error
+	if after.MessageID > 0 {
+		msgs, err = h.Svc.ListAfter(r.Context(), mustUser(r), cid, after, limit)
+	} else {
+		msgs, err = h.Svc.List(r.Context(), mustUser(r), cid, before, limit)
+	}
 	if err != nil {
 		h.writeErr(w, err)
 		return

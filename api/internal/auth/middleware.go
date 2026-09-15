@@ -19,6 +19,11 @@ func UserIDFrom(ctx context.Context) (int64, bool) {
 	return uid, ok
 }
 
+// ContextWithUserID sets the authenticated user ID on the context (for tests and middleware).
+func ContextWithUserID(ctx context.Context, uid int64) context.Context {
+	return context.WithValue(ctx, userIDKey, uid)
+}
+
 // RequireAuth wraps next with Bearer-JWT authentication. It only verifies
 // the signature and expiry — no DB hit; REST re-reads Postgres in handlers
 // when needed (plan/02 §6).

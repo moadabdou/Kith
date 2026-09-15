@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/moadabdou/Kith/api/internal/messages"
 	"github.com/moadabdou/Kith/api/internal/search"
 )
 
@@ -39,11 +41,35 @@ func main() {
 	defer db.Close()
 
 	client := search.NewMeiliClient(*meiliURL, *meiliKey)
+
+	scyllaHostsRaw := os.Getenv("SCYLLA_HOSTS")
+	if scyllaHostsRaw == "" {
+		scyllaHostsRaw = "127.0.0.1:9042"
+	}
+	scyllaHosts := strings.Split(scyllaHostsRaw, ",")
+	scyllaKeyspace := os.Getenv("SCYLLA_KEYSPACE")
+	if scyllaKeyspace == "" {
+		scyllaKeyspace = "kith"
+	}
+	var msgStore messages.Store
+	scyllaSession, err := messages.NewScyllaSession(messages.ScyllaConfig{
+		Hosts:       scyllaHosts,
+		Keyspace:    scyllaKeyspace,
+		Consistency: messages.ParseConsistency("LOCAL_QUORUM"),
+	})
+	if err != nil {
+		slog.Warn("reconciliation: could not connect to scylladb", "error", err)
+	} else {
+		defer scyllaSession.Close()
+		hydrator := messages.NewPostgresAuthorHydrator(db)
+		msgStore = messages.NewScyllaStore(scyllaSession, hydrator)
+	}
+
 	reconciler := search.NewReconciler(search.ReconcilerConfig{
 		IndexName:  search.DefaultIndexName,
 		SampleSize: *sampleSize,
 		AutoRepair: *autoRepair,
-	}, db, nil, client)
+	}, db, msgStore, client)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

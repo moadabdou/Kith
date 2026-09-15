@@ -69,6 +69,7 @@ printf "${YELLOW}→ [3/4] Configuring schema settings for '%s'...${NC}\n" "$IND
 printf "  • Filterable Attributes: guild_id, channel_id, author_id, timestamp\n"
 printf "  • Searchable Attributes: content\n"
 printf "  • Sortable Attributes:   timestamp\n"
+printf "  • Ranking Rules:         sort, words, typo, proximity, attribute, exactness\n"
 printf "  • Typo Tolerance:        oneTypo: 6, twoTypos: 10 (disabled on protocols/words)\n"
 printf "  • Pagination:            maxTotalHits: 1000\n"
 
@@ -76,6 +77,7 @@ settings_payload='{
   "filterableAttributes": ["guild_id", "channel_id", "author_id", "timestamp"],
   "searchableAttributes": ["content"],
   "sortableAttributes": ["timestamp"],
+  "rankingRules": ["sort", "words", "typo", "proximity", "attribute", "exactness"],
   "typoTolerance": {
     "enabled": true,
     "minWordSizeForTypos": {

@@ -116,6 +116,14 @@ func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
 		limit = parsedLimit
 	}
 
+	offset := 0
+	if offsetStr := r.URL.Query().Get("offset"); offsetStr != "" {
+		parsedOffset, err := strconv.Atoi(offsetStr)
+		if err == nil && parsedOffset >= 0 {
+			offset = parsedOffset
+		}
+	}
+
 	// Hard 500ms context timeout as required by plan/04 §4 to avoid worker starvation
 	ctx, cancel := context.WithTimeout(r.Context(), 500*time.Millisecond)
 	defer cancel()
@@ -126,6 +134,7 @@ func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
 		AuthorID:  authorID,
 		Before:    before,
 		Limit:     limit,
+		Offset:    offset,
 	}
 
 	resp, err := h.Svc.SearchGuildMessages(ctx, userID, guildID, params)

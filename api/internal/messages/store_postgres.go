@@ -103,6 +103,44 @@ func (s *PostgresStore) List(ctx context.Context, channelID int64, before Cursor
 	return msgs, rows.Err()
 }
 
+// ListAfter returns messages from a channel newer than after cursor, ordered oldest-first (ASC).
+func (s *PostgresStore) ListAfter(ctx context.Context, channelID int64, after Cursor, limit int) ([]Message, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+
+	query := `
+		SELECT m.id::text, m.channel_id::text, coalesce(c.guild_id::text, ''),
+		       u.id::text, u.username, to_char(u.discriminator, 'FM0000'),
+		       m.content, m.created_at, m.edited_at
+		FROM messages m
+		JOIN channels c ON c.id = m.channel_id
+		JOIN users u ON u.id = m.author_id
+		WHERE m.channel_id = $1`
+	args := []any{channelID}
+	if after.MessageID > 0 {
+		query += ` AND m.id > $2`
+		args = append(args, after.MessageID)
+	}
+	query += ` ORDER BY m.id ASC LIMIT ` + strconv.Itoa(limit)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	msgs := []Message{}
+	for rows.Next() {
+		m, err := scanMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		msgs = append(msgs, m)
+	}
+	return msgs, rows.Err()
+}
+
 // Edit updates the content and edited_at timestamp of a message.
 func (s *PostgresStore) Edit(ctx context.Context, channelID, messageID int64, content string) (*Message, error) {
 	var m Message

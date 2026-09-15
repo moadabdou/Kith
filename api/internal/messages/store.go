@@ -124,6 +124,7 @@ func BucketForMessageID(id int64) int32 {
 type Store interface {
 	Insert(ctx context.Context, msg *Message) error
 	List(ctx context.Context, channelID int64, before Cursor, limit int) ([]Message, error)
+	ListAfter(ctx context.Context, channelID int64, after Cursor, limit int) ([]Message, error)
 	Edit(ctx context.Context, channelID, messageID int64, content string) (*Message, error)
 	Delete(ctx context.Context, channelID, messageID, authorID int64) error
 	Get(ctx context.Context, channelID, messageID int64) (*Message, error)

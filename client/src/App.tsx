@@ -253,6 +253,8 @@ function Dashboard() {
       <ChatArea
         currentGuild={currentGuild}
         currentChannel={currentChannel}
+        channels={channels}
+        onSelectChannel={(id) => setSelectedChannelId(id)}
       />
 
       {/* 240px Member Sidebar (right of chat). Keyed by guild so switching

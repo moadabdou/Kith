@@ -1,4 +1,4 @@
-import type { AuthResponse, Channel, Guild, Message, Role, User } from './types'
+import type { AuthResponse, Channel, Guild, Member, Message, Role, SearchFilters, SearchResponse, User } from './types'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api'
 
@@ -22,7 +22,7 @@ class ApiClient {
     return this.token
   }
 
-  private async request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  private async request<T>(path: string, options: RequestInit = {}, retryCount = 0): Promise<T> {
     const headers: Record<string, string> = {
       Accept: 'application/json',
       ...((options.headers as Record<string, string>) || {}),
@@ -42,7 +42,10 @@ class ApiClient {
         ...options,
         headers,
       })
-    } catch {
+    } catch (err: any) {
+      if (err.name === 'AbortError') {
+        throw err
+      }
       throw new Error('API server unreachable. Please check connection.')
     }
 
@@ -55,8 +58,18 @@ class ApiClient {
       }
 
       if (response.status === 429) {
-        const retryAfter = errBody.retry_after ?? 5
-        throw new Error(`Rate limited. Try again in ${retryAfter}s.`)
+        const retryAfterSec = errBody.retry_after ?? parseFloat(response.headers.get('Retry-After') || '1') ?? 1
+        // Discord client rate limit pacing: automatically wait and retry up to 2 times
+        if (retryCount < 2 && !options.signal?.aborted) {
+          const waitMs = Math.min(Math.max(retryAfterSec * 1000, 500), 3000)
+          console.warn(`[API] Rate limited (429) on ${path}. Backing off for ${waitMs}ms... (attempt ${retryCount + 1}/2)`)
+          await new Promise((resolve) => setTimeout(resolve, waitMs))
+          if (options.signal?.aborted) {
+            throw new DOMException('Aborted', 'AbortError')
+          }
+          return this.request<T>(path, options, retryCount + 1)
+        }
+        throw new Error(`Rate limited. Try again in ${retryAfterSec}s.`)
       }
 
       const msg = errBody.message || errBody.error || `Request failed with status ${response.status}`
@@ -107,6 +120,10 @@ class ApiClient {
     return this.request<Role[]>(`/guilds/${guildId}/roles`)
   }
 
+  async getMembers(guildId: string): Promise<Member[]> {
+    return this.request<Member[]>(`/guilds/${guildId}/members`)
+  }
+
   // ── Channels ───────────────────────────────────────
   async getChannels(guildId: string): Promise<Channel[]> {
     return this.request<Channel[]>(`/guilds/${guildId}/channels`)
@@ -120,8 +137,18 @@ class ApiClient {
   }
 
   // ── Messages ───────────────────────────────────────
-  async getMessages(guildId: string, channelId: string, before?: string): Promise<Message[]> {
-    const query = before ? `?before=${before}&limit=50` : '?limit=50'
+  async getMessages(
+    guildId: string,
+    channelId: string,
+    before?: string,
+    limit = 50,
+    after?: string
+  ): Promise<Message[]> {
+    const params = new URLSearchParams()
+    if (before) params.set('before', before)
+    if (after) params.set('after', after)
+    if (limit) params.set('limit', String(limit))
+    const query = params.toString() ? `?${params.toString()}` : ''
     return this.request<Message[]>(`/guilds/${guildId}/channels/${channelId}/messages${query}`)
   }
 
@@ -129,6 +156,25 @@ class ApiClient {
     return this.request<Message>(`/guilds/${guildId}/channels/${channelId}/messages`, {
       method: 'POST',
       body: JSON.stringify({ content }),
+    })
+  }
+
+  // ── Search ─────────────────────────────────────────
+  async searchMessages(
+    guildId: string,
+    query: string,
+    filters?: SearchFilters
+  ): Promise<SearchResponse> {
+    const params = new URLSearchParams()
+    params.set('q', query)
+    if (filters?.channelId) params.set('channel_id', filters.channelId)
+    if (filters?.authorId) params.set('author_id', filters.authorId)
+    if (filters?.before) params.set('before', filters.before)
+    if (filters?.limit) params.set('limit', String(filters.limit))
+    if (filters?.offset !== undefined) params.set('offset', String(filters.offset))
+
+    return this.request<SearchResponse>(`/guilds/${guildId}/messages/search?${params.toString()}`, {
+      signal: filters?.signal,
     })
   }
 

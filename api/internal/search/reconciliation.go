@@ -158,12 +158,24 @@ func (r *Reconciler) Run(ctx context.Context, guildID int64, sampleSize ...int) 
 	report.ScannedCount = len(sampleMsgs)
 
 	// 2. Check each primary message against Meilisearch
+	batchDocs := make([]MessageDocument, 0, 100)
+	flushDocs := func() {
+		if len(batchDocs) == 0 {
+			return
+		}
+		if err := r.meiliClient.IndexDocuments(ctx, r.cfg.IndexName, batchDocs); err != nil {
+			slog.Error("reconciliation: failed to repair batch documents", "count", len(batchDocs), "error", err)
+		}
+		batchDocs = batchDocs[:0]
+	}
+
 	for _, m := range sampleMsgs {
 		idStr := strconv.FormatInt(m.ID, 10)
 		doc, err := r.meiliClient.GetDocument(ctx, r.cfg.IndexName, idStr)
 		if errors.Is(err, ErrDocumentNotFound) {
 			// Missing document: re-index into Meilisearch
 			slog.Warn("reconciliation: detected missing document in search index", "message_id", idStr)
+			report.MissingFixed++
 			if r.cfg.AutoRepair {
 				trimmed := strings.TrimSpace(m.Content)
 				if trimmed != "" {
@@ -171,22 +183,18 @@ func (r *Reconciler) Run(ctx context.Context, guildID int64, sampleSize ...int) 
 					if len(content) > 2000 {
 						content = content[:2000]
 					}
-					upsertDoc := MessageDocument{
+					batchDocs = append(batchDocs, MessageDocument{
 						ID:        idStr,
 						GuildID:   strconv.FormatInt(m.GuildID, 10),
 						ChannelID: strconv.FormatInt(m.ChannelID, 10),
 						AuthorID:  strconv.FormatInt(m.AuthorID, 10),
 						Content:   content,
 						Timestamp: m.CreatedAt.Unix(),
-					}
-					if err := r.meiliClient.IndexDocuments(ctx, r.cfg.IndexName, []MessageDocument{upsertDoc}); err != nil {
-						slog.Error("reconciliation: failed to repair missing document", "message_id", idStr, "error", err)
-					} else {
-						report.MissingFixed++
+					})
+					if len(batchDocs) >= 100 {
+						flushDocs()
 					}
 				}
-			} else {
-				report.MissingFixed++
 			}
 			continue
 		}
@@ -202,24 +210,24 @@ func (r *Reconciler) Run(ctx context.Context, guildID int64, sampleSize ...int) 
 		}
 		if doc.Content != expectedContent {
 			slog.Warn("reconciliation: detected content drift in search index", "message_id", idStr)
+			report.ContentDriftFixed++
 			if r.cfg.AutoRepair {
-				upsertDoc := MessageDocument{
+				batchDocs = append(batchDocs, MessageDocument{
 					ID:        idStr,
 					GuildID:   strconv.FormatInt(m.GuildID, 10),
 					ChannelID: strconv.FormatInt(m.ChannelID, 10),
 					AuthorID:  strconv.FormatInt(m.AuthorID, 10),
 					Content:   expectedContent,
 					Timestamp: m.CreatedAt.Unix(),
+				})
+				if len(batchDocs) >= 100 {
+					flushDocs()
 				}
-				if err := r.meiliClient.IndexDocuments(ctx, r.cfg.IndexName, []MessageDocument{upsertDoc}); err != nil {
-					slog.Error("reconciliation: failed to repair drifted document", "message_id", idStr, "error", err)
-				} else {
-					report.ContentDriftFixed++
-				}
-			} else {
-				report.ContentDriftFixed++
 			}
 		}
+	}
+	if r.cfg.AutoRepair {
+		flushDocs()
 	}
 
 	// 3. Scan for undeleted tombstones (ghost documents in Meilisearch deleted from primary store)
@@ -233,37 +241,84 @@ func (r *Reconciler) Run(ctx context.Context, guildID int64, sampleSize ...int) 
 
 func (r *Reconciler) samplePrimaryMessages(ctx context.Context, guildID int64, limit int) ([]SampleMessage, error) {
 	if r.db == nil {
-		return nil, errors.New("reconciler: database connection required for primary sampling")
+		return nil, errors.New("reconciler: database connection required for channel metadata")
+	}
+	if r.msgStore == nil {
+		return nil, errors.New("reconciler: message store required for primary sampling")
 	}
 
-	query := `
-		SELECT m.id, m.channel_id, c.guild_id, m.author_id, m.content, m.created_at
-		FROM messages m
-		JOIN channels c ON c.id = m.channel_id
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT c.id, c.guild_id FROM channels c
 		WHERE ($1::bigint = 0 OR c.guild_id = $1::bigint)
 		  AND c.guild_id IS NOT NULL
-		ORDER BY m.id DESC
-		LIMIT $2;
-	`
-	rows, err := r.db.QueryContext(ctx, query, guildID, limit)
+		ORDER BY c.id ASC;
+	`, guildID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var msgs []SampleMessage
+	type chanRef struct {
+		id      int64
+		guildID int64
+	}
+	var channels []chanRef
 	for rows.Next() {
-		var sm SampleMessage
-		var gid sql.NullInt64
-		if err := rows.Scan(&sm.ID, &sm.ChannelID, &gid, &sm.AuthorID, &sm.Content, &sm.CreatedAt); err != nil {
+		var cr chanRef
+		if err := rows.Scan(&cr.id, &cr.guildID); err != nil {
 			return nil, err
 		}
-		if gid.Valid {
-			sm.GuildID = gid.Int64
-		}
-		msgs = append(msgs, sm)
+		channels = append(channels, cr)
 	}
-	return msgs, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	var msgs []SampleMessage
+	for _, ch := range channels {
+		if len(msgs) >= limit {
+			break
+		}
+		var cursor messages.Cursor
+		for {
+			if len(msgs) >= limit {
+				break
+			}
+			toFetch := limit - len(msgs)
+			if toFetch > 100 {
+				toFetch = 100
+			}
+			cMsgs, err := r.msgStore.List(ctx, ch.id, cursor, toFetch)
+			if err != nil {
+				slog.Warn("reconciliation: failed to list messages from channel", "channel_id", ch.id, "error", err)
+				break
+			}
+			if len(cMsgs) == 0 {
+				break
+			}
+			for _, m := range cMsgs {
+				mid, _ := strconv.ParseInt(m.ID, 10, 64)
+				aid, _ := strconv.ParseInt(m.Author.ID, 10, 64)
+				msgs = append(msgs, SampleMessage{
+					ID:        mid,
+					ChannelID: ch.id,
+					GuildID:   ch.guildID,
+					AuthorID:  aid,
+					Content:   m.Content,
+					CreatedAt: m.CreatedAt,
+				})
+				if len(msgs) >= limit {
+					break
+				}
+			}
+			if len(cMsgs) < toFetch {
+				break
+			}
+			lastID, _ := strconv.ParseInt(cMsgs[len(cMsgs)-1].ID, 10, 64)
+			cursor = messages.CursorFromMessageID(lastID)
+		}
+	}
+	return msgs, nil
 }
 
 func (r *Reconciler) purgeTombstones(ctx context.Context, guildID int64, limit int, report *ReconciliationReport) error {
@@ -282,6 +337,17 @@ func (r *Reconciler) purgeTombstones(ctx context.Context, guildID int64, limit i
 		return err
 	}
 
+	batchDeletes := make([]string, 0, 100)
+	flushDeletes := func() {
+		if len(batchDeletes) == 0 {
+			return
+		}
+		if err := r.meiliClient.DeleteDocuments(ctx, r.cfg.IndexName, batchDeletes); err != nil {
+			slog.Error("reconciliation: failed to delete batch ghost documents", "count", len(batchDeletes), "error", err)
+		}
+		batchDeletes = batchDeletes[:0]
+	}
+
 	for _, hit := range res.Hits {
 		mid, err := strconv.ParseInt(hit.ID, 10, 64)
 		if err != nil || mid == 0 {
@@ -295,26 +361,21 @@ func (r *Reconciler) purgeTombstones(ctx context.Context, guildID int64, limit i
 			if err == nil {
 				exists = true
 			}
-		} else if r.db != nil {
-			var check int
-			err := r.db.QueryRowContext(ctx, "SELECT 1 FROM messages WHERE id = $1", mid).Scan(&check)
-			if err == nil {
-				exists = true
-			}
 		}
 
 		if !exists {
 			slog.Warn("reconciliation: detected ghost document in search index", "message_id", hit.ID)
+			report.TombstonesPurged++
 			if r.cfg.AutoRepair {
-				if err := r.meiliClient.DeleteDocuments(ctx, r.cfg.IndexName, []string{hit.ID}); err != nil {
-					slog.Error("reconciliation: failed to delete ghost document", "message_id", hit.ID, "error", err)
-				} else {
-					report.TombstonesPurged++
+				batchDeletes = append(batchDeletes, hit.ID)
+				if len(batchDeletes) >= 100 {
+					flushDeletes()
 				}
-			} else {
-				report.TombstonesPurged++
 			}
 		}
+	}
+	if r.cfg.AutoRepair {
+		flushDeletes()
 	}
 	return nil
 }

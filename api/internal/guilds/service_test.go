@@ -1139,3 +1139,128 @@ func TestGetMyPermissions(t *testing.T) {
 	}
 }
 
+func TestChannelManagementPermissions(t *testing.T) {
+	svc, db, node, prefix := newTestService(t)
+	ctx := context.Background()
+
+	owner := createTestUser(t, db, node, prefix, "_own")
+	manager := createTestUser(t, db, node, prefix, "_mgr")
+	regular := createTestUser(t, db, node, prefix, "_reg")
+
+	g, err := svc.CreateGuild(ctx, owner, prefix+"-chmg-guild")
+	if err != nil {
+		t.Fatalf("CreateGuild: %v", err)
+	}
+	gid, _ := snowflake.Parse(g.ID)
+
+	for _, u := range []int64{manager, regular} {
+		if err := svc.AddMember(ctx, owner, gid, u); err != nil {
+			t.Fatalf("AddMember: %v", err)
+		}
+	}
+
+	// Create ChannelManager role with MANAGE_CHANNELS
+	mgrPerms := int64(permissions.MANAGE_CHANNELS | permissions.VIEW_CHANNEL)
+	mgrRole, err := svc.CreateRole(ctx, owner, gid, "ChannelManager", nil, nil, int32Ptr(10), &mgrPerms, nil)
+	if err != nil {
+		t.Fatalf("CreateRole: %v", err)
+	}
+	mgrRoleID, _ := snowflake.Parse(mgrRole.ID)
+	if err := svc.AssignMemberRole(ctx, owner, gid, manager, mgrRoleID); err != nil {
+		t.Fatalf("AssignMemberRole: %v", err)
+	}
+
+	// 1. Regular member cannot create channel
+	if _, err := svc.CreateChannel(ctx, regular, gid, 0, "illegal", 0, nil); !errors.Is(err, ErrMissingPermissions) {
+		t.Errorf("CreateChannel(regular) = %v, want ErrMissingPermissions", err)
+	}
+
+	// 2. ChannelManager can create channel
+	ch, err := svc.CreateChannel(ctx, manager, gid, 0, "manager-channel", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateChannel(manager): %v", err)
+	}
+	chid, _ := snowflake.Parse(ch.ID)
+
+	// 3. Regular member cannot update channel
+	newName := "regular-renamed"
+	if _, err := svc.UpdateChannel(ctx, regular, gid, chid, &newName, nil, nil); !errors.Is(err, ErrMissingPermissions) {
+		t.Errorf("UpdateChannel(regular) = %v, want ErrMissingPermissions", err)
+	}
+
+	// 4. ChannelManager can update channel
+	mgrName := "manager-renamed"
+	updated, err := svc.UpdateChannel(ctx, manager, gid, chid, &mgrName, nil, nil)
+	if err != nil {
+		t.Fatalf("UpdateChannel(manager): %v", err)
+	}
+	if updated.Name != "manager-renamed" {
+		t.Errorf("updated name = %s, want manager-renamed", updated.Name)
+	}
+
+	// 5. Regular member cannot delete channel
+	if err := svc.DeleteChannel(ctx, regular, gid, chid); !errors.Is(err, ErrMissingPermissions) {
+		t.Errorf("DeleteChannel(regular) = %v, want ErrMissingPermissions", err)
+	}
+
+	// 6. ChannelManager can delete channel
+	if err := svc.DeleteChannel(ctx, manager, gid, chid); err != nil {
+		t.Fatalf("DeleteChannel(manager): %v", err)
+	}
+}
+
+func TestListChannels_ViewChannelFiltering(t *testing.T) {
+	svc, db, node, prefix := newTestService(t)
+	ctx := context.Background()
+
+	owner := createTestUser(t, db, node, prefix, "_own")
+	member := createTestUser(t, db, node, prefix, "_mem")
+
+	g, err := svc.CreateGuild(ctx, owner, prefix+"-listch-guild")
+	if err != nil {
+		t.Fatalf("CreateGuild: %v", err)
+	}
+	gid, _ := snowflake.Parse(g.ID)
+
+	if err := svc.AddMember(ctx, owner, gid, member); err != nil {
+		t.Fatalf("AddMember: %v", err)
+	}
+
+	// Create 2 channels
+	ch1, err := svc.CreateChannel(ctx, owner, gid, 0, "public-channel", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateChannel(1): %v", err)
+	}
+	ch2, err := svc.CreateChannel(ctx, owner, gid, 0, "secret-channel", 1, nil)
+	if err != nil {
+		t.Fatalf("CreateChannel(2): %v", err)
+	}
+	ch2ID, _ := snowflake.Parse(ch2.ID)
+
+	// Deny VIEW_CHANNEL on ch2 to member via overwrite
+	if err := svc.SetChannelOverwrite(ctx, owner, ch2ID, member, 1, 0, permissions.VIEW_CHANNEL); err != nil {
+		t.Fatalf("SetChannelOverwrite: %v", err)
+	}
+
+	// 1. Owner sees both channels
+	ownerChannels, err := svc.ListChannels(ctx, owner, gid)
+	if err != nil {
+		t.Fatalf("ListChannels(owner): %v", err)
+	}
+	if len(ownerChannels) != 2 {
+		t.Errorf("ownerChannels count = %d, want 2", len(ownerChannels))
+	}
+
+	// 2. Member sees only public-channel
+	memberChannels, err := svc.ListChannels(ctx, member, gid)
+	if err != nil {
+		t.Fatalf("ListChannels(member): %v", err)
+	}
+	if len(memberChannels) != 1 {
+		t.Fatalf("memberChannels count = %d, want 1", len(memberChannels))
+	}
+	if memberChannels[0].ID != ch1.ID {
+		t.Errorf("member channel id = %s, want %s (public-channel)", memberChannels[0].ID, ch1.ID)
+	}
+}
+

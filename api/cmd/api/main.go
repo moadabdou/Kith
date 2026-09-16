@@ -240,6 +240,8 @@ func main() {
 	mux.Handle("POST /api/guilds/{id}/channels", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.CreateChannel)))
 	mux.Handle("PATCH /api/guilds/{id}/channels/{cid}", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.UpdateChannel)))
 	mux.Handle("DELETE /api/guilds/{id}/channels/{cid}", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.DeleteChannel)))
+	mux.Handle("PATCH /api/channels/{id}", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.UpdateChannel)))
+	mux.Handle("DELETE /api/channels/{id}", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.DeleteChannel)))
 	mux.Handle("GET /api/channels/{id}/permissions", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.ListChannelOverwrites)))
 	mux.Handle("PUT /api/channels/{id}/permissions/{target_id}", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.SetChannelOverwrite)))
 	mux.Handle("DELETE /api/channels/{id}/permissions/{target_id}", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.DeleteChannelOverwrite)))
@@ -267,16 +269,21 @@ func main() {
 	// (plan/02 §5). In-memory now; Redis swap stays behind the same
 	// middleware interface in Phase 1.
 	msgLimiter := ratelimit.NewLimiter(5, 5*time.Second)
+	postMessageKey := func(r *http.Request) string {
+		uid, _ := auth.UserIDFrom(r.Context())
+		cid := r.PathValue("cid")
+		if cid == "" {
+			cid = r.PathValue("id")
+		}
+		return strconv.FormatInt(uid, 10) + ":" + cid
+	}
 	mux.Handle("POST /api/guilds/{id}/channels/{cid}/messages",
-		auth.RequireAuth(jwt, msgLimiter.Middleware(
-			func(r *http.Request) string {
-				// Inside RequireAuth: user id is on the context.
-				uid, _ := auth.UserIDFrom(r.Context())
-				return strconv.FormatInt(uid, 10) + ":" + r.PathValue("cid")
-			},
-			"post-messages",
-			http.HandlerFunc(messagesHandler.Send))))
+		auth.RequireAuth(jwt, msgLimiter.Middleware(postMessageKey, "post-messages", http.HandlerFunc(messagesHandler.Send))))
+	mux.Handle("POST /api/channels/{cid}/messages",
+		auth.RequireAuth(jwt, msgLimiter.Middleware(postMessageKey, "post-messages", http.HandlerFunc(messagesHandler.Send))))
 	mux.Handle("GET /api/guilds/{id}/channels/{cid}/messages",
+		auth.RequireAuth(jwt, http.HandlerFunc(messagesHandler.List)))
+	mux.Handle("GET /api/channels/{cid}/messages",
 		auth.RequireAuth(jwt, http.HandlerFunc(messagesHandler.List)))
 	mux.Handle("PATCH /api/channels/{cid}/messages/{mid}",
 		auth.RequireAuth(jwt, http.HandlerFunc(messagesHandler.Edit)))

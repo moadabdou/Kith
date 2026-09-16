@@ -309,9 +309,11 @@ func (s *Service) MyGuilds(ctx context.Context, userID int64) ([]Guild, error) {
 // ── channels ──────────────────────────────────────────────────────────────
 
 func (s *Service) ListChannels(ctx context.Context, userID, guildID int64) ([]Channel, error) {
-	if err := s.requireMember(ctx, guildID, userID); err != nil {
+	state, err := s.getMemberRoleState(ctx, guildID, userID)
+	if err != nil {
 		return nil, err
 	}
+
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id::text, guild_id::text, type, name, position, parent_id, created_at
 		FROM channels
@@ -322,22 +324,52 @@ func (s *Service) ListChannels(ctx context.Context, userID, guildID int64) ([]Ch
 	}
 	defer rows.Close()
 
-	channels := []Channel{}
+	allChannels := []Channel{}
 	for rows.Next() {
 		c, err := scanChannel(rows)
 		if err != nil {
 			return nil, err
 		}
-		channels = append(channels, c)
+		allChannels = append(allChannels, c)
 	}
-	return channels, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Owner or ADMINISTRATOR can view all channels
+	if state.IsOwner || permissions.Has(state.Permissions, permissions.ADMINISTRATOR) {
+		return allChannels, nil
+	}
+
+	overwritesByChannel, err := s.getGuildChannelOverwrites(ctx, guildID)
+	if err != nil {
+		return nil, err
+	}
+
+	visibleChannels := make([]Channel, 0, len(allChannels))
+	for _, c := range allChannels {
+		cid, err := snowflake.Parse(c.ID)
+		if err != nil {
+			continue
+		}
+		resolved := permissions.Resolve(guildID, 0, userID, state.Roles, overwritesByChannel[cid])
+		if permissions.Has(resolved, permissions.VIEW_CHANNEL) {
+			visibleChannels = append(visibleChannels, c)
+		}
+	}
+
+	return visibleChannels, nil
 }
 
-// CreateChannel adds a channel to a guild (owner only until Phase 4).
+// CreateChannel adds a channel to a guild. Requires MANAGE_CHANNELS, ADMINISTRATOR, or owner.
 // Text-channel names are normalized Discord-style: lowercase, spaces→dashes.
 func (s *Service) CreateChannel(ctx context.Context, userID, guildID int64, chType int16, name string, position int32, parentID *int64) (*Channel, error) {
-	if err := s.requireOwner(ctx, guildID, userID); err != nil {
+	state, err := s.getMemberRoleState(ctx, guildID, userID)
+	if err != nil {
 		return nil, err
+	}
+	if !state.IsOwner && !permissions.Has(state.Permissions, permissions.ADMINISTRATOR) && !permissions.Has(state.Permissions, permissions.MANAGE_CHANNELS) {
+		return nil, ErrMissingPermissions
 	}
 	id, err := s.sf.Generate()
 	if err != nil {
@@ -362,12 +394,21 @@ func (s *Service) CreateChannel(ctx context.Context, userID, guildID int64, chTy
 	return &c, nil
 }
 
-// UpdateChannel patches a channel's name/position/parent (owner only until
-// Phase 4). The guild_id in WHERE scopes it: wrong guild ⇒ unknown channel.
+// UpdateChannel patches a channel's name/position/parent. Requires MANAGE_CHANNELS, ADMINISTRATOR, or owner.
 func (s *Service) UpdateChannel(ctx context.Context, userID, guildID, channelID int64, name *string, position *int32, parentID *int64) (*Channel, error) {
-	if err := s.requireOwner(ctx, guildID, userID); err != nil {
+	chGid, perms, _, isOwner, err := s.getChannelGuildAndPerms(ctx, channelID, userID)
+	if err != nil {
 		return nil, err
 	}
+	if guildID > 0 && chGid != guildID {
+		return nil, ErrUnknownChannel
+	}
+	guildID = chGid
+
+	if !isOwner && !permissions.Has(perms, permissions.ADMINISTRATOR) && !permissions.Has(perms, permissions.MANAGE_CHANNELS) {
+		return nil, ErrMissingPermissions
+	}
+
 	var nameNull sql.NullString
 	if name != nil {
 		nameNull = sql.NullString{String: *name, Valid: true}
@@ -382,7 +423,7 @@ func (s *Service) UpdateChannel(ctx context.Context, userID, guildID, channelID 
 	}
 	var c Channel
 	var parent sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `
+	err = s.db.QueryRowContext(ctx, `
 		UPDATE channels
 		SET name = COALESCE($3::text, name),
 		    position = COALESCE($4::integer, position),
@@ -401,11 +442,21 @@ func (s *Service) UpdateChannel(ctx context.Context, userID, guildID, channelID 
 	return &c, nil
 }
 
-// DeleteChannel removes a channel (owner only until Phase 4).
+// DeleteChannel removes a channel. Requires MANAGE_CHANNELS, ADMINISTRATOR, or owner.
 func (s *Service) DeleteChannel(ctx context.Context, userID, guildID, channelID int64) error {
-	if err := s.requireOwner(ctx, guildID, userID); err != nil {
+	chGid, perms, _, isOwner, err := s.getChannelGuildAndPerms(ctx, channelID, userID)
+	if err != nil {
 		return err
 	}
+	if guildID > 0 && chGid != guildID {
+		return ErrUnknownChannel
+	}
+	guildID = chGid
+
+	if !isOwner && !permissions.Has(perms, permissions.ADMINISTRATOR) && !permissions.Has(perms, permissions.MANAGE_CHANNELS) {
+		return ErrMissingPermissions
+	}
+
 	res, err := s.db.ExecContext(ctx,
 		`DELETE FROM channels WHERE id = $1 AND guild_id = $2`, channelID, guildID)
 	if err != nil {
@@ -785,6 +836,7 @@ type memberRoleState struct {
 	IsOwner         bool
 	HighestPosition int32
 	Permissions     uint64
+	Roles           []permissions.Role
 }
 
 func (s *Service) getMemberRoleState(ctx context.Context, guildID, userID int64) (*memberRoleState, error) {
@@ -802,6 +854,7 @@ func (s *Service) getMemberRoleState(ctx context.Context, guildID, userID int64)
 			IsOwner:         true,
 			HighestPosition: math.MaxInt32,
 			Permissions:     permissions.ALL_PERMISSIONS,
+			Roles:           nil,
 		}, nil
 	}
 
@@ -833,8 +886,10 @@ func (s *Service) getMemberRoleState(ctx context.Context, guildID, userID int64)
 	}
 	defer rows.Close()
 
+	callerRoles := make([]permissions.Role, 0)
 	var highestPos int32 = 0
 	var callerPerms uint64 = 0
+	var hasEveryone bool
 	for rows.Next() {
 		var rid int64
 		var pos int32
@@ -842,13 +897,32 @@ func (s *Service) getMemberRoleState(ctx context.Context, guildID, userID int64)
 		if err := rows.Scan(&rid, &pos, &p); err != nil {
 			return nil, err
 		}
+		if rid == guildID {
+			hasEveryone = true
+		}
 		if pos > highestPos {
 			highestPos = pos
 		}
 		callerPerms |= p
+		callerRoles = append(callerRoles, permissions.Role{
+			ID:          rid,
+			GuildID:     guildID,
+			Position:    int(pos),
+			Permissions: p,
+		})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+
+	if !hasEveryone {
+		callerRoles = append(callerRoles, permissions.Role{
+			ID:          guildID,
+			GuildID:     guildID,
+			Position:    0,
+			Permissions: permissions.DEFAULT_EVERYONE_PERMISSIONS,
+		})
+		callerPerms |= permissions.DEFAULT_EVERYONE_PERMISSIONS
 	}
 
 	if permissions.Has(callerPerms, permissions.ADMINISTRATOR) {
@@ -859,7 +933,67 @@ func (s *Service) getMemberRoleState(ctx context.Context, guildID, userID int64)
 		IsOwner:         false,
 		HighestPosition: highestPos,
 		Permissions:     callerPerms,
+		Roles:           callerRoles,
 	}, nil
+}
+
+func (s *Service) getChannelOverwrites(ctx context.Context, channelID int64) ([]permissions.Overwrite, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT channel_id, target_id, target_type, allow, deny
+		FROM channel_overwrites
+		WHERE channel_id = $1`, channelID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var overwrites []permissions.Overwrite
+	for rows.Next() {
+		var cid, tid int64
+		var ttype int16
+		var a, d uint64
+		if err := rows.Scan(&cid, &tid, &ttype, &a, &d); err != nil {
+			return nil, err
+		}
+		overwrites = append(overwrites, permissions.Overwrite{
+			ChannelID:  cid,
+			TargetID:   tid,
+			TargetType: permissions.TargetType(ttype),
+			Allow:      a,
+			Deny:       d,
+		})
+	}
+	return overwrites, rows.Err()
+}
+
+func (s *Service) getGuildChannelOverwrites(ctx context.Context, guildID int64) (map[int64][]permissions.Overwrite, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT co.channel_id, co.target_id, co.target_type, co.allow, co.deny
+		FROM channel_overwrites co
+		JOIN channels c ON c.id = co.channel_id
+		WHERE c.guild_id = $1`, guildID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	overwritesByChannel := make(map[int64][]permissions.Overwrite)
+	for rows.Next() {
+		var cid, tid int64
+		var ttype int16
+		var a, d uint64
+		if err := rows.Scan(&cid, &tid, &ttype, &a, &d); err != nil {
+			return nil, err
+		}
+		overwritesByChannel[cid] = append(overwritesByChannel[cid], permissions.Overwrite{
+			ChannelID:  cid,
+			TargetID:   tid,
+			TargetType: permissions.TargetType(ttype),
+			Allow:      a,
+			Deny:       d,
+		})
+	}
+	return overwritesByChannel, rows.Err()
 }
 
 func canManageRoles(state *memberRoleState) bool {
@@ -1284,102 +1418,22 @@ func (s *Service) getChannelGuildAndPerms(ctx context.Context, channelID, caller
 	}
 	guildID = gidNull.Int64
 
-	var ownerID int64
-	err = s.db.QueryRowContext(ctx, `SELECT owner_id FROM guilds WHERE id = $1`, guildID).Scan(&ownerID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, 0, 0, false, ErrUnknownGuild
-	}
+	state, err := s.getMemberRoleState(ctx, guildID, callerID)
 	if err != nil {
 		return 0, 0, 0, false, err
 	}
 
-	if callerID == ownerID {
-		return guildID, permissions.ALL_PERMISSIONS, math.MaxInt32, true, nil
+	if state.IsOwner || permissions.Has(state.Permissions, permissions.ADMINISTRATOR) {
+		return guildID, permissions.ALL_PERMISSIONS, state.HighestPosition, state.IsOwner, nil
 	}
 
-	// Verify caller is member
-	var isMember bool
-	err = s.db.QueryRowContext(ctx,
-		`SELECT EXISTS(SELECT 1 FROM members WHERE guild_id = $1 AND user_id = $2)`,
-		guildID, callerID).Scan(&isMember)
+	overwrites, err := s.getChannelOverwrites(ctx, channelID)
 	if err != nil {
 		return 0, 0, 0, false, err
 	}
-	if !isMember {
-		return 0, 0, 0, false, ErrMissingAccess
-	}
 
-	// Fetch caller's roles (including @everyone)
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT r.id, r.position, r.permissions
-		FROM roles r
-		WHERE r.id = $1 AND r.guild_id = $1
-		UNION
-		SELECT r.id, r.position, r.permissions
-		FROM roles r
-		JOIN member_roles mr ON mr.role_id = r.id
-		WHERE mr.guild_id = $1 AND mr.user_id = $2`,
-		guildID, callerID)
-	if err != nil {
-		return 0, 0, 0, false, err
-	}
-	defer rows.Close()
-
-	callerRoles := make([]permissions.Role, 0)
-	var maxPos int32 = 0
-	for rows.Next() {
-		var rid int64
-		var pos int32
-		var perms uint64
-		if err := rows.Scan(&rid, &pos, &perms); err != nil {
-			return 0, 0, 0, false, err
-		}
-		if pos > maxPos {
-			maxPos = pos
-		}
-		callerRoles = append(callerRoles, permissions.Role{
-			ID:          rid,
-			GuildID:     guildID,
-			Position:    int(pos),
-			Permissions: perms,
-		})
-	}
-	if err := rows.Err(); err != nil {
-		return 0, 0, 0, false, err
-	}
-
-	// Fetch channel overwrites
-	owRows, err := s.db.QueryContext(ctx, `
-		SELECT channel_id, target_id, target_type, allow, deny
-		FROM channel_overwrites
-		WHERE channel_id = $1`, channelID)
-	if err != nil {
-		return 0, 0, 0, false, err
-	}
-	defer owRows.Close()
-
-	var overwrites []permissions.Overwrite
-	for owRows.Next() {
-		var cid, tid int64
-		var ttype int16
-		var a, d uint64
-		if err := owRows.Scan(&cid, &tid, &ttype, &a, &d); err != nil {
-			return 0, 0, 0, false, err
-		}
-		overwrites = append(overwrites, permissions.Overwrite{
-			ChannelID:  cid,
-			TargetID:   tid,
-			TargetType: permissions.TargetType(ttype),
-			Allow:      a,
-			Deny:       d,
-		})
-	}
-	if err := owRows.Err(); err != nil {
-		return 0, 0, 0, false, err
-	}
-
-	resolvedPerms := permissions.Resolve(guildID, ownerID, callerID, callerRoles, overwrites)
-	return guildID, resolvedPerms, maxPos, false, nil
+	resolvedPerms := permissions.Resolve(guildID, 0, callerID, state.Roles, overwrites)
+	return guildID, resolvedPerms, state.HighestPosition, false, nil
 }
 
 func (s *Service) SetChannelOverwrite(ctx context.Context, callerID, channelID, targetID int64, targetType int16, allow, deny uint64) error {

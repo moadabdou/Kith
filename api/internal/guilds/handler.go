@@ -216,14 +216,18 @@ func (h *Handler) CreateChannel(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusCreated, c)
 }
 
-// UpdateChannel handles PATCH /api/guilds/{id}/channels/{cid}.
-func (h *Handler) UpdateChannel(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(r, "id")
-	if !ok {
-		errs.Write(w, errs.FormBody("Invalid Form Body: bad guild id"))
-		return
+func channelAndGuildIDs(r *http.Request) (guildID, channelID int64, ok bool) {
+	if cid, ok := pathID(r, "cid"); ok {
+		gid, _ := pathID(r, "id")
+		return gid, cid, true
 	}
-	cid, ok := pathID(r, "cid")
+	chid, ok := pathID(r, "id")
+	return 0, chid, ok
+}
+
+// UpdateChannel handles PATCH /api/guilds/{id}/channels/{cid} and PATCH /api/channels/{id}.
+func (h *Handler) UpdateChannel(w http.ResponseWriter, r *http.Request) {
+	gid, cid, ok := channelAndGuildIDs(r)
 	if !ok {
 		errs.Write(w, errs.FormBody("Invalid Form Body: bad channel id"))
 		return
@@ -262,7 +266,7 @@ func (h *Handler) UpdateChannel(w http.ResponseWriter, r *http.Request) {
 		errs.Write(w, v.Err())
 		return
 	}
-	c, err := h.Svc.UpdateChannel(r.Context(), mustUser(r), id, cid, name, position, parentID)
+	c, err := h.Svc.UpdateChannel(r.Context(), mustUser(r), gid, cid, name, position, parentID)
 	if err != nil {
 		h.writeErr(w, err)
 		return
@@ -270,19 +274,14 @@ func (h *Handler) UpdateChannel(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, c)
 }
 
-// DeleteChannel handles DELETE /api/guilds/{id}/channels/{cid}.
+// DeleteChannel handles DELETE /api/guilds/{id}/channels/{cid} and DELETE /api/channels/{id}.
 func (h *Handler) DeleteChannel(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(r, "id")
-	if !ok {
-		errs.Write(w, errs.FormBody("Invalid Form Body: bad guild id"))
-		return
-	}
-	cid, ok := pathID(r, "cid")
+	gid, cid, ok := channelAndGuildIDs(r)
 	if !ok {
 		errs.Write(w, errs.FormBody("Invalid Form Body: bad channel id"))
 		return
 	}
-	if err := h.Svc.DeleteChannel(r.Context(), mustUser(r), id, cid); err != nil {
+	if err := h.Svc.DeleteChannel(r.Context(), mustUser(r), gid, cid); err != nil {
 		h.writeErr(w, err)
 		return
 	}

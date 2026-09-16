@@ -15,6 +15,7 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/moadabdou/Kith/api/internal/events"
+	"github.com/moadabdou/Kith/api/pkg/permissions"
 	"github.com/moadabdou/Kith/api/pkg/snowflake"
 	"github.com/redis/go-redis/v9"
 )
@@ -391,5 +392,130 @@ var (
 func TestEditWindowConstant(t *testing.T) {
 	if EditWindow != 15*time.Minute {
 		t.Errorf("EditWindow = %v, want 15m", EditWindow)
+	}
+}
+
+func TestMessagePermissions(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	svc := NewService(h.db, NewPostgresStore(h.db), h.node, NoopRecorder{})
+
+	owner := h.user(t, "own")
+	alice := h.user(t, "alice")
+	bob := h.user(t, "bob")
+	mod := h.user(t, "mod")
+	outsider := h.user(t, "outsider")
+	_ = owner
+
+	gid, cid, _ := h.guildWithMember(t, "perm-guild", alice, bob, mod)
+
+	// Ensure @everyone role exists in roles
+	h.db.Exec(`INSERT INTO roles (id, guild_id, name, color, hoist, position, permissions, mentionable)
+		VALUES ($1, $1, '@everyone', 0, false, 0, $2, false)
+		ON CONFLICT (id) DO NOTHING`,
+		gid, permissions.DEFAULT_EVERYONE_PERMISSIONS)
+
+	// 1. Outsider cannot Send, List, or Delete
+	if _, err := svc.Send(ctx, outsider, cid, "hello"); !errors.Is(err, ErrMissingAccess) {
+		t.Errorf("Send(outsider) = %v, want ErrMissingAccess", err)
+	}
+	if _, err := svc.List(ctx, outsider, cid, Cursor{}, 10); !errors.Is(err, ErrMissingAccess) {
+		t.Errorf("List(outsider) = %v, want ErrMissingAccess", err)
+	}
+	if err := svc.Delete(ctx, outsider, cid, 12345); !errors.Is(err, ErrMissingAccess) {
+		t.Errorf("Delete(outsider) = %v, want ErrMissingAccess", err)
+	}
+
+	// 2. Overwrite denying VIEW_CHANNEL to Bob (target_type=1 member)
+	if _, err := h.db.Exec(`INSERT INTO channel_overwrites (channel_id, target_id, target_type, allow, deny)
+		VALUES ($1, $2, 1, 0, $3)`, cid, bob, permissions.VIEW_CHANNEL); err != nil {
+		t.Fatalf("insert overwrite: %v", err)
+	}
+	if _, err := svc.Send(ctx, bob, cid, "hello"); !errors.Is(err, ErrMissingAccess) {
+		t.Errorf("Send(bob denied VIEW_CHANNEL) = %v, want ErrMissingAccess", err)
+	}
+	if _, err := svc.List(ctx, bob, cid, Cursor{}, 10); !errors.Is(err, ErrMissingAccess) {
+		t.Errorf("List(bob denied VIEW_CHANNEL) = %v, want ErrMissingAccess", err)
+	}
+
+	// Remove Bob's overwrite
+	h.db.Exec(`DELETE FROM channel_overwrites WHERE channel_id = $1 AND target_id = $2`, cid, bob)
+
+	// 3. Overwrite denying SEND_MESSAGES to Alice
+	if _, err := h.db.Exec(`INSERT INTO channel_overwrites (channel_id, target_id, target_type, allow, deny)
+		VALUES ($1, $2, 1, 0, $3)`, cid, alice, permissions.SEND_MESSAGES); err != nil {
+		t.Fatalf("insert overwrite: %v", err)
+	}
+	if _, err := svc.Send(ctx, alice, cid, "hello"); !errors.Is(err, ErrMissingPermissions) {
+		t.Errorf("Send(alice denied SEND_MESSAGES) = %v, want ErrMissingPermissions", err)
+	}
+	// Alice can still view and list messages
+	if _, err := svc.List(ctx, alice, cid, Cursor{}, 10); err != nil {
+		t.Errorf("List(alice allowed VIEW) = %v, want nil", err)
+	}
+
+	// 4. Overwrite denying READ_MESSAGE_HISTORY to Bob
+	if _, err := h.db.Exec(`INSERT INTO channel_overwrites (channel_id, target_id, target_type, allow, deny)
+		VALUES ($1, $2, 1, 0, $3)`, cid, bob, permissions.READ_MESSAGE_HISTORY); err != nil {
+		t.Fatalf("insert overwrite: %v", err)
+	}
+	if _, err := svc.List(ctx, bob, cid, Cursor{}, 10); !errors.Is(err, ErrMissingPermissions) {
+		t.Errorf("List(bob denied READ_MESSAGE_HISTORY) = %v, want ErrMissingPermissions", err)
+	}
+	// Bob can still send messages
+	msg, err := svc.Send(ctx, bob, cid, "bob says hi")
+	if err != nil {
+		t.Fatalf("Send(bob allowed SEND) = %v, want nil", err)
+	}
+	bobMsgID, _ := snowflake.Parse(msg.ID)
+
+	// Clean up overwrites
+	h.db.Exec(`DELETE FROM channel_overwrites WHERE channel_id = $1`, cid)
+
+	// 5. Field checks:
+	// Deny ATTACH_FILES to Alice
+	h.db.Exec(`INSERT INTO channel_overwrites (channel_id, target_id, target_type, allow, deny)
+		VALUES ($1, $2, 1, 0, $3)`, cid, alice, permissions.ATTACH_FILES)
+	// Alice sends text without attachments -> succeeds
+	if _, err := svc.Send(ctx, alice, cid, "text only"); err != nil {
+		t.Errorf("Send(alice text) = %v, want nil", err)
+	}
+	// Alice sends with attachments -> ErrMissingPermissions
+	if _, err := svc.Send(ctx, alice, cid, "look here", []string{"image.png"}); !errors.Is(err, ErrMissingPermissions) {
+		t.Errorf("Send(alice attachments) = %v, want ErrMissingPermissions", err)
+	}
+	h.db.Exec(`DELETE FROM channel_overwrites WHERE channel_id = $1`, cid)
+
+	// Deny MENTION_EVERYONE to Alice
+	h.db.Exec(`INSERT INTO channel_overwrites (channel_id, target_id, target_type, allow, deny)
+		VALUES ($1, $2, 1, 0, $3)`, cid, alice, permissions.MENTION_EVERYONE)
+	if _, err := svc.Send(ctx, alice, cid, "hello @everyone"); !errors.Is(err, ErrMissingPermissions) {
+		t.Errorf("Send(alice @everyone) = %v, want ErrMissingPermissions", err)
+	}
+	if _, err := svc.Send(ctx, alice, cid, "attention @here!"); !errors.Is(err, ErrMissingPermissions) {
+		t.Errorf("Send(alice @here) = %v, want ErrMissingPermissions", err)
+	}
+	h.db.Exec(`DELETE FROM channel_overwrites WHERE channel_id = $1`, cid)
+
+	// 6. MANAGE_MESSAGES bypass for deletion:
+	// Alice cannot delete Bob's message
+	if err := svc.Delete(ctx, alice, cid, bobMsgID); !errors.Is(err, ErrNotAuthor) && !errors.Is(err, ErrMissingPermissions) {
+		t.Errorf("Delete(alice deleting bob's msg) = %v, want ErrNotAuthor or ErrMissingPermissions", err)
+	}
+
+	// Make message older than 15 minutes
+	h.db.Exec(`UPDATE messages SET created_at = now() - interval '20 minutes' WHERE id = $1`, bobMsgID)
+	// Bob cannot delete his own message now (window passed)
+	if err := svc.Delete(ctx, bob, cid, bobMsgID); !errors.Is(err, ErrEditWindowOver) {
+		t.Errorf("Delete(bob window over) = %v, want ErrEditWindowOver", err)
+	}
+
+	// Grant MANAGE_MESSAGES to Mod via channel overwrite
+	h.db.Exec(`INSERT INTO channel_overwrites (channel_id, target_id, target_type, allow, deny)
+		VALUES ($1, $2, 1, $3, 0)`, cid, mod, permissions.MANAGE_MESSAGES)
+
+	// Mod can delete Bob's old message!
+	if err := svc.Delete(ctx, mod, cid, bobMsgID); err != nil {
+		t.Errorf("Delete(mod with MANAGE_MESSAGES) = %v, want nil", err)
 	}
 }

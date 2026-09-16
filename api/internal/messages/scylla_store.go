@@ -437,9 +437,14 @@ func (s *ScyllaStore) Edit(ctx context.Context, channelID, messageID int64, cont
 	return existing, nil
 }
 
-// Delete removes a message from ScyllaDB within the 15-minute author window.
+// Delete removes a message from ScyllaDB within the 15-minute author window,
+// or unconditionally if authorID == 0 (moderator delete).
 func (s *ScyllaStore) Delete(ctx context.Context, channelID, messageID, authorID int64) error {
 	bucket := BucketForMessageID(messageID)
+
+	if authorID == 0 {
+		return s.session.Query(cqlDeleteMessage, channelID, bucket, messageID).WithContext(ctx).Exec()
+	}
 
 	existing, err := s.Get(ctx, channelID, messageID)
 	if err != nil {

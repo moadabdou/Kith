@@ -29,6 +29,8 @@ func (h *Handler) writeErr(w http.ResponseWriter, err error) {
 		errs.Write(w, errs.UnknownMessage())
 	case errors.Is(err, ErrMissingAccess):
 		errs.Write(w, errs.MissingAccess())
+	case errors.Is(err, ErrMissingPermissions):
+		errs.Write(w, errs.MissingPermissions())
 	case errors.Is(err, ErrNotAuthor):
 		errs.Write(w, errs.CannotEditOther())
 	case errors.Is(err, ErrEditWindowOver):
@@ -46,16 +48,24 @@ func mustUser(r *http.Request) int64 {
 	return uid
 }
 
-// Send handles POST /api/guilds/{id}/channels/{cid}/messages.
+func channelIDFromReq(r *http.Request) (int64, bool) {
+	if cid, ok := pathID(r, "cid"); ok {
+		return cid, true
+	}
+	return pathID(r, "id")
+}
+
+// Send handles POST /api/guilds/{id}/channels/{cid}/messages and POST /api/channels/{id}/messages.
 // Rate limiting (#7) wraps this handler — the hot path stays readable.
 func (h *Handler) Send(w http.ResponseWriter, r *http.Request) {
-	cid, ok := pathID(r, "cid")
+	cid, ok := channelIDFromReq(r)
 	if !ok {
 		errs.Write(w, errs.FormBody("Invalid Form Body: bad channel id"))
 		return
 	}
 	var req struct {
-		Content string `json:"content"`
+		Content     string   `json:"content"`
+		Attachments []string `json:"attachments"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		errs.Write(w, errs.InvalidJSON())
@@ -65,7 +75,7 @@ func (h *Handler) Send(w http.ResponseWriter, r *http.Request) {
 		errs.Write(w, e)
 		return
 	}
-	m, err := h.Svc.Send(r.Context(), mustUser(r), cid, req.Content)
+	m, err := h.Svc.Send(r.Context(), mustUser(r), cid, req.Content, req.Attachments)
 	if err != nil {
 		h.writeErr(w, err)
 		return
@@ -76,7 +86,7 @@ func (h *Handler) Send(w http.ResponseWriter, r *http.Request) {
 
 // List handles GET /api/guilds/{id}/channels/{cid}/messages?before=<id>&limit=50.
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
-	cid, ok := pathID(r, "cid")
+	cid, ok := channelIDFromReq(r)
 	if !ok {
 		errs.Write(w, errs.FormBody("Invalid Form Body: bad channel id"))
 		return

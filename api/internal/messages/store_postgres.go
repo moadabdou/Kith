@@ -163,6 +163,24 @@ func (s *PostgresStore) Edit(ctx context.Context, channelID, messageID int64, co
 // Delete removes a message if within the 15-minute edit window and author matches,
 // returning precise errors on failure.
 func (s *PostgresStore) Delete(ctx context.Context, channelID, messageID, authorID int64) error {
+	if authorID == 0 {
+		res, err := s.db.ExecContext(ctx, `
+			DELETE FROM messages
+			WHERE id = $1 AND channel_id = $2`,
+			messageID, channelID)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return ErrUnknownMessage
+		}
+		return nil
+	}
+
 	res, err := s.db.ExecContext(ctx, `
 		DELETE FROM messages
 		WHERE id = $1 AND channel_id = $2

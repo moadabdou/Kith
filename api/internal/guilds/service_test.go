@@ -8,11 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/moadabdou/Kith/api/internal/events"
+	"github.com/moadabdou/Kith/api/pkg/permissions"
 	"github.com/moadabdou/Kith/api/pkg/snowflake"
 )
 
@@ -373,9 +375,18 @@ func TestRoles_Lifecycle(t *testing.T) {
 		t.Errorf("ListRoles(non-member) = %v, want ErrMissingAccess", err)
 	}
 
-	// Non-owner cannot create roles
+	// Non-member cannot create roles
+	if _, err := svc.CreateRole(ctx, other, gid, "Admin", int32Ptr(100), boolPtr(true), int32Ptr(1), int64Ptr(8), boolPtr(true)); !errors.Is(err, ErrMissingAccess) {
+		t.Errorf("CreateRole(non-member) = %v, want ErrMissingAccess", err)
+	}
+
+	if err := svc.AddMember(ctx, owner, gid, other); err != nil {
+		t.Fatalf("AddMember: %v", err)
+	}
+
+	// Non-owner member without manage-roles permission cannot create roles
 	if _, err := svc.CreateRole(ctx, other, gid, "Admin", int32Ptr(100), boolPtr(true), int32Ptr(1), int64Ptr(8), boolPtr(true)); !errors.Is(err, ErrMissingPermissions) {
-		t.Errorf("CreateRole(non-owner) = %v, want ErrMissingPermissions", err)
+		t.Errorf("CreateRole(non-owner member) = %v, want ErrMissingPermissions", err)
 	}
 
 	// Owner creates hoisted role
@@ -402,19 +413,22 @@ func TestRoles_Lifecycle(t *testing.T) {
 		t.Errorf("memberRole.Hoist = true, want false")
 	}
 
-	// Owner lists roles
+	// Owner lists roles: Admin (pos 2), Regular (pos 1), @everyone (pos 0)
 	roles, err := svc.ListRoles(ctx, owner, gid)
 	if err != nil {
 		t.Fatalf("ListRoles: %v", err)
 	}
-	if len(roles) != 2 {
-		t.Fatalf("len(roles) = %d, want 2", len(roles))
+	if len(roles) != 3 {
+		t.Fatalf("len(roles) = %d, want 3", len(roles))
 	}
 	if roles[0].Name != "Admin" || !roles[0].Hoist {
 		t.Errorf("first role = %+v, want Admin (hoisted)", roles[0])
 	}
 	if roles[1].Name != "Regular" || roles[1].Hoist {
 		t.Errorf("second role = %+v, want Regular (unhoisted)", roles[1])
+	}
+	if roles[2].Name != "@everyone" || roles[2].Position != 0 {
+		t.Errorf("third role = %+v, want @everyone (pos 0)", roles[2])
 	}
 
 	// Update regular role to hoisted
@@ -439,6 +453,205 @@ func TestRoles_Lifecycle(t *testing.T) {
 	}
 	if err := svc.DeleteRole(ctx, owner, gid, arid); !errors.Is(err, ErrUnknownRole) {
 		t.Errorf("DeleteRole(deleted) = %v, want ErrUnknownRole", err)
+	}
+}
+
+func TestRoles_EveryoneProtections(t *testing.T) {
+	svc, db, node, prefix := newTestService(t)
+	ctx := context.Background()
+
+	owner := createTestUser(t, db, node, prefix, "_owner")
+	g, err := svc.CreateGuild(ctx, owner, prefix+"-ev-guild")
+	if err != nil {
+		t.Fatalf("CreateGuild: %v", err)
+	}
+	gid, _ := snowflake.Parse(g.ID)
+
+	roles, err := svc.ListRoles(ctx, owner, gid)
+	if err != nil {
+		t.Fatalf("ListRoles: %v", err)
+	}
+	if len(roles) != 1 {
+		t.Fatalf("len(roles) = %d, want 1 (@everyone)", len(roles))
+	}
+	ev := roles[0]
+	if ev.ID != g.ID || ev.Name != "@everyone" || ev.Position != 0 {
+		t.Errorf("unexpected @everyone role: %+v", ev)
+	}
+	if ev.Permissions != strconv.FormatUint(permissions.DEFAULT_EVERYONE_PERMISSIONS, 10) {
+		t.Errorf("expected permissions %d, got %s", permissions.DEFAULT_EVERYONE_PERMISSIONS, ev.Permissions)
+	}
+
+	// Attempting to delete @everyone must return ErrMissingPermissions
+	if err := svc.DeleteRole(ctx, owner, gid, gid); !errors.Is(err, ErrMissingPermissions) {
+		t.Errorf("DeleteRole(@everyone) = %v, want ErrMissingPermissions", err)
+	}
+
+	// Attempting to change @everyone position must return ErrMissingPermissions
+	if _, err := svc.UpdateRole(ctx, owner, gid, gid, nil, nil, nil, int32Ptr(1), nil, nil); !errors.Is(err, ErrMissingPermissions) {
+		t.Errorf("UpdateRole(@everyone, pos=1) = %v, want ErrMissingPermissions", err)
+	}
+
+	// Attempting to hoist @everyone must return ErrMissingPermissions
+	if _, err := svc.UpdateRole(ctx, owner, gid, gid, nil, nil, boolPtr(true), nil, nil, nil); !errors.Is(err, ErrMissingPermissions) {
+		t.Errorf("UpdateRole(@everyone, hoist=true) = %v, want ErrMissingPermissions", err)
+	}
+
+	// Updating color or valid permissions on @everyone succeeds
+	updated, err := svc.UpdateRole(ctx, owner, gid, gid, nil, int32Ptr(255), nil, nil, int64Ptr(int64(permissions.VIEW_CHANNEL)), nil)
+	if err != nil {
+		t.Fatalf("UpdateRole(@everyone, color) failed: %v", err)
+	}
+	if updated.Color != 255 || updated.Permissions != strconv.FormatUint(permissions.VIEW_CHANNEL, 10) {
+		t.Errorf("updated @everyone = %+v", updated)
+	}
+}
+
+func TestRoles_HierarchyAndEscalation(t *testing.T) {
+	svc, db, node, prefix := newTestService(t)
+	ctx := context.Background()
+
+	owner := createTestUser(t, db, node, prefix, "_owner")
+	modUser := createTestUser(t, db, node, prefix, "_mod")
+	memberUser := createTestUser(t, db, node, prefix, "_mem")
+
+	g, err := svc.CreateGuild(ctx, owner, prefix+"-hier-guild")
+	if err != nil {
+		t.Fatalf("CreateGuild: %v", err)
+	}
+	gid, _ := snowflake.Parse(g.ID)
+
+	// Add mod and member to guild
+	if err := svc.AddMember(ctx, owner, gid, modUser); err != nil {
+		t.Fatalf("AddMember(mod): %v", err)
+	}
+	if err := svc.AddMember(ctx, owner, gid, memberUser); err != nil {
+		t.Fatalf("AddMember(mem): %v", err)
+	}
+
+	// Owner creates Moderator role: position 10, MANAGE_ROLES | VIEW_CHANNEL | SEND_MESSAGES
+	modPerms := int64(permissions.MANAGE_ROLES | permissions.VIEW_CHANNEL | permissions.SEND_MESSAGES)
+	modRole, err := svc.CreateRole(ctx, owner, gid, "Moderator", nil, nil, int32Ptr(10), &modPerms, nil)
+	if err != nil {
+		t.Fatalf("CreateRole(Moderator): %v", err)
+	}
+	mrid, _ := snowflake.Parse(modRole.ID)
+
+	// Assign Moderator role to modUser
+	if _, err := db.Exec(`INSERT INTO member_roles (guild_id, user_id, role_id) VALUES ($1, $2, $3)`, gid, modUser, mrid); err != nil {
+		t.Fatalf("assign role: %v", err)
+	}
+
+	// 1. Mod attempts to create a role at position 10 (>= highest position 10) -> rejected
+	if _, err := svc.CreateRole(ctx, modUser, gid, "IllegalPos10", nil, nil, int32Ptr(10), nil, nil); !errors.Is(err, ErrMissingPermissions) {
+		t.Errorf("CreateRole(pos=10) = %v, want ErrMissingPermissions", err)
+	}
+	if _, err := svc.CreateRole(ctx, modUser, gid, "IllegalPos11", nil, nil, int32Ptr(11), nil, nil); !errors.Is(err, ErrMissingPermissions) {
+		t.Errorf("CreateRole(pos=11) = %v, want ErrMissingPermissions", err)
+	}
+
+	// 2. Mod attempts privilege escalation: granting ADMINISTRATOR (which mod lacks) -> rejected
+	adminPerms := int64(permissions.ADMINISTRATOR)
+	if _, err := svc.CreateRole(ctx, modUser, gid, "EscalateAdmin", nil, nil, int32Ptr(5), &adminPerms, nil); !errors.Is(err, ErrMissingPermissions) {
+		t.Errorf("CreateRole(EscalateAdmin) = %v, want ErrMissingPermissions", err)
+	}
+
+	// 3. Mod creates a role below own position with held permissions -> succeeds
+	subPerms := int64(permissions.VIEW_CHANNEL)
+	subRole, err := svc.CreateRole(ctx, modUser, gid, "JuniorMod", nil, nil, int32Ptr(5), &subPerms, nil)
+	if err != nil {
+		t.Fatalf("CreateRole(JuniorMod) failed: %v", err)
+	}
+	srid, _ := snowflake.Parse(subRole.ID)
+
+	// 4. Mod attempts to edit the Moderator role (position 10 >= caller's position 10) -> rejected
+	if _, err := svc.UpdateRole(ctx, modUser, gid, mrid, strPtr("RenamedMod"), nil, nil, nil, nil, nil); !errors.Is(err, ErrMissingPermissions) {
+		t.Errorf("UpdateRole(Moderator) = %v, want ErrMissingPermissions", err)
+	}
+
+	// 5. Mod attempts to promote JuniorMod to position 10 -> rejected
+	if _, err := svc.UpdateRole(ctx, modUser, gid, srid, nil, nil, nil, int32Ptr(10), nil, nil); !errors.Is(err, ErrMissingPermissions) {
+		t.Errorf("UpdateRole(promote to 10) = %v, want ErrMissingPermissions", err)
+	}
+
+	// 6. Mod attempts to grant BAN_MEMBERS to JuniorMod (mod lacks BAN_MEMBERS) -> rejected
+	banPerms := int64(permissions.BAN_MEMBERS)
+	if _, err := svc.UpdateRole(ctx, modUser, gid, srid, nil, nil, nil, nil, &banPerms, nil); !errors.Is(err, ErrMissingPermissions) {
+		t.Errorf("UpdateRole(grant BAN_MEMBERS) = %v, want ErrMissingPermissions", err)
+	}
+
+	// 7. Mod edits JuniorMod successfully with allowed changes
+	updatedSub, err := svc.UpdateRole(ctx, modUser, gid, srid, strPtr("JuniorMod2"), int32Ptr(123), nil, int32Ptr(6), nil, nil)
+	if err != nil {
+		t.Fatalf("UpdateRole(JuniorMod2) failed: %v", err)
+	}
+	if updatedSub.Name != "JuniorMod2" || updatedSub.Position != 6 {
+		t.Errorf("unexpected updated JuniorMod: %+v", updatedSub)
+	}
+
+	// 8. Mod attempts to delete Moderator role -> rejected
+	if err := svc.DeleteRole(ctx, modUser, gid, mrid); !errors.Is(err, ErrMissingPermissions) {
+		t.Errorf("DeleteRole(Moderator) = %v, want ErrMissingPermissions", err)
+	}
+
+	// 9. Mod deletes JuniorMod (below caller's position) -> succeeds
+	if err := svc.DeleteRole(ctx, modUser, gid, srid); err != nil {
+		t.Fatalf("DeleteRole(JuniorMod) failed: %v", err)
+	}
+
+	// 10. Member with no permissions cannot create, update, or delete roles
+	if _, err := svc.CreateRole(ctx, memberUser, gid, "Hacker", nil, nil, int32Ptr(1), nil, nil); !errors.Is(err, ErrMissingPermissions) {
+		t.Errorf("CreateRole(regular member) = %v, want ErrMissingPermissions", err)
+	}
+}
+
+func TestRoles_Events(t *testing.T) {
+	_, db, node, prefix := newTestService(t)
+	pub := &recordingPublisher{}
+	svc := NewService(db, node, pub)
+	ctx := context.Background()
+
+	owner := createTestUser(t, db, node, prefix, "_owner")
+	g, err := svc.CreateGuild(ctx, owner, prefix+"-events-guild")
+	if err != nil {
+		t.Fatalf("CreateGuild: %v", err)
+	}
+	gid, _ := snowflake.Parse(g.ID)
+
+	// Create role
+	created, err := svc.CreateRole(ctx, owner, gid, "Tester", int32Ptr(111), boolPtr(true), int32Ptr(2), int64Ptr(8), boolPtr(true))
+	if err != nil {
+		t.Fatalf("CreateRole: %v", err)
+	}
+
+	creates := pub.ofType(eventTypeRoleCreate)
+	if len(creates) != 1 {
+		t.Fatalf("expected 1 GUILD_ROLE_CREATE event, got %d", len(creates))
+	}
+	if creates[0].GuildID != g.ID {
+		t.Errorf("event guild_id = %s, want %s", creates[0].GuildID, g.ID)
+	}
+
+	// Update role
+	rid, _ := snowflake.Parse(created.ID)
+	_, err = svc.UpdateRole(ctx, owner, gid, rid, strPtr("TesterUpdated"), nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("UpdateRole: %v", err)
+	}
+
+	updates := pub.ofType(eventTypeRoleUpdate)
+	if len(updates) != 1 {
+		t.Fatalf("expected 1 GUILD_ROLE_UPDATE event, got %d", len(updates))
+	}
+
+	// Delete role
+	if err := svc.DeleteRole(ctx, owner, gid, rid); err != nil {
+		t.Fatalf("DeleteRole: %v", err)
+	}
+
+	deletes := pub.ofType(eventTypeRoleDelete)
+	if len(deletes) != 1 {
+		t.Fatalf("expected 1 GUILD_ROLE_DELETE event, got %d", len(deletes))
 	}
 }
 

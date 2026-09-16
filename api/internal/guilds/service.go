@@ -11,12 +11,14 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
+	"math"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/moadabdou/Kith/api/internal/events"
+	"github.com/moadabdou/Kith/api/pkg/permissions"
 	"github.com/moadabdou/Kith/api/pkg/snowflake"
 )
 
@@ -50,6 +52,9 @@ func NewService(db *sql.DB, sf *snowflake.Node, pub events.Publisher) *Service {
 const (
 	eventTypeMemberAdd    = "GUILD_MEMBER_ADD"
 	eventTypeMemberRemove = "GUILD_MEMBER_REMOVE"
+	eventTypeRoleCreate   = "GUILD_ROLE_CREATE"
+	eventTypeRoleUpdate   = "GUILD_ROLE_UPDATE"
+	eventTypeRoleDelete   = "GUILD_ROLE_DELETE"
 	eventVersion          = 1
 )
 
@@ -66,6 +71,16 @@ type memberAddPayload struct {
 type memberRemovePayload struct {
 	GuildID string  `json:"guild_id"`
 	User    UserRef `json:"user"`
+}
+
+type roleEventPayload struct {
+	GuildID string `json:"guild_id"`
+	Role    Role   `json:"role"`
+}
+
+type roleDeleteEventPayload struct {
+	GuildID string `json:"guild_id"`
+	RoleID  string `json:"role_id"`
 }
 
 // ── types (wire shapes; IDs are strings like Discord) ─────────────────────
@@ -191,6 +206,12 @@ func (s *Service) CreateGuild(ctx context.Context, ownerID int64, name string) (
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO members (guild_id, user_id) VALUES ($1, $2)`, id, ownerID); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO roles (id, guild_id, name, color, hoist, position, permissions, mentionable)
+		 VALUES ($1, $1, '@everyone', 0, false, 0, $2, false)`,
+		id, permissions.DEFAULT_EVERYONE_PERMISSIONS); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -737,10 +758,120 @@ func (s *Service) ListRoles(ctx context.Context, userID, guildID int64) ([]Role,
 	return roles, rows.Err()
 }
 
-func (s *Service) CreateRole(ctx context.Context, userID, guildID int64, name string, color *int32, hoist *bool, position *int32, permissions *int64, mentionable *bool) (*Role, error) {
-	if err := s.requireOwner(ctx, guildID, userID); err != nil {
+type memberRoleState struct {
+	IsOwner         bool
+	HighestPosition int32
+	Permissions     uint64
+}
+
+func (s *Service) getMemberRoleState(ctx context.Context, guildID, userID int64) (*memberRoleState, error) {
+	var ownerID int64
+	err := s.db.QueryRowContext(ctx, `SELECT owner_id FROM guilds WHERE id = $1`, guildID).Scan(&ownerID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrUnknownGuild
+	}
+	if err != nil {
 		return nil, err
 	}
+
+	if userID == ownerID {
+		return &memberRoleState{
+			IsOwner:         true,
+			HighestPosition: math.MaxInt32,
+			Permissions:     permissions.ALL_PERMISSIONS,
+		}, nil
+	}
+
+	// Verify member belongs to guild
+	var isMember bool
+	err = s.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM members WHERE guild_id = $1 AND user_id = $2)`,
+		guildID, userID).Scan(&isMember)
+	if err != nil {
+		return nil, err
+	}
+	if !isMember {
+		return nil, ErrMissingAccess
+	}
+
+	// Query caller's roles: @everyone (id == guildID) + assigned roles
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT r.id, r.position, r.permissions
+		FROM roles r
+		WHERE r.id = $1 AND r.guild_id = $1
+		UNION
+		SELECT r.id, r.position, r.permissions
+		FROM roles r
+		JOIN member_roles mr ON mr.role_id = r.id
+		WHERE mr.guild_id = $1 AND mr.user_id = $2`,
+		guildID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var highestPos int32 = 0
+	var callerPerms uint64 = 0
+	for rows.Next() {
+		var rid int64
+		var pos int32
+		var p uint64
+		if err := rows.Scan(&rid, &pos, &p); err != nil {
+			return nil, err
+		}
+		if pos > highestPos {
+			highestPos = pos
+		}
+		callerPerms |= p
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if permissions.Has(callerPerms, permissions.ADMINISTRATOR) {
+		callerPerms = permissions.ALL_PERMISSIONS
+	}
+
+	return &memberRoleState{
+		IsOwner:         false,
+		HighestPosition: highestPos,
+		Permissions:     callerPerms,
+	}, nil
+}
+
+func canManageRoles(state *memberRoleState) bool {
+	if state.IsOwner {
+		return true
+	}
+	return permissions.Has(state.Permissions, permissions.ADMINISTRATOR) ||
+		permissions.Has(state.Permissions, permissions.MANAGE_ROLES) ||
+		permissions.Has(state.Permissions, permissions.MANAGE_GUILD)
+}
+
+func (s *Service) CreateRole(ctx context.Context, userID, guildID int64, name string, color *int32, hoist *bool, position *int32, permsArg *int64, mentionable *bool) (*Role, error) {
+	state, err := s.getMemberRoleState(ctx, guildID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !canManageRoles(state) {
+		return nil, ErrMissingPermissions
+	}
+
+	// Hierarchy invariant: caller cannot create a role with position >= caller's highest position
+	if !state.IsOwner {
+		if position != nil && *position >= state.HighestPosition {
+			return nil, ErrMissingPermissions
+		}
+	}
+
+	// Escalation prevention: caller cannot grant permissions they do not possess
+	if permsArg != nil && !state.IsOwner && !permissions.Has(state.Permissions, permissions.ADMINISTRATOR) {
+		requested := uint64(*permsArg)
+		if (requested & ^state.Permissions) != 0 {
+			return nil, ErrMissingPermissions
+		}
+	}
+
 	id, err := s.sf.Generate()
 	if err != nil {
 		return nil, err
@@ -756,10 +887,15 @@ func (s *Service) CreateRole(ctx context.Context, userID, guildID int64, name st
 	var pos int32
 	if position != nil {
 		pos = *position
+	} else {
+		pos = 1
+		if !state.IsOwner && pos >= state.HighestPosition {
+			return nil, ErrMissingPermissions
+		}
 	}
 	var perms int64
-	if permissions != nil {
-		perms = *permissions
+	if permsArg != nil {
+		perms = *permsArg
 	}
 	var men bool
 	if mentionable != nil {
@@ -776,16 +912,67 @@ func (s *Service) CreateRole(ctx context.Context, userID, guildID int64, name st
 	if err != nil {
 		return nil, err
 	}
+
+	s.publishRoleCreate(ctx, guildID, &r)
 	return &r, nil
 }
 
-func (s *Service) UpdateRole(ctx context.Context, userID, guildID, roleID int64, name *string, color *int32, hoist *bool, position *int32, permissions *int64, mentionable *bool) (*Role, error) {
-	if err := s.requireOwner(ctx, guildID, userID); err != nil {
+func (s *Service) UpdateRole(ctx context.Context, userID, guildID, roleID int64, name *string, color *int32, hoist *bool, position *int32, permsArg *int64, mentionable *bool) (*Role, error) {
+	state, err := s.getMemberRoleState(ctx, guildID, userID)
+	if err != nil {
 		return nil, err
 	}
+	if !canManageRoles(state) {
+		return nil, ErrMissingPermissions
+	}
+
+	var targetPos int32
+	var targetName string
+	err = s.db.QueryRowContext(ctx, `SELECT position, name FROM roles WHERE id = $1 AND guild_id = $2`, roleID, guildID).Scan(&targetPos, &targetName)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrUnknownRole
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	isEveryone := (roleID == guildID)
+
+	// Hierarchy check: cannot edit role at or above caller's highest position
+	if !state.IsOwner {
+		if targetPos >= state.HighestPosition {
+			return nil, ErrMissingPermissions
+		}
+		if position != nil && *position >= state.HighestPosition {
+			return nil, ErrMissingPermissions
+		}
+	}
+
+	// @everyone invariants: cannot be repositioned (must remain 0), cannot be hoisted
+	if isEveryone {
+		if position != nil && *position != 0 {
+			return nil, ErrMissingPermissions
+		}
+		if hoist != nil && *hoist {
+			return nil, ErrMissingPermissions
+		}
+	}
+
+	// Escalation prevention: cannot grant permissions the caller does not hold
+	if permsArg != nil && !state.IsOwner && !permissions.Has(state.Permissions, permissions.ADMINISTRATOR) {
+		requested := uint64(*permsArg)
+		if (requested & ^state.Permissions) != 0 {
+			return nil, ErrMissingPermissions
+		}
+	}
+
 	var nameNull sql.NullString
 	if name != nil {
-		nameNull = sql.NullString{String: *name, Valid: true}
+		if isEveryone {
+			nameNull = sql.NullString{String: "@everyone", Valid: true}
+		} else {
+			nameNull = sql.NullString{String: *name, Valid: true}
+		}
 	}
 	var colorNull sql.NullInt32
 	if color != nil {
@@ -800,8 +987,8 @@ func (s *Service) UpdateRole(ctx context.Context, userID, guildID, roleID int64,
 		posNull = sql.NullInt32{Int32: *position, Valid: true}
 	}
 	var permsNull sql.NullInt64
-	if permissions != nil {
-		permsNull = sql.NullInt64{Int64: *permissions, Valid: true}
+	if permsArg != nil {
+		permsNull = sql.NullInt64{Int64: *permsArg, Valid: true}
 	}
 	var menNull sql.NullBool
 	if mentionable != nil {
@@ -809,7 +996,7 @@ func (s *Service) UpdateRole(ctx context.Context, userID, guildID, roleID int64,
 	}
 
 	var r Role
-	err := s.db.QueryRowContext(ctx, `
+	err = s.db.QueryRowContext(ctx, `
 		UPDATE roles
 		SET name = COALESCE($3::text, name),
 		    color = COALESCE($4::integer, color),
@@ -827,13 +1014,41 @@ func (s *Service) UpdateRole(ctx context.Context, userID, guildID, roleID int64,
 	if err != nil {
 		return nil, err
 	}
+
+	s.publishRoleUpdate(ctx, guildID, &r)
 	return &r, nil
 }
 
 func (s *Service) DeleteRole(ctx context.Context, userID, guildID, roleID int64) error {
-	if err := s.requireOwner(ctx, guildID, userID); err != nil {
+	// @everyone cannot be deleted
+	if roleID == guildID {
+		return ErrMissingPermissions
+	}
+
+	state, err := s.getMemberRoleState(ctx, guildID, userID)
+	if err != nil {
 		return err
 	}
+	if !canManageRoles(state) {
+		return ErrMissingPermissions
+	}
+
+	var targetPos int32
+	err = s.db.QueryRowContext(ctx, `SELECT position FROM roles WHERE id = $1 AND guild_id = $2`, roleID, guildID).Scan(&targetPos)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrUnknownRole
+	}
+	if err != nil {
+		return err
+	}
+
+	// Hierarchy check: cannot delete role at or above caller's highest position
+	if !state.IsOwner {
+		if targetPos >= state.HighestPosition {
+			return ErrMissingPermissions
+		}
+	}
+
 	res, err := s.db.ExecContext(ctx,
 		`DELETE FROM roles WHERE id = $1 AND guild_id = $2`, roleID, guildID)
 	if err != nil {
@@ -842,5 +1057,57 @@ func (s *Service) DeleteRole(ctx context.Context, userID, guildID, roleID int64)
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrUnknownRole
 	}
+
+	s.publishRoleDelete(ctx, guildID, roleID)
 	return nil
 }
+
+func (s *Service) publishRoleCreate(ctx context.Context, guildID int64, role *Role) {
+	gidStr := strconv.FormatInt(guildID, 10)
+	if err := s.pub.Publish(ctx, events.Event{
+		Type:    eventTypeRoleCreate,
+		Version: eventVersion,
+		GuildID: gidStr,
+		Payload: roleEventPayload{
+			GuildID: gidStr,
+			Role:    *role,
+		},
+	}); err != nil {
+		slog.ErrorContext(ctx, "failed to publish event",
+			"type", eventTypeRoleCreate, "guild_id", gidStr, "err", err)
+	}
+}
+
+func (s *Service) publishRoleUpdate(ctx context.Context, guildID int64, role *Role) {
+	gidStr := strconv.FormatInt(guildID, 10)
+	if err := s.pub.Publish(ctx, events.Event{
+		Type:    eventTypeRoleUpdate,
+		Version: eventVersion,
+		GuildID: gidStr,
+		Payload: roleEventPayload{
+			GuildID: gidStr,
+			Role:    *role,
+		},
+	}); err != nil {
+		slog.ErrorContext(ctx, "failed to publish event",
+			"type", eventTypeRoleUpdate, "guild_id", gidStr, "err", err)
+	}
+}
+
+func (s *Service) publishRoleDelete(ctx context.Context, guildID, roleID int64) {
+	gidStr := strconv.FormatInt(guildID, 10)
+	ridStr := strconv.FormatInt(roleID, 10)
+	if err := s.pub.Publish(ctx, events.Event{
+		Type:    eventTypeRoleDelete,
+		Version: eventVersion,
+		GuildID: gidStr,
+		Payload: roleDeleteEventPayload{
+			GuildID: gidStr,
+			RoleID:  ridStr,
+		},
+	}); err != nil {
+		slog.ErrorContext(ctx, "failed to publish event",
+			"type", eventTypeRoleDelete, "guild_id", gidStr, "err", err)
+	}
+}
+

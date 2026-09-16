@@ -36,6 +36,23 @@ const (
 	// ALL_PERMISSIONS is the bitmask of all 29 canonical permissions (bits 0 through 28).
 	// Value: 536870911 (0x1FFFFFFF). Fits safely within JavaScript IEEE-754 numbers.
 	ALL_PERMISSIONS uint64 = (1 << 29) - 1
+
+	// DEFAULT_EVERYONE_PERMISSIONS is the canonical baseline permission set for @everyone.
+	// Value: 104324673.
+	DEFAULT_EVERYONE_PERMISSIONS uint64 = CREATE_INSTANT_INVITE |
+		ADD_REACTIONS |
+		VIEW_CHANNEL |
+		SEND_MESSAGES |
+		SEND_TTS_MESSAGES |
+		EMBED_LINKS |
+		ATTACH_FILES |
+		READ_MESSAGE_HISTORY |
+		MENTION_EVERYONE |
+		USE_EXTERNAL_EMOJIS |
+		CONNECT |
+		SPEAK |
+		USE_VAD |
+		CHANGE_NICKNAME
 )
 
 // TargetType represents the target of a channel overwrite.

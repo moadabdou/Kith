@@ -26,10 +26,11 @@ defmodule Gateway.Typing.Broadcaster do
   requests are silent — the connection is never closed.
   """
   @spec broadcast(user_id :: integer() | binary(), channel_id :: integer() | binary()) ::
-          :ok | {:dropped, :unknown_channel | :not_a_member}
+          :ok | {:dropped, :unknown_channel | :not_a_member | :missing_permissions}
   def broadcast(user_id, channel_id) do
     with {:ok, guild_id} <- Gateway.Guild.Cache.get_channel_guild(channel_id),
-         :ok <- ensure_member(user_id, guild_id) do
+         :ok <- ensure_member(user_id, guild_id),
+         :ok <- ensure_can_send(user_id, channel_id, guild_id) do
       Gateway.Metrics.incr_typing_broadcast()
 
       event = %{
@@ -61,6 +62,13 @@ defmodule Gateway.Typing.Broadcaster do
         )
 
         {:dropped, :not_a_member}
+
+      {:error, :missing_permissions} ->
+        Logger.debug(
+          "Gateway.Typing.Broadcaster: user #{user_id} lacks VIEW_CHANNEL or SEND_MESSAGES in #{channel_id}, dropping"
+        )
+
+        {:dropped, :missing_permissions}
     end
   end
 
@@ -69,6 +77,14 @@ defmodule Gateway.Typing.Broadcaster do
       :ok
     else
       {:error, :not_a_member}
+    end
+  end
+
+  defp ensure_can_send(user_id, channel_id, guild_id) do
+    if Gateway.Permissions.can_send?(user_id, channel_id, guild_id) do
+      :ok
+    else
+      {:error, :missing_permissions}
     end
   end
 

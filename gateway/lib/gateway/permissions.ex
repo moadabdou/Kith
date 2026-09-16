@@ -81,11 +81,11 @@ defmodule Gateway.Permissions do
   Resolves base guild permissions for a member.
   If member is guild owner or has ADMINISTRATOR, returns all_permissions.
   """
-  def resolve_guild(guild_id, owner_id, user_id, roles) do
-    u_id = to_int(user_id)
-    o_id = to_int(owner_id)
+  def resolve_guild(_guild_id, owner_id, user_id, roles) do
+    u_id = to_string(user_id)
+    o_id = to_string(owner_id)
 
-    if u_id == o_id do
+    if u_id == o_id and o_id != "" do
       @all_permissions
     else
       base =
@@ -114,11 +114,11 @@ defmodule Gateway.Permissions do
      c. Member-specific overwrite applied last
   """
   def resolve_channel(guild_id, owner_id, user_id, roles, overwrites) do
-    u_id = to_int(user_id)
-    o_id = to_int(owner_id)
-    g_id = to_int(guild_id)
+    u_id = to_string(user_id)
+    o_id = to_string(owner_id)
+    g_id = to_string(guild_id)
 
-    if u_id == o_id do
+    if u_id == o_id and o_id != "" do
       @all_permissions
     else
       base =
@@ -157,6 +157,23 @@ defmodule Gateway.Permissions do
   Bypasses checks if user is the guild owner.
   """
   def can_view?(user_id, channel_id, guild_id \\ nil) do
+    has_channel_permission?(user_id, channel_id, guild_id, @view_channel)
+  end
+
+  @doc """
+  Determines whether a user has both VIEW_CHANNEL and SEND_MESSAGES permissions in a channel.
+  Used to gate inbound typing indicators and message actions.
+  Bypasses checks if user is the guild owner.
+  """
+  def can_send?(user_id, channel_id, guild_id \\ nil) do
+    req = bor(@view_channel, @send_messages)
+    has_channel_permission?(user_id, channel_id, guild_id, req)
+  end
+
+  @doc """
+  Determines whether a user has a specific required permission in a channel within a guild.
+  """
+  def has_channel_permission?(user_id, channel_id, guild_id, required_permission) do
     gid =
       if guild_id && guild_id != "" do
         to_string(guild_id)
@@ -180,7 +197,8 @@ defmodule Gateway.Permissions do
                 match?({:ok, _}, Gateway.Guild.Cache.get_member_roles(user_id, gid))
 
             if is_member do
-              check_user_can_view(user_id, channel_id, gid, owner_id)
+              perms = compute_channel_perms(user_id, channel_id, gid, owner_id)
+              can?(perms, required_permission)
             else
               false
             end
@@ -194,7 +212,7 @@ defmodule Gateway.Permissions do
     end
   end
 
-  defp check_user_can_view(user_id, channel_id, guild_id, owner_id) do
+  defp compute_channel_perms(user_id, channel_id, guild_id, owner_id) do
     all_guild_roles =
       case Gateway.Guild.Cache.get_guild_roles(guild_id) do
         {:ok, roles} when is_list(roles) -> roles
@@ -232,24 +250,19 @@ defmodule Gateway.Permissions do
         _ -> []
       end
 
-    effective_perms = resolve_channel(guild_id, owner_id, user_id, user_roles, overwrites)
-    can?(effective_perms, @view_channel)
-  end
-
-  # --- Internal Helpers ---
-
-  defp base_has_admin?(roles) do
-    Enum.any?(roles, fn role ->
-      perm = get_val(role, :permissions, 0) |> to_int()
-      band(perm, @administrator) == @administrator
-    end)
+    resolve_channel(guild_id, owner_id, user_id, user_roles, overwrites)
   end
 
   defp apply_channel_overwrites(base, guild_id, user_id, roles, overwrites) do
+    gid_str = to_string(guild_id)
+    uid_str = to_string(user_id)
+
     # 4a. Apply @everyone overwrite (target_type == 0 and target_id == guild_id)
     everyone_ow =
       Enum.find(overwrites, fn ow ->
-        to_int(get_val(ow, :target_type)) == 0 and to_int(get_val(ow, :target_id)) == guild_id
+        target_type = to_int(get_val(ow, :type) || get_val(ow, :target_type) || 0)
+        target_id = to_string(get_val(ow, :id) || get_val(ow, :target_id) || "")
+        target_type == 0 and target_id == gid_str
       end)
 
     perms =
@@ -264,16 +277,16 @@ defmodule Gateway.Permissions do
     # 4b. Apply member role overwrites
     role_ids =
       roles
-      |> Enum.map(fn role -> to_int(get_val(role, :id)) end)
+      |> Enum.map(fn role -> to_string(get_val(role, :id)) end)
       |> MapSet.new()
-      |> MapSet.delete(guild_id)
+      |> MapSet.delete(gid_str)
 
     {role_deny, role_allow} =
       Enum.reduce(overwrites, {0, 0}, fn ow, {d_acc, a_acc} ->
-        target_type = to_int(get_val(ow, :target_type))
-        target_id = to_int(get_val(ow, :target_id))
+        target_type = to_int(get_val(ow, :type) || get_val(ow, :target_type) || 0)
+        target_id = to_string(get_val(ow, :id) || get_val(ow, :target_id) || "")
 
-        if target_type == 0 and target_id != guild_id and MapSet.member?(role_ids, target_id) do
+        if target_type == 0 and target_id != gid_str and MapSet.member?(role_ids, target_id) do
           d = to_int(get_val(ow, :deny, 0))
           a = to_int(get_val(ow, :allow, 0))
           {bor(d_acc, d), bor(a_acc, a)}
@@ -287,7 +300,9 @@ defmodule Gateway.Permissions do
     # 4c. Apply member-specific overwrite (target_type == 1 and target_id == user_id)
     member_ow =
       Enum.find(overwrites, fn ow ->
-        to_int(get_val(ow, :target_type)) == 1 and to_int(get_val(ow, :target_id)) == user_id
+        target_type = to_int(get_val(ow, :type) || get_val(ow, :target_type) || 0)
+        target_id = to_string(get_val(ow, :id) || get_val(ow, :target_id) || "")
+        target_type == 1 and target_id == uid_str
       end)
 
     if member_ow do
@@ -309,7 +324,8 @@ defmodule Gateway.Permissions do
   end
   defp to_int(_), do: 0
 
-  defp get_val(map, key, default \\ nil) when is_map(map) do
+  defp get_val(map, key, default \\ nil)
+  defp get_val(map, key, default) when is_map(map) do
     case Map.fetch(map, key) do
       {:ok, val} ->
         val

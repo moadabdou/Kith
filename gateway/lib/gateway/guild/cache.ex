@@ -189,6 +189,80 @@ defmodule Gateway.Guild.Cache do
   def get_channel_guild(channel_id) when is_integer(channel_id), do: get_channel_guild(to_string(channel_id))
 
   @doc """
+  Retrieves channel metadata map from ETS cache.
+  Returns `{:ok, channel_map}` or `:error`.
+  """
+  def get_channel(channel_id) do
+    cid = to_string(channel_id)
+
+    case :ets.lookup(@table, {:channel_meta, cid}) do
+      [{{:channel_meta, ^cid}, chan}] ->
+        {:ok, chan}
+
+      [] ->
+        case get_channel_guild(cid) do
+          {:ok, gid} ->
+            case get_guild(gid) do
+              {:ok, %{"channels" => channels}} when is_list(channels) ->
+                case Enum.find(channels, fn c -> to_string(c["id"]) == cid end) do
+                  nil ->
+                    :error
+
+                  chan ->
+                    chan_with_gid = Map.put(chan, "guild_id", gid)
+                    :ets.insert(@table, {{:channel_meta, cid}, chan_with_gid})
+                    {:ok, chan_with_gid}
+                end
+
+              _ ->
+                :error
+            end
+
+          _ ->
+            :error
+        end
+    end
+  end
+
+  @doc """
+  Stores or updates channel metadata in ETS cache.
+  """
+  def put_channel(%{"id" => channel_id, "guild_id" => guild_id} = channel) do
+    cid = to_string(channel_id)
+    gid = to_string(guild_id)
+    :ets.insert(@table, {{:channel, cid}, gid})
+    :ets.insert(@table, {{:channel_meta, cid}, channel})
+    :ok
+  end
+
+  @doc """
+  Returns all channels for a guild from cached guild metadata.
+  """
+  def list_guild_channels(guild_id) do
+    gid = to_string(guild_id)
+
+    guild_chans =
+      case get_guild(gid) do
+        {:ok, %{"channels" => channels}} when is_list(channels) -> channels
+        _ -> []
+      end
+
+    meta_chans =
+      case :ets.match_object(@table, {{:channel_meta, :_}, :_}) do
+        list when is_list(list) ->
+          list
+          |> Enum.map(fn {{:channel_meta, _}, c} -> c end)
+          |> Enum.filter(fn c -> to_string(c["guild_id"] || c[:guild_id]) == gid end)
+
+        _ ->
+          []
+      end
+
+    (guild_chans ++ meta_chans)
+    |> Enum.uniq_by(fn c -> to_string(c["id"] || c[:id]) end)
+  end
+
+  @doc """
   Retrieves a cached user map (`%{"id", "username", "discriminator"}`) by
   user_id, warm from IDENTIFY. Returns `{:ok, user}` or `:error`.
   """
@@ -313,12 +387,27 @@ defmodule Gateway.Guild.Cache do
 
     normalized =
       Enum.map(overwrites, fn ow ->
+        target_id =
+          to_string(
+            Map.get(ow, "target_id") || Map.get(ow, :target_id) ||
+              Map.get(ow, "id") || Map.get(ow, :id) || ""
+          )
+
+        target_type =
+          Map.get(ow, "target_type") || Map.get(ow, :target_type) ||
+            Map.get(ow, "type") || Map.get(ow, :type) || 0
+
+        allow = Map.get(ow, "allow") || Map.get(ow, :allow) || 0
+        deny = Map.get(ow, "deny") || Map.get(ow, :deny) || 0
+
         %{
+          "id" => target_id,
+          "type" => target_type,
           "channel_id" => cid,
-          "target_id" => to_string(Map.get(ow, "target_id") || Map.get(ow, :target_id)),
-          "target_type" => Map.get(ow, "target_type") || Map.get(ow, :target_type) || 0,
-          "allow" => Map.get(ow, "allow") || Map.get(ow, :allow) || 0,
-          "deny" => Map.get(ow, "deny") || Map.get(ow, :deny) || 0
+          "target_id" => target_id,
+          "target_type" => target_type,
+          "allow" => allow,
+          "deny" => deny
         }
       end)
 
@@ -367,6 +456,9 @@ defmodule Gateway.Guild.Cache do
 
       "GUILD_MEMBER_UPDATE" ->
         handle_member_update(event, payload)
+
+      "CHANNEL_CREATE" ->
+        handle_channel_create(event, payload)
 
       "CHANNEL_UPDATE" ->
         handle_channel_update(event, payload)
@@ -463,6 +555,46 @@ defmodule Gateway.Guild.Cache do
     :ok
   end
 
+  defp handle_channel_create(event, payload) do
+    channel = payload["channel"] || event["channel"] || payload
+    cid = to_string(channel["id"] || channel[:id])
+    gid = to_string(channel["guild_id"] || channel[:guild_id] || event["guild_id"] || payload["guild_id"])
+
+    if cid != "" and gid != "" do
+      chan_map = %{
+        "id" => cid,
+        "guild_id" => gid,
+        "name" => to_string(channel["name"] || channel[:name] || ""),
+        "type" => channel["type"] || channel[:type] || 0,
+        "position" => channel["position"] || channel[:position] || 0
+      }
+      put_channel(chan_map)
+
+      case get_guild(gid) do
+        {:ok, guild} ->
+          existing = Map.get(guild, "channels") || []
+          updated =
+            case Enum.find_index(existing, fn c -> to_string(c["id"]) == cid end) do
+              nil -> existing ++ [chan_map]
+              idx -> List.replace_at(existing, idx, chan_map)
+            end
+          put_guild(Map.put(guild, "channels", updated))
+
+        _ -> :ok
+      end
+
+      overwrites =
+        payload["permission_overwrites"] || event["permission_overwrites"] ||
+          payload["overwrites"] || event["overwrites"]
+
+      if is_list(overwrites) do
+        put_channel_overwrites(cid, overwrites)
+      end
+    end
+
+    :ok
+  end
+
   defp handle_channel_update(event, payload) do
     channel = payload["channel"] || event["channel"] || payload
     cid = to_string(channel["id"] || channel[:id])
@@ -471,6 +603,28 @@ defmodule Gateway.Guild.Cache do
     if cid != "" do
       if gid != "" do
         :ets.insert(@table, {{:channel, cid}, gid})
+      end
+
+      case get_channel(cid) do
+        {:ok, old_chan} ->
+          new_chan =
+            old_chan
+            |> Map.put("name", channel["name"] || old_chan["name"])
+            |> Map.put("type", channel["type"] || old_chan["type"])
+            |> Map.put("position", channel["position"] || old_chan["position"])
+
+          put_channel(new_chan)
+
+        _ ->
+          if gid != "" do
+            put_channel(%{
+              "id" => cid,
+              "guild_id" => gid,
+              "name" => to_string(channel["name"] || ""),
+              "type" => channel["type"] || 0,
+              "position" => channel["position"] || 0
+            })
+          end
       end
 
       overwrites =
@@ -488,10 +642,23 @@ defmodule Gateway.Guild.Cache do
   defp handle_channel_delete(event, payload) do
     channel = payload["channel"] || event["channel"] || payload
     cid = to_string(channel["id"] || channel[:id] || payload["channel_id"] || event["channel_id"])
+    gid = to_string(channel["guild_id"] || event["guild_id"] || payload["guild_id"])
 
     if cid != "" do
       :ets.delete(@table, {:channel, cid})
+      :ets.delete(@table, {:channel_meta, cid})
       :ets.delete(@table, {:channel_overwrites, cid})
+
+      if gid != "" do
+        case get_guild(gid) do
+          {:ok, guild} ->
+            existing = Map.get(guild, "channels") || []
+            updated = Enum.reject(existing, fn c -> to_string(c["id"]) == cid end)
+            put_guild(Map.put(guild, "channels", updated))
+
+          _ -> :ok
+        end
+      end
     end
 
     :ok
@@ -514,8 +681,13 @@ defmodule Gateway.Guild.Cache do
     gid = to_string(guild_id)
 
     Enum.each(channels, fn
-      %{"id" => channel_id} -> :ets.insert(@table, {{:channel, to_string(channel_id)}, gid})
-      _other -> :ok
+      %{"id" => channel_id} = chan ->
+        cid = to_string(channel_id)
+        :ets.insert(@table, {{:channel, cid}, gid})
+        :ets.insert(@table, {{:channel_meta, cid}, Map.put(chan, "guild_id", gid)})
+
+      _other ->
+        :ok
     end)
   end
 

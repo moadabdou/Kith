@@ -165,4 +165,28 @@ defmodule Gateway.Typing.BroadcasterTest do
     # No subscriber frames emitted
     refute_receive {:send_frame, %{"type" => "TYPING_START"}, _, _}, 100
   end
+
+  test "broadcast silently drops typing when user lacks VIEW_CHANNEL or SEND_MESSAGES" do
+    guild_id = "guild_perm_1"
+    channel_id = "chan_perm_1"
+    typer_id = "typer_denied"
+
+    seed_guild(guild_id, [channel_id])
+    Cache.put_member_guilds(typer_id, [guild_id])
+
+    # Explicitly set @everyone role with NO permissions (0)
+    Cache.put_guild_roles(guild_id, [
+      %{"id" => guild_id, "name" => "@everyone", "position" => 0, "permissions" => 0}
+    ])
+    Cache.put_member_roles(typer_id, guild_id, [])
+
+    # Denied: returns {:dropped, :missing_permissions}
+    assert {:dropped, :missing_permissions} = Broadcaster.broadcast(typer_id, channel_id)
+
+    # But guild owner can still type even with 0 permissions (owner bypass)
+    owner_id = "owner_#{guild_id}"
+    Cache.put_member_guilds(owner_id, [guild_id])
+    Cache.put_member_roles(owner_id, guild_id, [])
+    assert :ok = Broadcaster.broadcast(owner_id, channel_id)
+  end
 end

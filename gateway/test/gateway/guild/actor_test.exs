@@ -295,6 +295,155 @@ defmodule Gateway.Guild.ActorTest do
       # Verified: subscriber does NOT receive msg_2!
       refute_receive {:dispatch, ^msg_2, _}, 200
     end
+
+    test "CHANNEL_CREATE and MESSAGE_REACTION_ADD delivered only to subscribers with VIEW_CHANNEL" do
+      denied_receiver =
+        spawn_link(fn ->
+          receive do
+            msg -> send(self(), {:denied_got_msg, msg})
+          after
+            500 -> :ok
+          end
+        end)
+
+      :ok = Actor.subscribe(@fanout_guild, "sess-allowed-chan", self(), @allowed_uid)
+      :ok = Actor.subscribe(@fanout_guild, "sess-denied-chan", denied_receiver, @denied_uid)
+
+      # 1. CHANNEL_CREATE for a secret channel
+      new_chan_id = "99900000000000097"
+      # Overwrite restricting view to VIP role
+      create_event = %{
+        "type" => "CHANNEL_CREATE",
+        "guild_id" => @fanout_guild,
+        "payload" => %{
+          "id" => new_chan_id,
+          "guild_id" => @fanout_guild,
+          "name" => "super-secret",
+          "type" => 0,
+          "permission_overwrites" => [
+            %{"id" => @fanout_guild, "type" => 0, "allow" => 0, "deny" => Permissions.view_channel()},
+            %{"id" => @vip_role, "type" => 0, "allow" => Permissions.view_channel(), "deny" => 0}
+          ]
+        }
+      }
+
+      Actor.dispatch_event(@fanout_guild, create_event)
+
+      # Allowed subscriber receives CHANNEL_CREATE
+      assert_receive {:dispatch, ^create_event, _}, 500
+
+      # Denied subscriber receives nothing (no leak of secret channel)
+      refute_receive {:denied_got_msg, _}, 100
+
+      # 2. MESSAGE_REACTION_ADD on the secret channel
+      reaction_event = %{
+        "type" => "MESSAGE_REACTION_ADD",
+        "guild_id" => @fanout_guild,
+        "payload" => %{
+          "channel_id" => new_chan_id,
+          "message_id" => "msg-react-1",
+          "user_id" => @allowed_uid,
+          "emoji" => %{"name" => "🔥"}
+        }
+      }
+
+      Actor.dispatch_event(@fanout_guild, reaction_event)
+
+      assert_receive {:dispatch, ^reaction_event, _}, 500
+      refute_receive {:denied_got_msg, _}, 100
+    end
+
+    test "CHANNEL_UPDATE emitting synthetic CHANNEL_DELETE on revoked access and CHANNEL_CREATE on gained access" do
+      # Subscriber starts with VIP role allowing access to @fanout_chan
+      :ok = Actor.subscribe(@fanout_guild, "sess-trans-1", self(), @allowed_uid)
+
+      # Deny overwrite added for @allowed_uid on @fanout_chan
+      deny_update_event = %{
+        "type" => "CHANNEL_UPDATE",
+        "guild_id" => @fanout_guild,
+        "payload" => %{
+          "id" => @fanout_chan,
+          "guild_id" => @fanout_guild,
+          "name" => "restricted-chat",
+          "type" => 0,
+          "permission_overwrites" => [
+            %{"id" => @allowed_uid, "type" => 1, "allow" => 0, "deny" => Permissions.view_channel()}
+          ]
+        }
+      }
+
+      Actor.dispatch_event(@fanout_guild, deny_update_event)
+
+      # Subscriber receives synthetic CHANNEL_DELETE!
+      assert_receive {:dispatch, %{"type" => "CHANNEL_DELETE", "payload" => %{"id" => @fanout_chan}}, _}, 500
+
+      # Subsequent messages on this channel are not received
+      msg = %{
+        "type" => "MESSAGE_CREATE",
+        "guild_id" => @fanout_guild,
+        "payload" => %{"id" => "m1", "channel_id" => @fanout_chan, "content" => "hi"}
+      }
+      Actor.dispatch_event(@fanout_guild, msg)
+      refute_receive {:dispatch, ^msg, _}, 100
+
+      # Now restore access via CHANNEL_UPDATE removing the deny overwrite
+      allow_update_event = %{
+        "type" => "CHANNEL_UPDATE",
+        "guild_id" => @fanout_guild,
+        "payload" => %{
+          "id" => @fanout_chan,
+          "guild_id" => @fanout_guild,
+          "name" => "restricted-chat",
+          "type" => 0,
+          "permission_overwrites" => []
+        }
+      }
+
+      Actor.dispatch_event(@fanout_guild, allow_update_event)
+
+      # Subscriber receives synthetic CHANNEL_CREATE!
+      assert_receive {:dispatch, %{"type" => "CHANNEL_CREATE", "payload" => %{"id" => @fanout_chan}}, _}, 500
+    end
+
+    test "GUILD_MEMBER_UPDATE emitting synthetic CHANNEL_DELETE on role loss and CHANNEL_CREATE on role gain" do
+      # Subscriber starts with VIP role allowing access to @fanout_chan
+      :ok = Actor.subscribe(@fanout_guild, "sess-trans-member", self(), @allowed_uid)
+
+      # Member loses VIP role
+      role_revoke_event = %{
+        "type" => "GUILD_MEMBER_UPDATE",
+        "guild_id" => @fanout_guild,
+        "payload" => %{
+          "guild_id" => @fanout_guild,
+          "user" => %{"id" => @allowed_uid},
+          "roles" => []
+        }
+      }
+
+      Actor.dispatch_event(@fanout_guild, role_revoke_event)
+
+      # Subscriber receives the GUILD_MEMBER_UPDATE event
+      assert_receive {:dispatch, %{"type" => "GUILD_MEMBER_UPDATE"}, _}, 500
+
+      # Subscriber also receives synthetic CHANNEL_DELETE for @fanout_chan
+      assert_receive {:dispatch, %{"type" => "CHANNEL_DELETE", "payload" => %{"id" => @fanout_chan}}, _}, 500
+
+      # Member regains VIP role
+      role_grant_event = %{
+        "type" => "GUILD_MEMBER_UPDATE",
+        "guild_id" => @fanout_guild,
+        "payload" => %{
+          "guild_id" => @fanout_guild,
+          "user" => %{"id" => @allowed_uid},
+          "roles" => [@vip_role]
+        }
+      }
+
+      Actor.dispatch_event(@fanout_guild, role_grant_event)
+
+      assert_receive {:dispatch, %{"type" => "GUILD_MEMBER_UPDATE"}, _}, 500
+      assert_receive {:dispatch, %{"type" => "CHANNEL_CREATE", "payload" => %{"id" => @fanout_chan}}, _}, 500
+    end
   end
 
   defp eventually(assertion_fn, attempts \\ 20, delay_ms \\ 10) do

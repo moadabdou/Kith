@@ -170,7 +170,23 @@ defmodule Gateway.Guild.Actor do
 
     ref = Process.monitor(pid)
 
-    subscribers = Map.put(state.subscribers, session_id, {pid, user_id})
+    uid =
+      if user_id && user_id != "" do
+        to_string(user_id)
+      else
+        case Gateway.Guild.Cache.get_session_user(session_id) do
+          {:ok, u} -> to_string(u)
+          _ -> nil
+        end
+      end
+
+    sub_info = %{
+      pid: pid,
+      user_id: uid,
+      channels: if(uid, do: compute_visible_channels(uid, state.guild_id), else: nil)
+    }
+
+    subscribers = Map.put(state.subscribers, session_id, sub_info)
     subscriber_refs = Map.put(subscriber_refs, ref, session_id)
 
     {:reply, :ok, %{state | subscribers: subscribers, subscriber_refs: subscriber_refs, ttl_timer: nil}}
@@ -203,6 +219,7 @@ defmodule Gateway.Guild.Actor do
   def handle_call(:subscribers, _from, state) do
     list =
       Enum.map(state.subscribers, fn
+        {sid, %{pid: pid}} -> {sid, pid}
         {sid, {pid, _uid}} -> {sid, pid}
         {sid, pid} when is_pid(pid) -> {sid, pid}
       end)
@@ -214,69 +231,450 @@ defmodule Gateway.Guild.Actor do
     {:reply, map_size(state.subscribers), state}
   end
 
-  @channel_scoped_events ["MESSAGE_CREATE", "MESSAGE_UPDATE", "MESSAGE_DELETE", "TYPING_START"]
+  @channel_scoped_events [
+    "MESSAGE_CREATE",
+    "MESSAGE_UPDATE",
+    "MESSAGE_DELETE",
+    "TYPING_START",
+    "CHANNEL_CREATE",
+    "CHANNEL_UPDATE",
+    "MESSAGE_REACTION_ADD",
+    "MESSAGE_REACTION_REMOVE",
+    "MESSAGE_REACTION_REMOVE_ALL",
+    "MESSAGE_REACTION_REMOVE_EMOJI"
+  ]
 
   @impl true
   def handle_cast({:dispatch_event, event, bus_received_at}, state) do
     type = event["type"] || "UNKNOWN"
 
-    if type in @channel_scoped_events do
-      channel_id = extract_channel_id(event)
+    state =
+      case type do
+        "CHANNEL_UPDATE" ->
+          handle_channel_update_dispatch(event, bus_received_at, state)
 
-      Enum.each(state.subscribers, fn {session_id, sub} ->
-        {pid, user_id} = normalize_subscriber(session_id, sub)
+        "CHANNEL_CREATE" ->
+          handle_channel_create_dispatch(event, bus_received_at, state)
+
+        "CHANNEL_DELETE" ->
+          handle_channel_delete_dispatch(event, bus_received_at, state)
+
+        "GUILD_MEMBER_UPDATE" ->
+          handle_guild_member_update_dispatch(event, bus_received_at, state)
+
+        "GUILD_ROLE_UPDATE" ->
+          handle_guild_role_change_dispatch(event, bus_received_at, state)
+
+        "GUILD_ROLE_DELETE" ->
+          handle_guild_role_change_dispatch(event, bus_received_at, state)
+
+        _ ->
+          if type in @channel_scoped_events do
+            handle_channel_scoped_dispatch(event, bus_received_at, state)
+          else
+            handle_broadcast_dispatch(event, bus_received_at, state)
+          end
+
+          state
+      end
+
+    {:noreply, state}
+  end
+
+  defp handle_channel_update_dispatch(event, bus_received_at, state) do
+    channel_id = extract_channel_id(event)
+
+    # Snapshot existing visible channels before mutating ETS cache
+    normalized_subscribers =
+      Enum.map(state.subscribers, fn {session_id, sub} ->
+        {session_id, normalize_subscriber(session_id, sub, state.guild_id)}
+      end)
+
+    # Update ETS cache with the channel update (including new permission overwrites)
+    Gateway.Guild.Cache.handle_event(event)
+
+    new_subscribers =
+      Enum.reduce(normalized_subscribers, state.subscribers, fn {session_id, {pid, user_id, visible_channels}}, acc ->
+        if channel_id do
+          was_visible = MapSet.member?(visible_channels, channel_id)
+          is_visible_now = can_subscriber_view?(user_id, channel_id, state.guild_id)
+
+          cond do
+            was_visible and not is_visible_now ->
+              # Revoked: dispatch synthetic CHANNEL_DELETE
+              synthetic_delete = %{
+                "type" => "CHANNEL_DELETE",
+                "guild_id" => state.guild_id,
+                "payload" => %{
+                  "id" => channel_id,
+                  "guild_id" => state.guild_id
+                }
+              }
+
+              send(pid, {:dispatch, synthetic_delete, bus_received_at})
+
+              updated_sub = %{
+                pid: pid,
+                user_id: user_id,
+                channels: MapSet.delete(visible_channels, channel_id)
+              }
+
+              Map.put(acc, session_id, updated_sub)
+
+            not was_visible and is_visible_now ->
+              # Gained: dispatch synthetic CHANNEL_CREATE
+              synthetic_create = build_synthetic_channel_create(channel_id, state.guild_id, event)
+              send(pid, {:dispatch, synthetic_create, bus_received_at})
+
+              updated_sub = %{
+                pid: pid,
+                user_id: user_id,
+                channels: MapSet.put(visible_channels, channel_id)
+              }
+
+              Map.put(acc, session_id, updated_sub)
+
+            was_visible and is_visible_now ->
+              # Maintained access: dispatch standard CHANNEL_UPDATE
+              send(pid, {:dispatch, event, bus_received_at})
+              acc
+
+            true ->
+              # Neither visible before nor now: suppress
+              acc
+          end
+        else
+          send(pid, {:dispatch, event, bus_received_at})
+          acc
+        end
+      end)
+
+    %{state | subscribers: new_subscribers}
+  end
+
+  defp handle_channel_create_dispatch(event, bus_received_at, state) do
+    Gateway.Guild.Cache.handle_event(event)
+    channel_id = extract_channel_id(event)
+
+    new_subscribers =
+      Enum.reduce(state.subscribers, state.subscribers, fn {session_id, sub}, acc ->
+        {pid, user_id, visible_channels} = normalize_subscriber(session_id, sub, state.guild_id)
 
         if can_subscriber_view?(user_id, channel_id, state.guild_id) do
           send(pid, {:dispatch, event, bus_received_at})
+
+          updated_sub = %{
+            pid: pid,
+            user_id: user_id,
+            channels: if(channel_id, do: MapSet.put(visible_channels, channel_id), else: visible_channels)
+          }
+
+          Map.put(acc, session_id, updated_sub)
+        else
+          acc
         end
       end)
-    else
-      Enum.each(state.subscribers, fn {_session_id, sub} ->
-        pid =
-          case sub do
-            {p, _uid} -> p
-            p when is_pid(p) -> p
-          end
 
-        send(pid, {:dispatch, event, bus_received_at})
+    %{state | subscribers: new_subscribers}
+  end
+
+  defp handle_channel_delete_dispatch(event, bus_received_at, state) do
+    channel_id = extract_channel_id(event)
+
+    new_subscribers =
+      Enum.reduce(state.subscribers, state.subscribers, fn {session_id, sub}, acc ->
+        {pid, user_id, visible_channels} = normalize_subscriber(session_id, sub, state.guild_id)
+
+        if MapSet.member?(visible_channels, channel_id) or
+             can_subscriber_view?(user_id, channel_id, state.guild_id) do
+          send(pid, {:dispatch, event, bus_received_at})
+
+          updated_sub = %{
+            pid: pid,
+            user_id: user_id,
+            channels: if(channel_id, do: MapSet.delete(visible_channels, channel_id), else: visible_channels)
+          }
+
+          Map.put(acc, session_id, updated_sub)
+        else
+          acc
+        end
       end)
-    end
 
-    {:noreply, state}
+    Gateway.Guild.Cache.handle_event(event)
+    %{state | subscribers: new_subscribers}
+  end
+
+  defp handle_guild_member_update_dispatch(event, bus_received_at, state) do
+    target_uid = extract_user_id(event)
+
+    normalized_subscribers =
+      Enum.map(state.subscribers, fn {session_id, sub} ->
+        {session_id, normalize_subscriber(session_id, sub, state.guild_id)}
+      end)
+
+    Gateway.Guild.Cache.handle_event(event)
+    guild_channels = Gateway.Guild.Cache.list_guild_channels(state.guild_id)
+
+    new_subscribers =
+      Enum.reduce(normalized_subscribers, state.subscribers, fn {session_id, {pid, user_id, visible_channels}}, acc ->
+        # Non-channel event: dispatch to all subscribers
+        send(pid, {:dispatch, event, bus_received_at})
+
+        if user_id == target_uid and target_uid != "" do
+          updated_channels =
+            Enum.reduce(guild_channels, visible_channels, fn chan, chans_acc ->
+              cid = to_string(chan["id"] || chan[:id])
+              was_visible = MapSet.member?(chans_acc, cid)
+              is_visible_now = can_subscriber_view?(user_id, cid, state.guild_id)
+
+              cond do
+                was_visible and not is_visible_now ->
+                  synthetic_delete = %{
+                    "type" => "CHANNEL_DELETE",
+                    "guild_id" => state.guild_id,
+                    "payload" => %{
+                      "id" => cid,
+                      "guild_id" => state.guild_id
+                    }
+                  }
+
+                  send(pid, {:dispatch, synthetic_delete, bus_received_at})
+                  MapSet.delete(chans_acc, cid)
+
+                not was_visible and is_visible_now ->
+                  synthetic_create = build_synthetic_channel_create(cid, state.guild_id, nil)
+                  send(pid, {:dispatch, synthetic_create, bus_received_at})
+                  MapSet.put(chans_acc, cid)
+
+                true ->
+                  chans_acc
+              end
+            end)
+
+          updated_sub = %{
+            pid: pid,
+            user_id: user_id,
+            channels: updated_channels
+          }
+
+          Map.put(acc, session_id, updated_sub)
+        else
+          acc
+        end
+      end)
+
+    %{state | subscribers: new_subscribers}
+  end
+
+  defp handle_guild_role_change_dispatch(event, bus_received_at, state) do
+    normalized_subscribers =
+      Enum.map(state.subscribers, fn {session_id, sub} ->
+        {session_id, normalize_subscriber(session_id, sub, state.guild_id)}
+      end)
+
+    Gateway.Guild.Cache.handle_event(event)
+    guild_channels = Gateway.Guild.Cache.list_guild_channels(state.guild_id)
+
+    new_subscribers =
+      Enum.reduce(normalized_subscribers, state.subscribers, fn {session_id, {pid, user_id, visible_channels}}, acc ->
+        # Broadcast role event to subscriber
+        send(pid, {:dispatch, event, bus_received_at})
+
+        if user_id do
+          updated_channels =
+            Enum.reduce(guild_channels, visible_channels, fn chan, chans_acc ->
+              cid = to_string(chan["id"] || chan[:id])
+              was_visible = MapSet.member?(chans_acc, cid)
+              is_visible_now = can_subscriber_view?(user_id, cid, state.guild_id)
+
+              cond do
+                was_visible and not is_visible_now ->
+                  synthetic_delete = %{
+                    "type" => "CHANNEL_DELETE",
+                    "guild_id" => state.guild_id,
+                    "payload" => %{
+                      "id" => cid,
+                      "guild_id" => state.guild_id
+                    }
+                  }
+
+                  send(pid, {:dispatch, synthetic_delete, bus_received_at})
+                  MapSet.delete(chans_acc, cid)
+
+                not was_visible and is_visible_now ->
+                  synthetic_create = build_synthetic_channel_create(cid, state.guild_id, nil)
+                  send(pid, {:dispatch, synthetic_create, bus_received_at})
+                  MapSet.put(chans_acc, cid)
+
+                true ->
+                  chans_acc
+              end
+            end)
+
+          updated_sub = %{
+            pid: pid,
+            user_id: user_id,
+            channels: updated_channels
+          }
+
+          Map.put(acc, session_id, updated_sub)
+        else
+          acc
+        end
+      end)
+
+    %{state | subscribers: new_subscribers}
+  end
+
+  defp handle_channel_scoped_dispatch(event, bus_received_at, state) do
+    channel_id = extract_channel_id(event)
+
+    Enum.each(state.subscribers, fn {session_id, sub} ->
+      {pid, user_id, _visible_channels} = normalize_subscriber(session_id, sub, state.guild_id)
+
+      if can_subscriber_view?(user_id, channel_id, state.guild_id) do
+        send(pid, {:dispatch, event, bus_received_at})
+      end
+    end)
+  end
+
+  defp handle_broadcast_dispatch(event, bus_received_at, state) do
+    Enum.each(state.subscribers, fn {_session_id, sub} ->
+      pid =
+        case sub do
+          %{pid: p} -> p
+          {p, _uid} -> p
+          p when is_pid(p) -> p
+        end
+
+      send(pid, {:dispatch, event, bus_received_at})
+    end)
+  end
+
+  defp build_synthetic_channel_create(channel_id, guild_id, fallback_event) do
+    cid = to_string(channel_id)
+    gid = to_string(guild_id)
+
+    channel_data =
+      case Gateway.Guild.Cache.get_channel(cid) do
+        {:ok, chan} ->
+          chan
+
+        _ ->
+          event_payload =
+            if fallback_event do
+              payload = Map.get(fallback_event, "payload") || %{}
+              payload["channel"] || fallback_event["channel"] || payload
+            else
+              %{}
+            end
+
+          %{
+            "id" => cid,
+            "guild_id" => gid,
+            "name" => to_string(event_payload["name"] || event_payload[:name] || "channel"),
+            "type" => event_payload["type"] || event_payload[:type] || 0,
+            "position" => event_payload["position"] || event_payload[:position] || 0
+          }
+      end
+
+    overwrites =
+      case Gateway.Guild.Cache.get_channel_overwrites(cid) do
+        {:ok, ow} -> ow
+        _ -> []
+      end
+
+    payload =
+      channel_data
+      |> Map.put("id", cid)
+      |> Map.put("guild_id", gid)
+      |> Map.put("permission_overwrites", overwrites)
+
+    %{
+      "type" => "CHANNEL_CREATE",
+      "guild_id" => gid,
+      "payload" => payload
+    }
   end
 
   defp extract_channel_id(event) do
     payload = Map.get(event, "payload") || %{}
     message = Map.get(payload, "message") || Map.get(event, "message") || %{}
+    channel = Map.get(payload, "channel") || Map.get(event, "channel") || %{}
+    type = event["type"] || ""
 
-    event["channel_id"] ||
-      payload["channel_id"] ||
-      message["channel_id"] ||
-      get_in(event, ["d", "channel_id"])
+    cid =
+      event["channel_id"] ||
+        payload["channel_id"] ||
+        message["channel_id"] ||
+        channel["id"] ||
+        channel[:id] ||
+        get_in(event, ["d", "channel_id"]) ||
+        if(type in ["CHANNEL_CREATE", "CHANNEL_UPDATE", "CHANNEL_DELETE"],
+          do: payload["id"] || payload[:id] || event["id"] || event[:id],
+          else: nil
+        )
+
+    case cid do
+      nil -> nil
+      "" -> nil
+      id -> to_string(id)
+    end
   end
 
-  defp normalize_subscriber(session_id, {pid, user_id}) do
+  defp extract_user_id(event) do
+    payload = Map.get(event, "payload") || %{}
+    user = payload["user"] || event["user"] || %{}
+    uid = user["id"] || user[:id] || payload["user_id"] || event["user_id"]
+    if uid, do: to_string(uid), else: ""
+  end
+
+  defp normalize_subscriber(session_id, %{pid: pid, user_id: user_id, channels: channels}, guild_id) do
     uid =
       if user_id && user_id != "" do
-        user_id
+        to_string(user_id)
       else
         case Gateway.Guild.Cache.get_session_user(session_id) do
-          {:ok, u} -> u
+          {:ok, u} -> to_string(u)
           _ -> nil
         end
       end
 
-    {pid, uid}
-  end
+    chans =
+      cond do
+        channels != nil ->
+          channels
 
-  defp normalize_subscriber(session_id, pid) when is_pid(pid) do
-    uid =
-      case Gateway.Guild.Cache.get_session_user(session_id) do
-        {:ok, u} -> u
-        _ -> nil
+        uid != nil ->
+          compute_visible_channels(uid, guild_id)
+
+        true ->
+          MapSet.new()
       end
 
-    {pid, uid}
+    {pid, uid, chans}
+  end
+
+  defp normalize_subscriber(session_id, {pid, user_id}, guild_id) do
+    normalize_subscriber(session_id, %{pid: pid, user_id: user_id, channels: nil}, guild_id)
+  end
+
+  defp normalize_subscriber(session_id, pid, guild_id) when is_pid(pid) do
+    normalize_subscriber(session_id, %{pid: pid, user_id: nil, channels: nil}, guild_id)
+  end
+
+  defp compute_visible_channels(nil, _guild_id), do: MapSet.new()
+
+  defp compute_visible_channels(user_id, guild_id) do
+    guild_id
+    |> Gateway.Guild.Cache.list_guild_channels()
+    |> Enum.filter(fn chan ->
+      cid = to_string(chan["id"] || chan[:id])
+      can_subscriber_view?(user_id, cid, guild_id)
+    end)
+    |> Enum.map(fn chan -> to_string(chan["id"] || chan[:id]) end)
+    |> MapSet.new()
   end
 
   defp can_subscriber_view?(nil, _channel_id, _guild_id), do: false

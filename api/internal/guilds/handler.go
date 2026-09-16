@@ -555,3 +555,172 @@ func parsePermissions(val any) (*int64, error) {
 		return nil, errors.New("invalid permissions")
 	}
 }
+
+func parseBitfield(val any) (uint64, error) {
+	if val == nil {
+		return 0, nil
+	}
+	switch v := val.(type) {
+	case float64:
+		if v < 0 {
+			return 0, errors.New("negative bitfield")
+		}
+		return uint64(v), nil
+	case string:
+		if v == "" {
+			return 0, nil
+		}
+		return strconv.ParseUint(v, 10, 64)
+	case json.Number:
+		i, err := v.Int64()
+		if err != nil || i < 0 {
+			return 0, errors.New("invalid bitfield")
+		}
+		return uint64(i), nil
+	default:
+		return 0, errors.New("invalid bitfield")
+	}
+}
+
+// AssignMemberRole handles PUT /api/guilds/{id}/members/{uid}/roles/{rid}.
+func (h *Handler) AssignMemberRole(w http.ResponseWriter, r *http.Request) {
+	gid, ok := pathID(r, "id")
+	if !ok {
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad guild id"))
+		return
+	}
+	uid, ok := pathID(r, "uid")
+	if !ok {
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad user id"))
+		return
+	}
+	rid, ok := pathID(r, "rid")
+	if !ok {
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad role id"))
+		return
+	}
+	if err := h.Svc.AssignMemberRole(r.Context(), mustUser(r), gid, uid, rid); err != nil {
+		h.writeErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// UnassignMemberRole handles DELETE /api/guilds/{id}/members/{uid}/roles/{rid}.
+func (h *Handler) UnassignMemberRole(w http.ResponseWriter, r *http.Request) {
+	gid, ok := pathID(r, "id")
+	if !ok {
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad guild id"))
+		return
+	}
+	uid, ok := pathID(r, "uid")
+	if !ok {
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad user id"))
+		return
+	}
+	rid, ok := pathID(r, "rid")
+	if !ok {
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad role id"))
+		return
+	}
+	if err := h.Svc.UnassignMemberRole(r.Context(), mustUser(r), gid, uid, rid); err != nil {
+		h.writeErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// SetChannelOverwrite handles PUT /api/channels/{id}/permissions/{target_id}.
+func (h *Handler) SetChannelOverwrite(w http.ResponseWriter, r *http.Request) {
+	cid, ok := pathID(r, "id")
+	if !ok {
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad channel id"))
+		return
+	}
+	targetID, ok := pathID(r, "target_id")
+	if !ok {
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad target id"))
+		return
+	}
+	var req struct {
+		Type  int `json:"type"`
+		Allow any `json:"allow"`
+		Deny  any `json:"deny"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errs.Write(w, errs.InvalidJSON())
+		return
+	}
+	v := errs.NewValidator()
+	v.Check("type", req.Type == 0 || req.Type == 1, errs.CodeInvalidType, "type must be 0 (role) or 1 (member)")
+	allow, err := parseBitfield(req.Allow)
+	if err != nil {
+		v.Check("allow", false, errs.CodeInvalidType, "invalid allow bitfield")
+	}
+	deny, err := parseBitfield(req.Deny)
+	if err != nil {
+		v.Check("deny", false, errs.CodeInvalidType, "invalid deny bitfield")
+	}
+	if v.Err() != nil {
+		errs.Write(w, v.Err())
+		return
+	}
+
+	if err := h.Svc.SetChannelOverwrite(r.Context(), mustUser(r), cid, targetID, int16(req.Type), allow, deny); err != nil {
+		h.writeErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// DeleteChannelOverwrite handles DELETE /api/channels/{id}/permissions/{target_id}.
+func (h *Handler) DeleteChannelOverwrite(w http.ResponseWriter, r *http.Request) {
+	cid, ok := pathID(r, "id")
+	if !ok {
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad channel id"))
+		return
+	}
+	targetID, ok := pathID(r, "target_id")
+	if !ok {
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad target id"))
+		return
+	}
+	if err := h.Svc.DeleteChannelOverwrite(r.Context(), mustUser(r), cid, targetID); err != nil {
+		h.writeErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ListChannelOverwrites handles GET /api/channels/{id}/permissions.
+func (h *Handler) ListChannelOverwrites(w http.ResponseWriter, r *http.Request) {
+	cid, ok := pathID(r, "id")
+	if !ok {
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad channel id"))
+		return
+	}
+	overwrites, err := h.Svc.ListChannelOverwrites(r.Context(), mustUser(r), cid)
+	if err != nil {
+		h.writeErr(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, overwrites)
+}
+
+// GetMyPermissions handles GET /api/guilds/{id}/permissions/me.
+func (h *Handler) GetMyPermissions(w http.ResponseWriter, r *http.Request) {
+	gid, ok := pathID(r, "id")
+	if !ok {
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad guild id"))
+		return
+	}
+	perms, err := h.Svc.GetMyPermissions(r.Context(), mustUser(r), gid)
+	if err != nil {
+		h.writeErr(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]string{
+		"permissions": strconv.FormatUint(perms, 10),
+	})
+}
+

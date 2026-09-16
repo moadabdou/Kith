@@ -240,11 +240,16 @@ func main() {
 	mux.Handle("POST /api/guilds/{id}/channels", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.CreateChannel)))
 	mux.Handle("PATCH /api/guilds/{id}/channels/{cid}", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.UpdateChannel)))
 	mux.Handle("DELETE /api/guilds/{id}/channels/{cid}", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.DeleteChannel)))
+	mux.Handle("GET /api/channels/{id}/permissions", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.ListChannelOverwrites)))
+	mux.Handle("PUT /api/channels/{id}/permissions/{target_id}", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.SetChannelOverwrite)))
+	mux.Handle("DELETE /api/channels/{id}/permissions/{target_id}", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.DeleteChannelOverwrite)))
 
 	// members
 	mux.Handle("GET /api/guilds/{id}/members", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.ListMembers)))
 	mux.Handle("PUT /api/guilds/{id}/members/{uid}", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.AddMember)))
 	mux.Handle("DELETE /api/guilds/{id}/members/{uid}", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.RemoveMember)))
+	mux.Handle("PUT /api/guilds/{id}/members/{uid}/roles/{rid}", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.AssignMemberRole)))
+	mux.Handle("DELETE /api/guilds/{id}/members/{uid}/roles/{rid}", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.UnassignMemberRole)))
 
 	// invites
 	mux.Handle("POST /api/invites", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.CreateInvite)))
@@ -255,6 +260,7 @@ func main() {
 	mux.Handle("POST /api/guilds/{id}/roles", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.CreateRole)))
 	mux.Handle("PATCH /api/guilds/{id}/roles/{rid}", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.UpdateRole)))
 	mux.Handle("DELETE /api/guilds/{id}/roles/{rid}", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.DeleteRole)))
+	mux.Handle("GET /api/guilds/{id}/permissions/me", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.GetMyPermissions)))
 
 	// messages — the hot path.
 	// POST /messages rate limit: 5/5s per (user, channel), Discord's model

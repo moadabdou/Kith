@@ -794,3 +794,348 @@ func TestMemberLifecycleEvents(t *testing.T) {
 		t.Errorf("unknown remove published %d REMOVE events total, want 1", got)
 	}
 }
+
+func TestMemberRoleAssignments(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	var b [4]byte
+	rand.Read(b[:])
+	prefix := "t" + hex.EncodeToString(b[:])
+	t.Cleanup(func() {
+		db.Exec("DELETE FROM guilds WHERE name LIKE $1", prefix+"%")
+		db.Exec("DELETE FROM users WHERE username LIKE $1", prefix+"%")
+		db.Close()
+	})
+	node, _ := snowflake.NewNode(996)
+	pub := &recordingPublisher{}
+	svc := NewService(db, node, pub)
+	ctx := context.Background()
+
+	owner := createTestUser(t, db, node, prefix, "_own")
+	modUser := createTestUser(t, db, node, prefix, "_mod")
+	memberUser := createTestUser(t, db, node, prefix, "_mem")
+	seniorModUser := createTestUser(t, db, node, prefix, "_srmod")
+
+	g, err := svc.CreateGuild(ctx, owner, prefix+"-roles-guild")
+	if err != nil {
+		t.Fatalf("CreateGuild: %v", err)
+	}
+	gid, _ := snowflake.Parse(g.ID)
+
+	for _, u := range []int64{modUser, memberUser, seniorModUser} {
+		if err := svc.AddMember(ctx, owner, gid, u); err != nil {
+			t.Fatalf("AddMember: %v", err)
+		}
+	}
+
+	// Create roles
+	// SeniorMod (pos 20)
+	srPerms := int64(permissions.MANAGE_ROLES | permissions.VIEW_CHANNEL)
+	srRole, err := svc.CreateRole(ctx, owner, gid, "SeniorMod", nil, nil, int32Ptr(20), &srPerms, nil)
+	if err != nil {
+		t.Fatalf("CreateRole(SeniorMod): %v", err)
+	}
+	srRoleID, _ := snowflake.Parse(srRole.ID)
+
+	// Mod (pos 10)
+	modPerms := int64(permissions.MANAGE_ROLES | permissions.VIEW_CHANNEL)
+	modRole, err := svc.CreateRole(ctx, owner, gid, "Mod", nil, nil, int32Ptr(10), &modPerms, nil)
+	if err != nil {
+		t.Fatalf("CreateRole(Mod): %v", err)
+	}
+	modRoleID, _ := snowflake.Parse(modRole.ID)
+
+	// VIP (pos 5)
+	vipPerms := int64(permissions.VIEW_CHANNEL)
+	vipRole, err := svc.CreateRole(ctx, owner, gid, "VIP", nil, nil, int32Ptr(5), &vipPerms, nil)
+	if err != nil {
+		t.Fatalf("CreateRole(VIP): %v", err)
+	}
+	vipRoleID, _ := snowflake.Parse(vipRole.ID)
+
+	// Assign roles using Owner
+	if err := svc.AssignMemberRole(ctx, owner, gid, seniorModUser, srRoleID); err != nil {
+		t.Fatalf("Owner AssignMemberRole(SeniorMod): %v", err)
+	}
+	if err := svc.AssignMemberRole(ctx, owner, gid, modUser, modRoleID); err != nil {
+		t.Fatalf("Owner AssignMemberRole(Mod): %v", err)
+	}
+
+	// 1. Mod assigns VIP (pos 5 < 10) to memberUser -> succeeds
+	if err := svc.AssignMemberRole(ctx, modUser, gid, memberUser, vipRoleID); err != nil {
+		t.Fatalf("Mod AssignMemberRole(VIP): %v", err)
+	}
+
+	// Verify memberUser now has VIP role in DB
+	var hasVIP bool
+	err = db.QueryRow(`SELECT EXISTS(SELECT 1 FROM member_roles WHERE guild_id = $1 AND user_id = $2 AND role_id = $3)`,
+		gid, memberUser, vipRoleID).Scan(&hasVIP)
+	if err != nil || !hasVIP {
+		t.Fatalf("expected memberUser to have VIP role, err: %v", err)
+	}
+
+	// Check GUILD_MEMBER_UPDATE event was published
+	updates := pub.ofType(eventTypeGuildMemberUpdate)
+	if len(updates) == 0 {
+		t.Fatal("expected at least 1 GUILD_MEMBER_UPDATE event")
+	}
+	lastUpdate := updates[len(updates)-1]
+	if lastUpdate.GuildID != g.ID {
+		t.Errorf("event guild_id = %s, want %s", lastUpdate.GuildID, g.ID)
+	}
+	payload, ok := lastUpdate.Payload.(memberUpdateEventPayload)
+	if !ok {
+		t.Fatalf("expected memberUpdateEventPayload, got %T", lastUpdate.Payload)
+	}
+	if payload.User.ID != fmt.Sprint(memberUser) {
+		t.Errorf("payload user = %s, want %d", payload.User.ID, memberUser)
+	}
+	if len(payload.Roles) != 1 || payload.Roles[0] != vipRole.ID {
+		t.Errorf("payload roles = %+v, want [%s]", payload.Roles, vipRole.ID)
+	}
+
+	// 2. Mod attempts to assign Mod role (pos 10 >= 10) to memberUser -> rejected
+	if err := svc.AssignMemberRole(ctx, modUser, gid, memberUser, modRoleID); !errors.Is(err, ErrMissingPermissions) {
+		t.Errorf("Mod assign ModRole = %v, want ErrMissingPermissions", err)
+	}
+
+	// 3. Mod attempts to assign SeniorMod role (pos 20 >= 10) to memberUser -> rejected
+	if err := svc.AssignMemberRole(ctx, modUser, gid, memberUser, srRoleID); !errors.Is(err, ErrMissingPermissions) {
+		t.Errorf("Mod assign SeniorMod = %v, want ErrMissingPermissions", err)
+	}
+
+	// 4. Mod attempts to assign role to seniorModUser (target highest pos 20 >= mod highest pos 10) -> rejected
+	if err := svc.AssignMemberRole(ctx, modUser, gid, seniorModUser, vipRoleID); !errors.Is(err, ErrMissingPermissions) {
+		t.Errorf("Mod assign role to SeniorModUser = %v, want ErrMissingPermissions", err)
+	}
+
+	// 5. Mod attempts to assign @everyone (roleID == gid) -> rejected
+	if err := svc.AssignMemberRole(ctx, modUser, gid, memberUser, gid); !errors.Is(err, ErrMissingPermissions) {
+		t.Errorf("Mod assign @everyone = %v, want ErrMissingPermissions", err)
+	}
+
+	// 6. Mod unassigns VIP role from memberUser -> succeeds
+	if err := svc.UnassignMemberRole(ctx, modUser, gid, memberUser, vipRoleID); err != nil {
+		t.Fatalf("Mod UnassignMemberRole(VIP): %v", err)
+	}
+	err = db.QueryRow(`SELECT EXISTS(SELECT 1 FROM member_roles WHERE guild_id = $1 AND user_id = $2 AND role_id = $3)`,
+		gid, memberUser, vipRoleID).Scan(&hasVIP)
+	if err != nil || hasVIP {
+		t.Fatalf("expected memberUser to no longer have VIP role, err: %v", err)
+	}
+
+	// 7. Mod attempts to unassign @everyone -> rejected
+	if err := svc.UnassignMemberRole(ctx, modUser, gid, memberUser, gid); !errors.Is(err, ErrMissingPermissions) {
+		t.Errorf("Mod unassign @everyone = %v, want ErrMissingPermissions", err)
+	}
+
+	// 8. Mod attempts to unassign role from seniorModUser -> rejected
+	if err := svc.UnassignMemberRole(ctx, modUser, gid, seniorModUser, srRoleID); !errors.Is(err, ErrMissingPermissions) {
+		t.Errorf("Mod unassign SeniorModUser = %v, want ErrMissingPermissions", err)
+	}
+
+	// 9. Owner bypass: Owner can assign and unassign SeniorMod role
+	if err := svc.UnassignMemberRole(ctx, owner, gid, seniorModUser, srRoleID); err != nil {
+		t.Fatalf("Owner UnassignMemberRole(SeniorMod): %v", err)
+	}
+}
+
+func TestChannelOverwrites(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	var b [4]byte
+	rand.Read(b[:])
+	prefix := "t" + hex.EncodeToString(b[:])
+	t.Cleanup(func() {
+		db.Exec("DELETE FROM guilds WHERE name LIKE $1", prefix+"%")
+		db.Exec("DELETE FROM users WHERE username LIKE $1", prefix+"%")
+		db.Close()
+	})
+	node, _ := snowflake.NewNode(995)
+	pub := &recordingPublisher{}
+	svc := NewService(db, node, pub)
+	ctx := context.Background()
+
+	owner := createTestUser(t, db, node, prefix, "_own")
+	modUser := createTestUser(t, db, node, prefix, "_mod")
+	regularUser := createTestUser(t, db, node, prefix, "_reg")
+
+	g, err := svc.CreateGuild(ctx, owner, prefix+"-ow-guild")
+	if err != nil {
+		t.Fatalf("CreateGuild: %v", err)
+	}
+	gid, _ := snowflake.Parse(g.ID)
+
+	ch, err := svc.CreateChannel(ctx, owner, gid, 0, prefix+"text", 0, nil)
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	chid, _ := snowflake.Parse(ch.ID)
+
+	for _, u := range []int64{modUser, regularUser} {
+		if err := svc.AddMember(ctx, owner, gid, u); err != nil {
+			t.Fatalf("AddMember: %v", err)
+		}
+	}
+
+	// Mod role: pos 10, MANAGE_ROLES | VIEW_CHANNEL | SEND_MESSAGES
+	modPerms := int64(permissions.MANAGE_ROLES | permissions.VIEW_CHANNEL | permissions.SEND_MESSAGES)
+	modRole, err := svc.CreateRole(ctx, owner, gid, "ModRole", nil, nil, int32Ptr(10), &modPerms, nil)
+	if err != nil {
+		t.Fatalf("CreateRole: %v", err)
+	}
+	modRoleID, _ := snowflake.Parse(modRole.ID)
+	if err := svc.AssignMemberRole(ctx, owner, gid, modUser, modRoleID); err != nil {
+		t.Fatalf("AssignMemberRole: %v", err)
+	}
+
+	// High role: pos 20
+	highPerms := int64(permissions.VIEW_CHANNEL)
+	highRole, err := svc.CreateRole(ctx, owner, gid, "HighRole", nil, nil, int32Ptr(20), &highPerms, nil)
+	if err != nil {
+		t.Fatalf("CreateRole: %v", err)
+	}
+	highRoleID, _ := snowflake.Parse(highRole.ID)
+
+	// Low role: pos 5
+	lowRole, err := svc.CreateRole(ctx, owner, gid, "LowRole", nil, nil, int32Ptr(5), &highPerms, nil)
+	if err != nil {
+		t.Fatalf("CreateRole: %v", err)
+	}
+	lowRoleID, _ := snowflake.Parse(lowRole.ID)
+
+	// 1. Mod sets overwrite for @everyone (pos 0 < 10)
+	allow := permissions.VIEW_CHANNEL
+	deny := permissions.SEND_MESSAGES
+	if err := svc.SetChannelOverwrite(ctx, modUser, chid, gid, 0, allow, deny); err != nil {
+		t.Fatalf("SetChannelOverwrite(@everyone): %v", err)
+	}
+
+	// Verify CHANNEL_UPDATE event was published
+	chUpdates := pub.ofType(eventTypeChannelUpdate)
+	if len(chUpdates) == 0 {
+		t.Fatal("expected CHANNEL_UPDATE event")
+	}
+	lastChUpdate := chUpdates[len(chUpdates)-1]
+	chPayload, ok := lastChUpdate.Payload.(channelUpdateEventPayload)
+	if !ok {
+		t.Fatalf("expected channelUpdateEventPayload, got %T", lastChUpdate.Payload)
+	}
+	if chPayload.Channel.ID != ch.ID {
+		t.Errorf("chPayload id = %s, want %s", chPayload.Channel.ID, ch.ID)
+	}
+	if len(chPayload.PermissionOverwrites) != 1 {
+		t.Errorf("expected 1 overwrite, got %d", len(chPayload.PermissionOverwrites))
+	}
+
+	// 2. Mod attempts overwrite for HighRole (pos 20 >= 10) -> rejected
+	if err := svc.SetChannelOverwrite(ctx, modUser, chid, highRoleID, 0, allow, 0); !errors.Is(err, ErrMissingPermissions) {
+		t.Errorf("SetChannelOverwrite(HighRole) = %v, want ErrMissingPermissions", err)
+	}
+
+	// 3. Mod attempts privilege escalation: allow BAN_MEMBERS (not held by mod) -> rejected
+	if err := svc.SetChannelOverwrite(ctx, modUser, chid, lowRoleID, 0, permissions.BAN_MEMBERS, 0); !errors.Is(err, ErrMissingPermissions) {
+		t.Errorf("SetChannelOverwrite(unheld perms) = %v, want ErrMissingPermissions", err)
+	}
+
+	// 4. Mod sets member overwrite for regularUser
+	if err := svc.SetChannelOverwrite(ctx, modUser, chid, regularUser, 1, permissions.VIEW_CHANNEL, 0); err != nil {
+		t.Fatalf("SetChannelOverwrite(member): %v", err)
+	}
+
+	// 5. ListChannelOverwrites
+	overwrites, err := svc.ListChannelOverwrites(ctx, modUser, chid)
+	if err != nil {
+		t.Fatalf("ListChannelOverwrites: %v", err)
+	}
+	if len(overwrites) != 2 {
+		t.Errorf("expected 2 overwrites, got %d", len(overwrites))
+	}
+
+	// 6. DeleteChannelOverwrite for @everyone
+	if err := svc.DeleteChannelOverwrite(ctx, modUser, chid, gid); err != nil {
+		t.Fatalf("DeleteChannelOverwrite(@everyone): %v", err)
+	}
+	overwrites, err = svc.ListChannelOverwrites(ctx, modUser, chid)
+	if err != nil {
+		t.Fatalf("ListChannelOverwrites after delete: %v", err)
+	}
+	if len(overwrites) != 1 {
+		t.Errorf("expected 1 overwrite remaining, got %d", len(overwrites))
+	}
+}
+
+func TestGetMyPermissions(t *testing.T) {
+	svc, db, node, prefix := newTestService(t)
+	ctx := context.Background()
+
+	owner := createTestUser(t, db, node, prefix, "_own")
+	memberUser := createTestUser(t, db, node, prefix, "_mem")
+	stranger := createTestUser(t, db, node, prefix, "_stranger")
+
+	g, err := svc.CreateGuild(ctx, owner, prefix+"-perms-guild")
+	if err != nil {
+		t.Fatalf("CreateGuild: %v", err)
+	}
+	gid, _ := snowflake.Parse(g.ID)
+
+	if err := svc.AddMember(ctx, owner, gid, memberUser); err != nil {
+		t.Fatalf("AddMember: %v", err)
+	}
+
+	// 1. Owner returns ALL_PERMISSIONS
+	ownerPerms, err := svc.GetMyPermissions(ctx, owner, gid)
+	if err != nil {
+		t.Fatalf("GetMyPermissions(owner): %v", err)
+	}
+	if ownerPerms != permissions.ALL_PERMISSIONS {
+		t.Errorf("ownerPerms = %d, want %d", ownerPerms, permissions.ALL_PERMISSIONS)
+	}
+
+	// 2. Stranger returns ErrMissingAccess
+	if _, err := svc.GetMyPermissions(ctx, stranger, gid); !errors.Is(err, ErrMissingAccess) {
+		t.Errorf("GetMyPermissions(stranger) = %v, want ErrMissingAccess", err)
+	}
+
+	// 3. Member returns base permissions
+	memPerms, err := svc.GetMyPermissions(ctx, memberUser, gid)
+	if err != nil {
+		t.Fatalf("GetMyPermissions(memberUser): %v", err)
+	}
+	expectedDefault := permissions.DEFAULT_EVERYONE_PERMISSIONS
+	if memPerms != expectedDefault {
+		t.Errorf("memberUser perms = %d, want %d", memPerms, expectedDefault)
+	}
+
+	// 4. Assign role with KICK_MEMBERS to memberUser
+	kickPerms := int64(permissions.KICK_MEMBERS)
+	role, err := svc.CreateRole(ctx, owner, gid, "Kicker", nil, nil, int32Ptr(5), &kickPerms, nil)
+	if err != nil {
+		t.Fatalf("CreateRole: %v", err)
+	}
+	rid, _ := snowflake.Parse(role.ID)
+	if err := svc.AssignMemberRole(ctx, owner, gid, memberUser, rid); err != nil {
+		t.Fatalf("AssignMemberRole: %v", err)
+	}
+
+	memPermsAfter, err := svc.GetMyPermissions(ctx, memberUser, gid)
+	if err != nil {
+		t.Fatalf("GetMyPermissions(memberUser after role): %v", err)
+	}
+	if memPermsAfter != (expectedDefault | permissions.KICK_MEMBERS) {
+		t.Errorf("memberUser perms after role = %d, want %d", memPermsAfter, expectedDefault|permissions.KICK_MEMBERS)
+	}
+}
+

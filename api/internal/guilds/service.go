@@ -50,12 +50,14 @@ func NewService(db *sql.DB, sf *snowflake.Node, pub events.Publisher) *Service {
 // by guild_id — subscribers learn about joins/leaves in real time, which the
 // member sidebar (op 8 snapshot) otherwise could not.
 const (
-	eventTypeMemberAdd    = "GUILD_MEMBER_ADD"
-	eventTypeMemberRemove = "GUILD_MEMBER_REMOVE"
-	eventTypeRoleCreate   = "GUILD_ROLE_CREATE"
-	eventTypeRoleUpdate   = "GUILD_ROLE_UPDATE"
-	eventTypeRoleDelete   = "GUILD_ROLE_DELETE"
-	eventVersion          = 1
+	eventTypeMemberAdd         = "GUILD_MEMBER_ADD"
+	eventTypeMemberRemove      = "GUILD_MEMBER_REMOVE"
+	eventTypeGuildMemberUpdate = "GUILD_MEMBER_UPDATE"
+	eventTypeRoleCreate        = "GUILD_ROLE_CREATE"
+	eventTypeRoleUpdate        = "GUILD_ROLE_UPDATE"
+	eventTypeRoleDelete        = "GUILD_ROLE_DELETE"
+	eventTypeChannelUpdate     = "CHANNEL_UPDATE"
+	eventVersion               = 1
 )
 
 // memberAddPayload mirrors the GUILD_MEMBERS_CHUNK member shape so clients
@@ -73,6 +75,13 @@ type memberRemovePayload struct {
 	User    UserRef `json:"user"`
 }
 
+type memberUpdateEventPayload struct {
+	GuildID string   `json:"guild_id"`
+	Roles   []string `json:"roles"`
+	User    UserRef  `json:"user"`
+	Nick    *string  `json:"nick"`
+}
+
 type roleEventPayload struct {
 	GuildID string `json:"guild_id"`
 	Role    Role   `json:"role"`
@@ -81,6 +90,12 @@ type roleEventPayload struct {
 type roleDeleteEventPayload struct {
 	GuildID string `json:"guild_id"`
 	RoleID  string `json:"role_id"`
+}
+
+type channelUpdateEventPayload struct {
+	GuildID              string             `json:"guild_id"`
+	Channel              Channel            `json:"channel"`
+	PermissionOverwrites []ChannelOverwrite `json:"permission_overwrites"`
 }
 
 // ── types (wire shapes; IDs are strings like Discord) ─────────────────────
@@ -145,6 +160,14 @@ type Role struct {
 	Permissions string    `json:"permissions"`
 	Mentionable bool      `json:"mentionable"`
 	CreatedAt   time.Time `json:"created_at"`
+}
+
+type ChannelOverwrite struct {
+	ChannelID  string `json:"channel_id"`
+	TargetID   string `json:"target_id"`
+	TargetType int16  `json:"type"` // 0 role, 1 member
+	Allow      string `json:"allow"`
+	Deny       string `json:"deny"`
 }
 
 // ── permission seams (Phase 4: pkg/permissions.Resolve) ───────────────────
@@ -1108,6 +1131,507 @@ func (s *Service) publishRoleDelete(ctx context.Context, guildID, roleID int64) 
 	}); err != nil {
 		slog.ErrorContext(ctx, "failed to publish event",
 			"type", eventTypeRoleDelete, "guild_id", gidStr, "err", err)
+	}
+}
+
+func (s *Service) getTargetMemberHighestPos(ctx context.Context, guildID, targetUID int64) (int32, error) {
+	var ownerID int64
+	err := s.db.QueryRowContext(ctx, `SELECT owner_id FROM guilds WHERE id = $1`, guildID).Scan(&ownerID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrUnknownGuild
+	}
+	if err != nil {
+		return 0, err
+	}
+	if targetUID == ownerID {
+		return math.MaxInt32, nil
+	}
+
+	var isMember bool
+	err = s.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM members WHERE guild_id = $1 AND user_id = $2)`,
+		guildID, targetUID).Scan(&isMember)
+	if err != nil {
+		return 0, err
+	}
+	if !isMember {
+		return 0, ErrUnknownMember
+	}
+
+	var highestPos int32 = 0
+	err = s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(MAX(r.position), 0)
+		FROM member_roles mr
+		JOIN roles r ON mr.role_id = r.id
+		WHERE mr.guild_id = $1 AND mr.user_id = $2`,
+		guildID, targetUID).Scan(&highestPos)
+	if err != nil {
+		return 0, err
+	}
+	return highestPos, nil
+}
+
+func (s *Service) AssignMemberRole(ctx context.Context, callerID, guildID, targetUID, roleID int64) error {
+	state, err := s.getMemberRoleState(ctx, guildID, callerID)
+	if err != nil {
+		return err
+	}
+	if !canManageRoles(state) {
+		return ErrMissingPermissions
+	}
+
+	if roleID == guildID {
+		return ErrMissingPermissions // cannot assign @everyone
+	}
+
+	var targetRolePos int32
+	err = s.db.QueryRowContext(ctx, `SELECT position FROM roles WHERE id = $1 AND guild_id = $2`, roleID, guildID).Scan(&targetRolePos)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrUnknownRole
+	}
+	if err != nil {
+		return err
+	}
+
+	targetMemberHighestPos, err := s.getTargetMemberHighestPos(ctx, guildID, targetUID)
+	if err != nil {
+		return err
+	}
+
+	// Hierarchy checks
+	if !state.IsOwner {
+		if targetRolePos >= state.HighestPosition {
+			return ErrMissingPermissions
+		}
+		if targetMemberHighestPos >= state.HighestPosition {
+			return ErrMissingPermissions
+		}
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO member_roles (guild_id, user_id, role_id)
+		VALUES ($1, $2, $3)
+		ON CONFLICT DO NOTHING`,
+		guildID, targetUID, roleID)
+	if err != nil {
+		return err
+	}
+
+	s.publishMemberUpdate(ctx, guildID, targetUID)
+	return nil
+}
+
+func (s *Service) UnassignMemberRole(ctx context.Context, callerID, guildID, targetUID, roleID int64) error {
+	state, err := s.getMemberRoleState(ctx, guildID, callerID)
+	if err != nil {
+		return err
+	}
+	if !canManageRoles(state) {
+		return ErrMissingPermissions
+	}
+
+	if roleID == guildID {
+		return ErrMissingPermissions // cannot unassign @everyone
+	}
+
+	var targetRolePos int32
+	err = s.db.QueryRowContext(ctx, `SELECT position FROM roles WHERE id = $1 AND guild_id = $2`, roleID, guildID).Scan(&targetRolePos)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrUnknownRole
+	}
+	if err != nil {
+		return err
+	}
+
+	targetMemberHighestPos, err := s.getTargetMemberHighestPos(ctx, guildID, targetUID)
+	if err != nil {
+		return err
+	}
+
+	// Hierarchy checks
+	if !state.IsOwner {
+		if targetRolePos >= state.HighestPosition {
+			return ErrMissingPermissions
+		}
+		if targetMemberHighestPos >= state.HighestPosition {
+			return ErrMissingPermissions
+		}
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		DELETE FROM member_roles
+		WHERE guild_id = $1 AND user_id = $2 AND role_id = $3`,
+		guildID, targetUID, roleID)
+	if err != nil {
+		return err
+	}
+
+	s.publishMemberUpdate(ctx, guildID, targetUID)
+	return nil
+}
+
+func (s *Service) getChannelGuildAndPerms(ctx context.Context, channelID, callerID int64) (guildID int64, callerChannelPerms uint64, callerHighestPos int32, isOwner bool, err error) {
+	var gidNull sql.NullInt64
+	err = s.db.QueryRowContext(ctx, `SELECT guild_id FROM channels WHERE id = $1`, channelID).Scan(&gidNull)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, 0, 0, false, ErrUnknownChannel
+	}
+	if err != nil {
+		return 0, 0, 0, false, err
+	}
+	if !gidNull.Valid {
+		return 0, 0, 0, false, ErrUnknownGuild
+	}
+	guildID = gidNull.Int64
+
+	var ownerID int64
+	err = s.db.QueryRowContext(ctx, `SELECT owner_id FROM guilds WHERE id = $1`, guildID).Scan(&ownerID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, 0, 0, false, ErrUnknownGuild
+	}
+	if err != nil {
+		return 0, 0, 0, false, err
+	}
+
+	if callerID == ownerID {
+		return guildID, permissions.ALL_PERMISSIONS, math.MaxInt32, true, nil
+	}
+
+	// Verify caller is member
+	var isMember bool
+	err = s.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM members WHERE guild_id = $1 AND user_id = $2)`,
+		guildID, callerID).Scan(&isMember)
+	if err != nil {
+		return 0, 0, 0, false, err
+	}
+	if !isMember {
+		return 0, 0, 0, false, ErrMissingAccess
+	}
+
+	// Fetch caller's roles (including @everyone)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT r.id, r.position, r.permissions
+		FROM roles r
+		WHERE r.id = $1 AND r.guild_id = $1
+		UNION
+		SELECT r.id, r.position, r.permissions
+		FROM roles r
+		JOIN member_roles mr ON mr.role_id = r.id
+		WHERE mr.guild_id = $1 AND mr.user_id = $2`,
+		guildID, callerID)
+	if err != nil {
+		return 0, 0, 0, false, err
+	}
+	defer rows.Close()
+
+	callerRoles := make([]permissions.Role, 0)
+	var maxPos int32 = 0
+	for rows.Next() {
+		var rid int64
+		var pos int32
+		var perms uint64
+		if err := rows.Scan(&rid, &pos, &perms); err != nil {
+			return 0, 0, 0, false, err
+		}
+		if pos > maxPos {
+			maxPos = pos
+		}
+		callerRoles = append(callerRoles, permissions.Role{
+			ID:          rid,
+			GuildID:     guildID,
+			Position:    int(pos),
+			Permissions: perms,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return 0, 0, 0, false, err
+	}
+
+	// Fetch channel overwrites
+	owRows, err := s.db.QueryContext(ctx, `
+		SELECT channel_id, target_id, target_type, allow, deny
+		FROM channel_overwrites
+		WHERE channel_id = $1`, channelID)
+	if err != nil {
+		return 0, 0, 0, false, err
+	}
+	defer owRows.Close()
+
+	var overwrites []permissions.Overwrite
+	for owRows.Next() {
+		var cid, tid int64
+		var ttype int16
+		var a, d uint64
+		if err := owRows.Scan(&cid, &tid, &ttype, &a, &d); err != nil {
+			return 0, 0, 0, false, err
+		}
+		overwrites = append(overwrites, permissions.Overwrite{
+			ChannelID:  cid,
+			TargetID:   tid,
+			TargetType: permissions.TargetType(ttype),
+			Allow:      a,
+			Deny:       d,
+		})
+	}
+	if err := owRows.Err(); err != nil {
+		return 0, 0, 0, false, err
+	}
+
+	resolvedPerms := permissions.Resolve(guildID, ownerID, callerID, callerRoles, overwrites)
+	return guildID, resolvedPerms, maxPos, false, nil
+}
+
+func (s *Service) SetChannelOverwrite(ctx context.Context, callerID, channelID, targetID int64, targetType int16, allow, deny uint64) error {
+	if targetType != int16(permissions.TargetTypeRole) && targetType != int16(permissions.TargetTypeMember) {
+		return ErrMissingPermissions
+	}
+
+	gid, callerPerms, callerHighestPos, isOwner, err := s.getChannelGuildAndPerms(ctx, channelID, callerID)
+	if err != nil {
+		return err
+	}
+
+	// Authority check: MANAGE_ROLES, MANAGE_CHANNELS, ADMINISTRATOR (or owner)
+	hasAuth := isOwner ||
+		permissions.Has(callerPerms, permissions.ADMINISTRATOR) ||
+		permissions.Has(callerPerms, permissions.MANAGE_ROLES) ||
+		permissions.Has(callerPerms, permissions.MANAGE_CHANNELS)
+	if !hasAuth {
+		return ErrMissingPermissions
+	}
+
+	// Hierarchy on target (unless owner)
+	if !isOwner {
+		if targetType == int16(permissions.TargetTypeRole) {
+			var rolePos int32
+			err := s.db.QueryRowContext(ctx, `SELECT position FROM roles WHERE id = $1 AND guild_id = $2`, targetID, gid).Scan(&rolePos)
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrUnknownRole
+			}
+			if err != nil {
+				return err
+			}
+			if rolePos >= callerHighestPos {
+				return ErrMissingPermissions
+			}
+		} else {
+			targetHighestPos, err := s.getTargetMemberHighestPos(ctx, gid, targetID)
+			if err != nil {
+				return err
+			}
+			if targetHighestPos >= callerHighestPos {
+				return ErrMissingPermissions
+			}
+		}
+
+		// Privilege escalation: cannot allow permissions caller lacks
+		if !permissions.Has(callerPerms, permissions.ADMINISTRATOR) {
+			if (allow & ^callerPerms) != 0 {
+				return ErrMissingPermissions
+			}
+		}
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO channel_overwrites (channel_id, target_id, target_type, allow, deny)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (channel_id, target_id)
+		DO UPDATE SET target_type = EXCLUDED.target_type, allow = EXCLUDED.allow, deny = EXCLUDED.deny`,
+		channelID, targetID, targetType, allow, deny)
+	if err != nil {
+		return err
+	}
+
+	s.publishChannelUpdate(ctx, gid, channelID)
+	return nil
+}
+
+func (s *Service) DeleteChannelOverwrite(ctx context.Context, callerID, channelID, targetID int64) error {
+	gid, callerPerms, callerHighestPos, isOwner, err := s.getChannelGuildAndPerms(ctx, channelID, callerID)
+	if err != nil {
+		return err
+	}
+
+	hasAuth := isOwner ||
+		permissions.Has(callerPerms, permissions.ADMINISTRATOR) ||
+		permissions.Has(callerPerms, permissions.MANAGE_ROLES) ||
+		permissions.Has(callerPerms, permissions.MANAGE_CHANNELS)
+	if !hasAuth {
+		return ErrMissingPermissions
+	}
+
+	var targetType int16
+	err = s.db.QueryRowContext(ctx, `SELECT target_type FROM channel_overwrites WHERE channel_id = $1 AND target_id = $2`, channelID, targetID).Scan(&targetType)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil // idempotent delete in Discord
+	}
+	if err != nil {
+		return err
+	}
+
+	// Hierarchy check
+	if !isOwner {
+		if targetType == int16(permissions.TargetTypeRole) {
+			var rolePos int32
+			err := s.db.QueryRowContext(ctx, `SELECT position FROM roles WHERE id = $1 AND guild_id = $2`, targetID, gid).Scan(&rolePos)
+			if err == nil && rolePos >= callerHighestPos {
+				return ErrMissingPermissions
+			}
+		} else {
+			targetHighestPos, err := s.getTargetMemberHighestPos(ctx, gid, targetID)
+			if err == nil && targetHighestPos >= callerHighestPos {
+				return ErrMissingPermissions
+			}
+		}
+	}
+
+	_, err = s.db.ExecContext(ctx, `DELETE FROM channel_overwrites WHERE channel_id = $1 AND target_id = $2`, channelID, targetID)
+	if err != nil {
+		return err
+	}
+
+	s.publishChannelUpdate(ctx, gid, channelID)
+	return nil
+}
+
+func (s *Service) ListChannelOverwrites(ctx context.Context, callerID, channelID int64) ([]ChannelOverwrite, error) {
+	var gid int64
+	err := s.db.QueryRowContext(ctx, `SELECT guild_id FROM channels WHERE id = $1`, channelID).Scan(&gid)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrUnknownChannel
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.requireMember(ctx, gid, callerID); err != nil {
+		return nil, err
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT channel_id::text, target_id::text, target_type, allow::text, deny::text
+		FROM channel_overwrites
+		WHERE channel_id = $1`, channelID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	overwrites := make([]ChannelOverwrite, 0)
+	for rows.Next() {
+		var ow ChannelOverwrite
+		if err := rows.Scan(&ow.ChannelID, &ow.TargetID, &ow.TargetType, &ow.Allow, &ow.Deny); err != nil {
+			return nil, err
+		}
+		overwrites = append(overwrites, ow)
+	}
+	return overwrites, rows.Err()
+}
+
+func (s *Service) GetMyPermissions(ctx context.Context, callerID, guildID int64) (uint64, error) {
+	state, err := s.getMemberRoleState(ctx, guildID, callerID)
+	if err != nil {
+		return 0, err
+	}
+	return state.Permissions, nil
+}
+
+func (s *Service) publishMemberUpdate(ctx context.Context, guildID, userID int64) {
+	gidStr := strconv.FormatInt(guildID, 10)
+	var user UserRef
+	var nick sql.NullString
+	err := s.db.QueryRowContext(ctx, `
+		SELECT u.id::text, u.username, LPAD(u.discriminator::text, 4, '0'), m.nickname
+		FROM members m
+		JOIN users u ON m.user_id = u.id
+		WHERE m.guild_id = $1 AND m.user_id = $2`,
+		guildID, userID).Scan(&user.ID, &user.Username, &user.Discriminator, &nick)
+	if err != nil {
+		return
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT role_id::text
+		FROM member_roles
+		WHERE guild_id = $1 AND user_id = $2`,
+		guildID, userID)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	roleIDs := make([]string, 0)
+	for rows.Next() {
+		var rid string
+		if err := rows.Scan(&rid); err == nil {
+			roleIDs = append(roleIDs, rid)
+		}
+	}
+
+	var nickPtr *string
+	if nick.Valid {
+		nickPtr = &nick.String
+	}
+
+	if err := s.pub.Publish(ctx, events.Event{
+		Type:    eventTypeGuildMemberUpdate,
+		Version: eventVersion,
+		GuildID: gidStr,
+		Payload: memberUpdateEventPayload{
+			GuildID: gidStr,
+			Roles:   roleIDs,
+			User:    user,
+			Nick:    nickPtr,
+		},
+	}); err != nil {
+		slog.ErrorContext(ctx, "failed to publish event",
+			"type", eventTypeGuildMemberUpdate, "guild_id", gidStr, "err", err)
+	}
+}
+
+func (s *Service) publishChannelUpdate(ctx context.Context, guildID, channelID int64) {
+	gidStr := strconv.FormatInt(guildID, 10)
+	var ch Channel
+	var pid sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id::text, guild_id::text, type, name, position, parent_id, created_at
+		FROM channels
+		WHERE id = $1`, channelID).Scan(&ch.ID, &ch.GuildID, &ch.Type, &ch.Name, &ch.Position, &pid, &ch.CreatedAt)
+	if err != nil {
+		return
+	}
+	ch.ParentID = idPtr(pid)
+
+	owRows, err := s.db.QueryContext(ctx, `
+		SELECT channel_id::text, target_id::text, target_type, allow::text, deny::text
+		FROM channel_overwrites
+		WHERE channel_id = $1`, channelID)
+	if err != nil {
+		return
+	}
+	defer owRows.Close()
+
+	overwrites := make([]ChannelOverwrite, 0)
+	for owRows.Next() {
+		var ow ChannelOverwrite
+		if err := owRows.Scan(&ow.ChannelID, &ow.TargetID, &ow.TargetType, &ow.Allow, &ow.Deny); err == nil {
+			overwrites = append(overwrites, ow)
+		}
+	}
+
+	if err := s.pub.Publish(ctx, events.Event{
+		Type:    eventTypeChannelUpdate,
+		Version: eventVersion,
+		GuildID: gidStr,
+		Payload: channelUpdateEventPayload{
+			GuildID:              gidStr,
+			Channel:              ch,
+			PermissionOverwrites: overwrites,
+		},
+	}); err != nil {
+		slog.ErrorContext(ctx, "failed to publish event",
+			"type", eventTypeChannelUpdate, "guild_id", gidStr, "err", err)
 	}
 }
 

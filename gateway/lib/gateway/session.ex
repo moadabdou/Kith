@@ -148,9 +148,20 @@ defmodule Gateway.Session do
         nil
       end
 
+    if user_id do
+      Gateway.Guild.Cache.put_session_user(session_id, user_id)
+
+      Enum.each(guild_ids, fn gid ->
+        case Gateway.Guild.Cache.get_member_roles(user_id, gid) do
+          :error -> Gateway.Guild.Cache.put_member_roles(user_id, gid, [])
+          _ -> :ok
+        end
+      end)
+    end
+
     # Subscribe self to all member guilds
     Enum.each(guild_ids, fn gid ->
-      Gateway.Guild.Actor.subscribe(gid, session_id, self())
+      Gateway.Guild.Actor.subscribe(gid, session_id, self(), user_id)
     end)
 
     # Register presence in Gateway.Presence.Store if user_id is provided (plan/05 §1 & #31)

@@ -152,6 +152,151 @@ defmodule Gateway.Guild.ActorTest do
     end
   end
 
+  describe "Real-time fan-out filtering and TOCTOU defense" do
+    alias Gateway.Guild.Cache
+    alias Gateway.Permissions
+
+    @fanout_guild "99900000000000099"
+    @fanout_chan "99900000000000098"
+    @owner_uid "99900000000000001"
+    @allowed_uid "99900000000000002"
+    @denied_uid "99900000000000003"
+    @vip_role "99900000000000077"
+
+    setup do
+      Cache.put_guild(%{
+        "id" => @fanout_guild,
+        "name" => "Fanout Test Guild",
+        "owner_id" => @owner_uid,
+        "channels" => [%{"id" => @fanout_chan, "name" => "restricted-chat"}]
+      })
+
+      # @everyone role has NO view_channel (0)
+      # @vip_role has view_channel
+      Cache.put_guild_roles(@fanout_guild, [
+        %{"id" => @fanout_guild, "name" => "@everyone", "position" => 0, "permissions" => 0},
+        %{"id" => @vip_role, "name" => "VIP", "position" => 1, "permissions" => Permissions.view_channel()}
+      ])
+
+      Cache.put_member_roles(@owner_uid, @fanout_guild, [])
+      Cache.put_member_roles(@allowed_uid, @fanout_guild, [@vip_role])
+      Cache.put_member_roles(@denied_uid, @fanout_guild, [])
+      Cache.put_channel_overwrites(@fanout_chan, [])
+
+      # Ensure guild actor is running
+      {:ok, _pid} = Actor.get_or_spawn(@fanout_guild)
+
+      :ok
+    end
+
+    test "channel events delivered only to subscribers with VIEW_CHANNEL" do
+      # Subscribe allowed subscriber (self()) and denied subscriber (spawned receiver)
+      denied_receiver =
+        spawn_link(fn ->
+          receive do
+            msg -> send(self(), {:denied_got_msg, msg})
+          after
+            500 -> :ok
+          end
+        end)
+
+      :ok = Actor.subscribe(@fanout_guild, "sess-allowed", self(), @allowed_uid)
+      :ok = Actor.subscribe(@fanout_guild, "sess-denied", denied_receiver, @denied_uid)
+
+      msg_event = %{
+        "type" => "MESSAGE_CREATE",
+        "guild_id" => @fanout_guild,
+        "payload" => %{
+          "id" => "msg-1",
+          "channel_id" => @fanout_chan,
+          "content" => "Secret message"
+        }
+      }
+
+      Actor.dispatch_event(@fanout_guild, msg_event)
+
+      # Allowed subscriber receives MESSAGE_CREATE
+      assert_receive {:dispatch, ^msg_event, _bus_received_at}, 500
+
+      # Denied subscriber receives nothing
+      refute_receive {:denied_got_msg, _}, 100
+
+      # TYPING_START also filtered
+      typing_event = %{
+        "type" => "TYPING_START",
+        "guild_id" => @fanout_guild,
+        "channel_id" => @fanout_chan,
+        "user_id" => @allowed_uid
+      }
+
+      Actor.dispatch_event(@fanout_guild, typing_event)
+      assert_receive {:dispatch, ^typing_event, _bus_received_at}, 500
+      refute_receive {:denied_got_msg, _}, 100
+    end
+
+    test "non-channel events delivered to all subscribers" do
+      :ok = Actor.subscribe(@fanout_guild, "sess-denied-2", self(), @denied_uid)
+
+      presence_event = %{
+        "type" => "PRESENCE_UPDATE",
+        "guild_id" => @fanout_guild,
+        "user" => %{"id" => "some_user"},
+        "status" => "online"
+      }
+
+      Actor.dispatch_event(@fanout_guild, presence_event)
+      assert_receive {:dispatch, ^presence_event, _}, 500
+    end
+
+    test "TOCTOU: mid-session role revocation immediately cuts off channel events" do
+      # Subscriber starts with VIP role allowing VIEW_CHANNEL
+      :ok = Actor.subscribe(@fanout_guild, "sess-toctou", self(), @allowed_uid)
+
+      msg_1 = %{
+        "type" => "MESSAGE_CREATE",
+        "guild_id" => @fanout_guild,
+        "payload" => %{
+          "id" => "msg-toctou-1",
+          "channel_id" => @fanout_chan,
+          "content" => "Before revoke"
+        }
+      }
+
+      Actor.dispatch_event(@fanout_guild, msg_1)
+      assert_receive {:dispatch, ^msg_1, _}, 500
+
+      # Mid-session mutation event: GUILD_MEMBER_UPDATE revoking VIP role
+      role_revoke_event = %{
+        "type" => "GUILD_MEMBER_UPDATE",
+        "guild_id" => @fanout_guild,
+        "payload" => %{
+          "guild_id" => @fanout_guild,
+          "user" => %{"id" => @allowed_uid},
+          "roles" => []
+        }
+      }
+
+      # Immediate ETS mutation via cache handle_event
+      assert :ok == Cache.handle_event(role_revoke_event)
+
+      # Second message dispatched immediately after
+      msg_2 = %{
+        "type" => "MESSAGE_CREATE",
+        "guild_id" => @fanout_guild,
+        "payload" => %{
+          "id" => "msg-toctou-2",
+          "channel_id" => @fanout_chan,
+          "content" => "After revoke - must be dropped"
+        }
+      }
+
+      Actor.dispatch_event(@fanout_guild, msg_2)
+
+      # Verified: subscriber does NOT receive msg_2!
+      refute_receive {:dispatch, ^msg_2, _}, 200
+    end
+  end
+
   defp eventually(assertion_fn, attempts \\ 20, delay_ms \\ 10) do
     assertion_fn.()
   rescue

@@ -62,12 +62,12 @@ defmodule Gateway.Guild.Actor do
   @doc """
   Subscribes a connection session to the guild actor.
   """
-  def subscribe(guild_id, session_id, pid \\ nil) do
+  def subscribe(guild_id, session_id, pid \\ nil, user_id \\ nil) do
     target_pid = pid || self()
 
     case get_or_spawn(guild_id) do
       {:ok, actor_pid} ->
-        GenServer.call(actor_pid, {:subscribe, session_id, target_pid})
+        GenServer.call(actor_pid, {:subscribe, session_id, target_pid, user_id})
 
       {:error, reason} ->
         {:error, reason}
@@ -151,7 +151,11 @@ defmodule Gateway.Guild.Actor do
   end
 
   @impl true
-  def handle_call({:subscribe, session_id, pid}, _from, state) do
+  def handle_call({:subscribe, session_id, pid}, from, state) do
+    handle_call({:subscribe, session_id, pid, nil}, from, state)
+  end
+
+  def handle_call({:subscribe, session_id, pid, user_id}, _from, state) do
     cancel_timer(state.ttl_timer)
 
     subscriber_refs =
@@ -166,7 +170,7 @@ defmodule Gateway.Guild.Actor do
 
     ref = Process.monitor(pid)
 
-    subscribers = Map.put(state.subscribers, session_id, pid)
+    subscribers = Map.put(state.subscribers, session_id, {pid, user_id})
     subscriber_refs = Map.put(subscriber_refs, ref, session_id)
 
     {:reply, :ok, %{state | subscribers: subscribers, subscriber_refs: subscriber_refs, ttl_timer: nil}}
@@ -197,20 +201,89 @@ defmodule Gateway.Guild.Actor do
   end
 
   def handle_call(:subscribers, _from, state) do
-    {:reply, Map.to_list(state.subscribers), state}
+    list =
+      Enum.map(state.subscribers, fn
+        {sid, {pid, _uid}} -> {sid, pid}
+        {sid, pid} when is_pid(pid) -> {sid, pid}
+      end)
+
+    {:reply, list, state}
   end
 
   def handle_call(:subscriber_count, _from, state) do
     {:reply, map_size(state.subscribers), state}
   end
 
+  @channel_scoped_events ["MESSAGE_CREATE", "MESSAGE_UPDATE", "MESSAGE_DELETE", "TYPING_START"]
+
   @impl true
   def handle_cast({:dispatch_event, event, bus_received_at}, state) do
-    Enum.each(state.subscribers, fn {_session_id, pid} ->
-      send(pid, {:dispatch, event, bus_received_at})
-    end)
+    type = event["type"] || "UNKNOWN"
+
+    if type in @channel_scoped_events do
+      channel_id = extract_channel_id(event)
+
+      Enum.each(state.subscribers, fn {session_id, sub} ->
+        {pid, user_id} = normalize_subscriber(session_id, sub)
+
+        if can_subscriber_view?(user_id, channel_id, state.guild_id) do
+          send(pid, {:dispatch, event, bus_received_at})
+        end
+      end)
+    else
+      Enum.each(state.subscribers, fn {_session_id, sub} ->
+        pid =
+          case sub do
+            {p, _uid} -> p
+            p when is_pid(p) -> p
+          end
+
+        send(pid, {:dispatch, event, bus_received_at})
+      end)
+    end
 
     {:noreply, state}
+  end
+
+  defp extract_channel_id(event) do
+    payload = Map.get(event, "payload") || %{}
+    message = Map.get(payload, "message") || Map.get(event, "message") || %{}
+
+    event["channel_id"] ||
+      payload["channel_id"] ||
+      message["channel_id"] ||
+      get_in(event, ["d", "channel_id"])
+  end
+
+  defp normalize_subscriber(session_id, {pid, user_id}) do
+    uid =
+      if user_id && user_id != "" do
+        user_id
+      else
+        case Gateway.Guild.Cache.get_session_user(session_id) do
+          {:ok, u} -> u
+          _ -> nil
+        end
+      end
+
+    {pid, uid}
+  end
+
+  defp normalize_subscriber(session_id, pid) when is_pid(pid) do
+    uid =
+      case Gateway.Guild.Cache.get_session_user(session_id) do
+        {:ok, u} -> u
+        _ -> nil
+      end
+
+    {pid, uid}
+  end
+
+  defp can_subscriber_view?(nil, _channel_id, _guild_id), do: false
+  defp can_subscriber_view?(_user_id, nil, _guild_id), do: false
+
+  defp can_subscriber_view?(user_id, channel_id, guild_id) do
+    Gateway.Permissions.can_view?(user_id, channel_id, guild_id)
   end
 
   @impl true

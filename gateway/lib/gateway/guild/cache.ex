@@ -27,7 +27,7 @@ defmodule Gateway.Guild.Cache do
     uid = if is_binary(user_id), do: String.to_integer(user_id), else: user_id
 
     case fetch_from_db(uid) do
-      {:ok, user, guilds} ->
+      {:ok, user, guilds, roles, member_roles, overwrites} ->
         # Cache in ETS
         Enum.each(guilds, fn guild ->
           :ets.insert(@table, {{:guild, guild["id"]}, guild})
@@ -43,6 +43,26 @@ defmodule Gateway.Guild.Cache do
         guild_ids = Enum.map(guilds, & &1["id"])
         :ets.insert(@table, {{:member_guilds, uid}, guild_ids})
         :ets.insert(@table, {{:member_guilds, to_string(uid)}, guild_ids})
+
+        # Cache roles in ETS
+        Enum.each(roles, fn r ->
+          :ets.insert(@table, {{:role, r["id"]}, r})
+        end)
+
+        roles_by_guild = Enum.group_by(roles, & &1["guild_id"])
+        Enum.each(roles_by_guild, fn {gid, r_list} ->
+          :ets.insert(@table, {{:guild_roles, gid}, r_list})
+        end)
+
+        # Cache member roles in ETS
+        Enum.each(member_roles, fn {gid, rids} ->
+          put_member_roles(to_string(user["id"]), gid, rids)
+        end)
+
+        # Cache channel overwrites in ETS
+        Enum.each(overwrites, fn {cid, ow_list} ->
+          put_channel_overwrites(cid, ow_list)
+        end)
 
         {:ok, user, guilds}
 
@@ -185,16 +205,309 @@ defmodule Gateway.Guild.Cache do
   the user/guild combination is unknown to the cache.
   """
   def get_member_nick(user_id, guild_id) do
-    case :ets.lookup(@table, {:user, to_string(user_id)}) do
-      [{_user_key, _}] ->
-        case :ets.lookup(@table, {:member_nick, to_string(user_id), to_string(guild_id)}) do
-          [{{:member_nick, _, _}, nick}] -> {:ok, nick}
-          [] -> {:ok, nil}
-        end
+    uid = to_string(user_id)
+    gid = to_string(guild_id)
+
+    case :ets.lookup(@table, {:member_nick, uid, gid}) do
+      [{{:member_nick, _, _}, nick}] ->
+        {:ok, nick}
 
       [] ->
-        :error
+        case :ets.lookup(@table, {:user, uid}) do
+          [{_user_key, _}] -> {:ok, nil}
+          [] -> :error
+        end
     end
+  end
+
+  @doc """
+  Retrieves cached list of roles for a guild.
+  Returns `{:ok, roles_list}`.
+  """
+  def get_guild_roles(guild_id) do
+    gid = to_string(guild_id)
+
+    case :ets.lookup(@table, {:guild_roles, gid}) do
+      [{{:guild_roles, ^gid}, roles}] -> {:ok, roles}
+      [] -> {:ok, []}
+    end
+  end
+
+  @doc """
+  Stores or updates the list of roles for a guild in ETS cache.
+  """
+  def put_guild_roles(guild_id, roles) when is_list(roles) do
+    gid = to_string(guild_id)
+
+    normalized =
+      Enum.map(roles, fn r ->
+        %{
+          "id" => to_string(Map.get(r, "id") || Map.get(r, :id)),
+          "guild_id" => gid,
+          "name" => to_string(Map.get(r, "name") || Map.get(r, :name) || ""),
+          "position" => Map.get(r, "position") || Map.get(r, :position) || 0,
+          "permissions" => Map.get(r, "permissions") || Map.get(r, :permissions) || 0
+        }
+      end)
+
+    :ets.insert(@table, {{:guild_roles, gid}, normalized})
+
+    Enum.each(normalized, fn r ->
+      :ets.insert(@table, {{:role, r["id"]}, r})
+    end)
+
+    :ok
+  end
+
+  @doc """
+  Retrieves cached assigned role IDs for a member in a guild.
+  Returns `{:ok, [role_id]}`.
+  """
+  def get_member_roles(user_id, guild_id) do
+    uid = to_string(user_id)
+    gid = to_string(guild_id)
+
+    case :ets.lookup(@table, {:member_roles, uid, gid}) do
+      [{{:member_roles, ^uid, ^gid}, role_ids}] ->
+        {:ok, role_ids}
+
+      [] ->
+        case :ets.lookup(@table, {:member_roles, user_id, guild_id}) do
+          [{{:member_roles, _, _}, role_ids}] -> {:ok, role_ids}
+          [] -> :error
+        end
+    end
+  end
+
+  @doc """
+  Stores or updates a member's assigned role IDs in a guild in ETS cache.
+  """
+  def put_member_roles(user_id, guild_id, role_ids) when is_list(role_ids) do
+    uid = to_string(user_id)
+    gid = to_string(guild_id)
+    normalized = Enum.map(role_ids, &to_string/1)
+
+    :ets.insert(@table, {{:member_roles, uid, gid}, normalized})
+    :ets.insert(@table, {{:member_roles, user_id, guild_id}, normalized})
+    :ok
+  end
+
+  @doc """
+  Retrieves cached permission overwrites for a channel.
+  Returns `{:ok, overwrites_list}`.
+  """
+  def get_channel_overwrites(channel_id) do
+    cid = to_string(channel_id)
+
+    case :ets.lookup(@table, {:channel_overwrites, cid}) do
+      [{{:channel_overwrites, ^cid}, overwrites}] -> {:ok, overwrites}
+      [] -> {:ok, []}
+    end
+  end
+
+  @doc """
+  Stores or updates channel permission overwrites in ETS cache.
+  """
+  def put_channel_overwrites(channel_id, overwrites) when is_list(overwrites) do
+    cid = to_string(channel_id)
+
+    normalized =
+      Enum.map(overwrites, fn ow ->
+        %{
+          "channel_id" => cid,
+          "target_id" => to_string(Map.get(ow, "target_id") || Map.get(ow, :target_id)),
+          "target_type" => Map.get(ow, "target_type") || Map.get(ow, :target_type) || 0,
+          "allow" => Map.get(ow, "allow") || Map.get(ow, :allow) || 0,
+          "deny" => Map.get(ow, "deny") || Map.get(ow, :deny) || 0
+        }
+      end)
+
+    :ets.insert(@table, {{:channel_overwrites, cid}, normalized})
+    :ok
+  end
+
+  @doc """
+  Maps a session ID to its authenticated user ID in ETS cache.
+  """
+  def put_session_user(session_id, user_id) do
+    sid = to_string(session_id)
+    uid = to_string(user_id)
+    :ets.insert(@table, {{:session_user, sid}, uid})
+    :ok
+  end
+
+  @doc """
+  Retrieves authenticated user ID for a session from ETS cache.
+  """
+  def get_session_user(session_id) do
+    sid = to_string(session_id)
+
+    case :ets.lookup(@table, {:session_user, sid}) do
+      [{{:session_user, ^sid}, uid}] -> {:ok, uid}
+      [] -> :error
+    end
+  end
+
+  @doc """
+  Handles real-time permission and entity mutation events from the event bus,
+  immediately updating ETS tables to prevent TOCTOU permission leaks.
+  """
+  def handle_event(%{"type" => type} = event) do
+    payload = Map.get(event, "payload") || event
+
+    case type do
+      "GUILD_ROLE_CREATE" ->
+        handle_role_upsert(event, payload)
+
+      "GUILD_ROLE_UPDATE" ->
+        handle_role_upsert(event, payload)
+
+      "GUILD_ROLE_DELETE" ->
+        handle_role_delete(event, payload)
+
+      "GUILD_MEMBER_UPDATE" ->
+        handle_member_update(event, payload)
+
+      "CHANNEL_UPDATE" ->
+        handle_channel_update(event, payload)
+
+      "CHANNEL_DELETE" ->
+        handle_channel_delete(event, payload)
+
+      "GUILD_MEMBER_REMOVE" ->
+        handle_member_remove(event, payload)
+
+      _ ->
+        :ok
+    end
+  end
+
+  def handle_event(_), do: :ok
+
+  defp handle_role_upsert(event, payload) do
+    gid = to_string(event["guild_id"] || payload["guild_id"])
+    role = payload["role"] || event["role"]
+
+    if role && gid != "" do
+      role_id = to_string(role["id"] || role[:id])
+      pos = role["position"] || role[:position] || 0
+      perms = role["permissions"] || role[:permissions] || 0
+      name = to_string(role["name"] || role[:name] || "")
+
+      role_map = %{
+        "id" => role_id,
+        "guild_id" => gid,
+        "name" => name,
+        "position" => pos,
+        "permissions" => perms
+      }
+
+      :ets.insert(@table, {{:role, role_id}, role_map})
+
+      {:ok, existing_roles} = get_guild_roles(gid)
+
+      updated_roles =
+        case Enum.find_index(existing_roles, fn r -> r["id"] == role_id end) do
+          nil -> existing_roles ++ [role_map]
+          idx -> List.replace_at(existing_roles, idx, role_map)
+        end
+        |> Enum.sort_by(& &1["position"], :asc)
+
+      :ets.insert(@table, {{:guild_roles, gid}, updated_roles})
+    end
+
+    :ok
+  end
+
+  defp handle_role_delete(event, payload) do
+    gid = to_string(event["guild_id"] || payload["guild_id"])
+    role_id = to_string(payload["role_id"] || event["role_id"])
+
+    if role_id != "" and gid != "" do
+      :ets.delete(@table, {:role, role_id})
+
+      {:ok, existing_roles} = get_guild_roles(gid)
+      updated_roles = Enum.reject(existing_roles, fn r -> r["id"] == role_id end)
+      :ets.insert(@table, {{:guild_roles, gid}, updated_roles})
+
+      records = :ets.match_object(@table, {{:member_roles, :_, gid}, :_})
+
+      Enum.each(records, fn {{:member_roles, uid, ^gid}, rids} ->
+        if is_list(rids) and role_id in rids do
+          new_rids = List.delete(rids, role_id)
+          :ets.insert(@table, {{:member_roles, uid, gid}, new_rids})
+        end
+      end)
+    end
+
+    :ok
+  end
+
+  defp handle_member_update(event, payload) do
+    gid = to_string(event["guild_id"] || payload["guild_id"])
+    user = payload["user"] || event["user"] || %{}
+    uid = to_string(user["id"] || user[:id] || payload["user_id"] || event["user_id"])
+    roles = payload["roles"] || event["roles"]
+    nick = payload["nick"] || event["nick"]
+
+    if uid != "" and gid != "" do
+      if is_list(roles) do
+        put_member_roles(uid, gid, roles)
+      end
+
+      if nick != nil do
+        :ets.insert(@table, {{:member_nick, uid, gid}, nick})
+      end
+    end
+
+    :ok
+  end
+
+  defp handle_channel_update(event, payload) do
+    channel = payload["channel"] || event["channel"] || payload
+    cid = to_string(channel["id"] || channel[:id])
+    gid = to_string(channel["guild_id"] || channel[:guild_id] || event["guild_id"] || payload["guild_id"])
+
+    if cid != "" do
+      if gid != "" do
+        :ets.insert(@table, {{:channel, cid}, gid})
+      end
+
+      overwrites =
+        payload["permission_overwrites"] || event["permission_overwrites"] ||
+          payload["overwrites"] || event["overwrites"]
+
+      if is_list(overwrites) do
+        put_channel_overwrites(cid, overwrites)
+      end
+    end
+
+    :ok
+  end
+
+  defp handle_channel_delete(event, payload) do
+    channel = payload["channel"] || event["channel"] || payload
+    cid = to_string(channel["id"] || channel[:id] || payload["channel_id"] || event["channel_id"])
+
+    if cid != "" do
+      :ets.delete(@table, {:channel, cid})
+      :ets.delete(@table, {:channel_overwrites, cid})
+    end
+
+    :ok
+  end
+
+  defp handle_member_remove(event, payload) do
+    gid = to_string(event["guild_id"] || payload["guild_id"])
+    user = payload["user"] || event["user"] || %{}
+    uid = to_string(user["id"] || user[:id] || payload["user_id"] || event["user_id"])
+
+    if uid != "" and gid != "" do
+      :ets.delete(@table, {:member_roles, uid, gid})
+      :ets.delete(@table, {:member_nick, uid, gid})
+    end
+
+    :ok
   end
 
   defp index_guild_channels(%{"id" => guild_id, "channels" => channels}) when is_list(channels) do
@@ -212,8 +525,11 @@ defmodule Gateway.Guild.Cache do
 
   defp fetch_from_db(user_id) do
     with {:ok, user} <- fetch_user(user_id),
-         {:ok, guilds} <- fetch_guilds_with_channels(user_id) do
-      {:ok, user, guilds}
+         {:ok, guilds} <- fetch_guilds_with_channels(user_id),
+         {:ok, roles} <- fetch_roles(user_id),
+         {:ok, member_roles} <- fetch_member_roles(user_id),
+         {:ok, overwrites} <- fetch_channel_overwrites(user_id) do
+      {:ok, user, guilds, roles, member_roles, overwrites}
     end
   end
 
@@ -295,6 +611,94 @@ defmodule Gateway.Guild.Cache do
     else
       {:error, reason} ->
         Logger.error("Gateway.Guild.Cache: failed to query guilds/channels for #{user_id}: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  defp fetch_roles(user_id) do
+    role_query = """
+    SELECT r.id, r.guild_id, r.name, r.position, r.permissions
+    FROM roles r
+    INNER JOIN members m ON m.guild_id = r.guild_id
+    WHERE m.user_id = $1
+    ORDER BY r.position ASC
+    """
+
+    case Postgrex.query(Gateway.DB, role_query, [user_id]) do
+      {:ok, %Postgrex.Result{rows: rows}} ->
+        roles =
+          Enum.map(rows, fn [id, gid, name, pos, perms] ->
+            %{
+              "id" => to_string(id),
+              "guild_id" => to_string(gid),
+              "name" => name,
+              "position" => pos,
+              "permissions" => perms
+            }
+          end)
+
+        {:ok, roles}
+
+      {:error, reason} ->
+        Logger.error("Gateway.Guild.Cache: failed to query roles for #{user_id}: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  defp fetch_member_roles(user_id) do
+    mr_query = """
+    SELECT mr.guild_id, mr.role_id
+    FROM member_roles mr
+    WHERE mr.user_id = $1
+    """
+
+    case Postgrex.query(Gateway.DB, mr_query, [user_id]) do
+      {:ok, %Postgrex.Result{rows: rows}} ->
+        member_roles_by_guild =
+          Enum.group_by(
+            rows,
+            fn [gid, _rid] -> to_string(gid) end,
+            fn [_gid, rid] -> to_string(rid) end
+          )
+
+        {:ok, member_roles_by_guild}
+
+      {:error, reason} ->
+        Logger.error("Gateway.Guild.Cache: failed to query member_roles for #{user_id}: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  defp fetch_channel_overwrites(user_id) do
+    co_query = """
+    SELECT co.channel_id, co.target_id, co.target_type, co.allow, co.deny
+    FROM channel_overwrites co
+    INNER JOIN channels c ON c.id = co.channel_id
+    INNER JOIN members m ON m.guild_id = c.guild_id
+    WHERE m.user_id = $1
+    """
+
+    case Postgrex.query(Gateway.DB, co_query, [user_id]) do
+      {:ok, %Postgrex.Result{rows: rows}} ->
+        overwrites_by_channel =
+          Enum.group_by(
+            rows,
+            fn [cid, _tid, _type, _allow, _deny] -> to_string(cid) end,
+            fn [cid, tid, type, allow, deny] ->
+              %{
+                "channel_id" => to_string(cid),
+                "target_id" => to_string(tid),
+                "target_type" => type,
+                "allow" => allow,
+                "deny" => deny
+              }
+            end
+          )
+
+        {:ok, overwrites_by_channel}
+
+      {:error, reason} ->
+        Logger.error("Gateway.Guild.Cache: failed to query channel_overwrites for #{user_id}: #{inspect(reason)}")
         {:error, reason}
     end
   end

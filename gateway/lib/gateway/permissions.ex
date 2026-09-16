@@ -41,7 +41,11 @@ defmodule Gateway.Permissions do
   # Mask of all 29 canonical permissions (0x1FFFFFFF = 536870911)
   @all_permissions (1 <<< 29) - 1
 
+  # Canonical baseline permission set for @everyone (104324673)
+  @default_everyone_permissions 104_324_673
+
   # Public accessors for permission constants
+  def default_everyone_permissions, do: @default_everyone_permissions
   def create_instant_invite, do: @create_instant_invite
   def kick_members, do: @kick_members
   def ban_members, do: @ban_members
@@ -145,6 +149,91 @@ defmodule Gateway.Permissions do
     p = to_int(perms)
     req = to_int(required_permission)
     band(p, req) == req
+  end
+
+  @doc """
+  Determines whether a user has VIEW_CHANNEL permission in a channel within a guild.
+  Queries Gateway.Guild.Cache for guild, roles, member roles, and channel overwrites.
+  Bypasses checks if user is the guild owner.
+  """
+  def can_view?(user_id, channel_id, guild_id \\ nil) do
+    gid =
+      if guild_id && guild_id != "" do
+        to_string(guild_id)
+      else
+        case Gateway.Guild.Cache.get_channel_guild(channel_id) do
+          {:ok, g} -> g
+          _ -> nil
+        end
+      end
+
+    if gid do
+      case Gateway.Guild.Cache.get_guild(gid) do
+        {:ok, guild} ->
+          owner_id = guild["owner_id"] || ""
+
+          if to_string(user_id) == to_string(owner_id) and owner_id != "" do
+            true
+          else
+            is_member =
+              Gateway.Guild.Cache.member_of?(user_id, gid) or
+                match?({:ok, _}, Gateway.Guild.Cache.get_member_roles(user_id, gid))
+
+            if is_member do
+              check_user_can_view(user_id, channel_id, gid, owner_id)
+            else
+              false
+            end
+          end
+
+        _ ->
+          false
+      end
+    else
+      false
+    end
+  end
+
+  defp check_user_can_view(user_id, channel_id, guild_id, owner_id) do
+    all_guild_roles =
+      case Gateway.Guild.Cache.get_guild_roles(guild_id) do
+        {:ok, roles} when is_list(roles) -> roles
+        _ -> []
+      end
+
+    member_role_ids =
+      case Gateway.Guild.Cache.get_member_roles(user_id, guild_id) do
+        {:ok, rids} when is_list(rids) -> MapSet.new(Enum.map(rids, &to_string/1))
+        _ -> MapSet.new()
+      end
+
+    everyone_role =
+      Enum.find(all_guild_roles, fn r ->
+        to_string(get_val(r, :id)) == to_string(guild_id)
+      end) ||
+        %{
+          "id" => to_string(guild_id),
+          "guild_id" => to_string(guild_id),
+          "position" => 0,
+          "permissions" => @default_everyone_permissions
+        }
+
+    user_roles = [
+      everyone_role
+      | Enum.filter(all_guild_roles, fn r ->
+          rid_str = to_string(get_val(r, :id))
+          rid_str != to_string(guild_id) and MapSet.member?(member_role_ids, rid_str)
+        end)
+    ]
+
+    overwrites =
+      case Gateway.Guild.Cache.get_channel_overwrites(channel_id) do
+        {:ok, ows} when is_list(ows) -> ows
+        _ -> []
+      end
+
+    effective_perms = resolve_channel(guild_id, owner_id, user_id, user_roles, overwrites)
+    can?(effective_perms, @view_channel)
   end
 
   # --- Internal Helpers ---

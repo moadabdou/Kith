@@ -109,4 +109,68 @@ defmodule Gateway.PermissionsTest do
       assert Permissions.all_permissions() == Bitwise.bsl(1, 29) - 1
     end
   end
+
+  describe "can_view?/3" do
+    alias Gateway.Guild.Cache
+
+    @guild_id "77000000000000001"
+    @channel_id "77000000000000010"
+    @owner_id "77000000000000099"
+    @member_id "77000000000000100"
+    @role_id "77000000000000200"
+
+    setup do
+      Cache.put_guild(%{
+        "id" => @guild_id,
+        "name" => "Perms Test Guild",
+        "owner_id" => @owner_id,
+        "channels" => [%{"id" => @channel_id, "name" => "secret-room"}]
+      })
+
+      Cache.put_guild_roles(@guild_id, [])
+      Cache.put_member_roles(@member_id, @guild_id, [])
+      Cache.put_channel_overwrites(@channel_id, [])
+
+      :ok
+    end
+
+    test "guild owner can always view channel" do
+      assert Permissions.can_view?(@owner_id, @channel_id, @guild_id)
+    end
+
+    test "non-member cannot view channel" do
+      refute Permissions.can_view?("random_user_999", @channel_id, @guild_id)
+    end
+
+    test "member with @everyone VIEW_CHANNEL can view channel" do
+      Cache.put_member_roles(@member_id, @guild_id, [])
+      Cache.put_guild_roles(@guild_id, [
+        %{"id" => @guild_id, "name" => "@everyone", "position" => 0, "permissions" => Permissions.view_channel()}
+      ])
+
+      assert Permissions.can_view?(@member_id, @channel_id, @guild_id)
+    end
+
+    test "member with role VIEW_CHANNEL can view channel even if @everyone denies it" do
+      Cache.put_member_roles(@member_id, @guild_id, [@role_id])
+      Cache.put_guild_roles(@guild_id, [
+        %{"id" => @guild_id, "name" => "@everyone", "position" => 0, "permissions" => 0},
+        %{"id" => @role_id, "name" => "VIP", "position" => 1, "permissions" => Permissions.view_channel()}
+      ])
+
+      assert Permissions.can_view?(@member_id, @channel_id, @guild_id)
+    end
+
+    test "channel overwrite denying VIEW_CHANNEL blocks member" do
+      Cache.put_member_roles(@member_id, @guild_id, [@role_id])
+      Cache.put_guild_roles(@guild_id, [
+        %{"id" => @role_id, "name" => "VIP", "position" => 1, "permissions" => Permissions.view_channel()}
+      ])
+      Cache.put_channel_overwrites(@channel_id, [
+        %{"target_id" => @member_id, "target_type" => 1, "allow" => 0, "deny" => Permissions.view_channel()}
+      ])
+
+      refute Permissions.can_view?(@member_id, @channel_id, @guild_id)
+    end
+  end
 end

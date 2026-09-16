@@ -122,6 +122,9 @@ defmodule Gateway.Bus.NatsConsumer do
         guild_id = event["guild_id"] || ""
         type = event["type"] || "UNKNOWN"
 
+        # Immediately synchronize permissions & entities in local ETS cache
+        Gateway.Guild.Cache.handle_event(event)
+
         # Route by guild_id -> dispatch to Guild Actor
         if guild_id != "" do
           Gateway.Guild.Actor.dispatch_event(guild_id, event, bus_received_at)

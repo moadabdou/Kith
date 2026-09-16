@@ -1,0 +1,1419 @@
+[
+  {
+    "name": "01_empty_roles",
+    "description": "No roles assigned results in 0 permissions",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [],
+    "overwrites": [],
+    "expected": 0
+  },
+  {
+    "name": "02_everyone_only_view_send",
+    "description": "@everyone grants VIEW_CHANNEL and SEND_MESSAGES",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 3072
+      }
+    ],
+    "overwrites": [],
+    "expected": 3072
+  },
+  {
+    "name": "03_multi_role_union",
+    "description": "Multiple roles union base permissions",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 1024
+      },
+      {
+        "id": 101,
+        "guild_id": 100,
+        "name": "Member",
+        "position": 1,
+        "permissions": 2048
+      },
+      {
+        "id": 102,
+        "guild_id": 100,
+        "name": "AttachFiles",
+        "position": 2,
+        "permissions": 32768
+      }
+    ],
+    "overwrites": [],
+    "expected": 35840
+  },
+  {
+    "name": "04_multi_role_overlapping_bits",
+    "description": "Overlapping bits between roles cleanly OR together",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 3072
+      },
+      {
+        "id": 101,
+        "guild_id": 100,
+        "name": "RoleA",
+        "position": 1,
+        "permissions": 18432
+      }
+    ],
+    "overwrites": [],
+    "expected": 19456
+  },
+  {
+    "name": "05_unassigned_user_no_roles",
+    "description": "User with no roles in populated guild gets 0",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [],
+    "overwrites": [],
+    "expected": 0
+  },
+  {
+    "name": "06_owner_without_roles",
+    "description": "Guild owner has ALL_PERMISSIONS even with empty roles",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 999,
+    "roles": [],
+    "overwrites": [],
+    "expected": 536870911
+  },
+  {
+    "name": "07_owner_bypasses_everyone_channel_deny",
+    "description": "Guild owner bypasses @everyone channel deny",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 999,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 1024
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 100,
+        "target_type": 0,
+        "allow": 0,
+        "deny": 3072
+      }
+    ],
+    "expected": 536870911
+  },
+  {
+    "name": "08_owner_bypasses_member_channel_deny",
+    "description": "Guild owner bypasses explicit member channel deny",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 999,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 1024
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 999,
+        "target_type": 1,
+        "allow": 0,
+        "deny": 536870911
+      }
+    ],
+    "expected": 536870911
+  },
+  {
+    "name": "09_owner_bypasses_role_channel_deny",
+    "description": "Guild owner bypasses role channel deny",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 999,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 1024
+      },
+      {
+        "id": 101,
+        "guild_id": 100,
+        "name": "Muted",
+        "position": 1,
+        "permissions": 0
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 101,
+        "target_type": 0,
+        "allow": 0,
+        "deny": 1024
+      }
+    ],
+    "expected": 536870911
+  },
+  {
+    "name": "10_non_owner_same_roles_as_owner_is_not_bypassed",
+    "description": "Non-owner with same role as owner gets normal resolved permissions",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 1024
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 100,
+        "target_type": 0,
+        "allow": 0,
+        "deny": 1024
+      }
+    ],
+    "expected": 0
+  },
+  {
+    "name": "11_admin_via_everyone",
+    "description": "ADMINISTRATOR granted in @everyone gives ALL_PERMISSIONS",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 8
+      }
+    ],
+    "overwrites": [],
+    "expected": 536870911
+  },
+  {
+    "name": "12_admin_via_custom_role",
+    "description": "ADMINISTRATOR granted via custom role gives ALL_PERMISSIONS",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 1024
+      },
+      {
+        "id": 101,
+        "guild_id": 100,
+        "name": "AdminRole",
+        "position": 5,
+        "permissions": 8
+      }
+    ],
+    "overwrites": [],
+    "expected": 536870911
+  },
+  {
+    "name": "13_admin_bypasses_everyone_channel_deny",
+    "description": "ADMINISTRATOR bypasses @everyone channel deny",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 1032
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 100,
+        "target_type": 0,
+        "allow": 0,
+        "deny": 536870911
+      }
+    ],
+    "expected": 536870911
+  },
+  {
+    "name": "14_admin_bypasses_role_channel_deny",
+    "description": "ADMINISTRATOR bypasses role channel deny",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 0
+      },
+      {
+        "id": 101,
+        "guild_id": 100,
+        "name": "Admin",
+        "position": 5,
+        "permissions": 8
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 101,
+        "target_type": 0,
+        "allow": 0,
+        "deny": 536870911
+      }
+    ],
+    "expected": 536870911
+  },
+  {
+    "name": "15_admin_bypasses_member_channel_deny",
+    "description": "ADMINISTRATOR bypasses explicit member channel deny",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 0
+      },
+      {
+        "id": 101,
+        "guild_id": 100,
+        "name": "Admin",
+        "position": 5,
+        "permissions": 8
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 42,
+        "target_type": 1,
+        "allow": 0,
+        "deny": 536870911
+      }
+    ],
+    "expected": 536870911
+  },
+  {
+    "name": "16_everyone_channel_deny_revokes_base",
+    "description": "@everyone channel overwrite deny revokes base permission",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 3072
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 100,
+        "target_type": 0,
+        "allow": 0,
+        "deny": 2048
+      }
+    ],
+    "expected": 1024
+  },
+  {
+    "name": "17_everyone_channel_allow_grants_without_base",
+    "description": "@everyone channel overwrite allow grants permission not in base",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 1024
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 100,
+        "target_type": 0,
+        "allow": 2048,
+        "deny": 0
+      }
+    ],
+    "expected": 3072
+  },
+  {
+    "name": "18_everyone_channel_allow_and_deny_disjoint",
+    "description": "@everyone channel overwrite allows one perm and denies another",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 3072
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 100,
+        "target_type": 0,
+        "allow": 16384,
+        "deny": 2048
+      }
+    ],
+    "expected": 17408
+  },
+  {
+    "name": "19_everyone_channel_deny_unheld_remains_denied",
+    "description": "@everyone channel deny for unheld permission remains 0",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 1024
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 100,
+        "target_type": 0,
+        "allow": 0,
+        "deny": 4
+      }
+    ],
+    "expected": 1024
+  },
+  {
+    "name": "20_everyone_channel_neutral_preserves_base",
+    "description": "@everyone neutral overwrite (0 allow, 0 deny) preserves base permissions",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 3072
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 100,
+        "target_type": 0,
+        "allow": 0,
+        "deny": 0
+      }
+    ],
+    "expected": 3072
+  },
+  {
+    "name": "21_single_role_overwrite_allow_over_everyone_base",
+    "description": "Role channel overwrite allows perm denied by @everyone base",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 0
+      },
+      {
+        "id": 101,
+        "guild_id": 100,
+        "name": "VIP",
+        "position": 1,
+        "permissions": 0
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 101,
+        "target_type": 0,
+        "allow": 1024,
+        "deny": 0
+      }
+    ],
+    "expected": 1024
+  },
+  {
+    "name": "22_single_role_overwrite_deny_over_everyone_base",
+    "description": "Role channel overwrite denies perm granted by @everyone base",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 1024
+      },
+      {
+        "id": 101,
+        "guild_id": 100,
+        "name": "Restricted",
+        "position": 1,
+        "permissions": 0
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 101,
+        "target_type": 0,
+        "allow": 0,
+        "deny": 1024
+      }
+    ],
+    "expected": 0
+  },
+  {
+    "name": "23_role_overwrite_allows_what_everyone_channel_denied",
+    "description": "Role overwrite allow re-enables permission denied by @everyone channel overwrite",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 1024
+      },
+      {
+        "id": 101,
+        "guild_id": 100,
+        "name": "Member",
+        "position": 1,
+        "permissions": 0
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 100,
+        "target_type": 0,
+        "allow": 0,
+        "deny": 1024
+      },
+      {
+        "channel_id": 500,
+        "target_id": 101,
+        "target_type": 0,
+        "allow": 1024,
+        "deny": 0
+      }
+    ],
+    "expected": 1024
+  },
+  {
+    "name": "24_role_overwrite_denies_what_everyone_channel_allowed",
+    "description": "Role overwrite deny disables permission allowed by @everyone channel overwrite",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 0
+      },
+      {
+        "id": 101,
+        "guild_id": 100,
+        "name": "Muted",
+        "position": 1,
+        "permissions": 0
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 100,
+        "target_type": 0,
+        "allow": 2048,
+        "deny": 0
+      },
+      {
+        "channel_id": 500,
+        "target_id": 101,
+        "target_type": 0,
+        "allow": 0,
+        "deny": 2048
+      }
+    ],
+    "expected": 0
+  },
+  {
+    "name": "25_two_roles_stacking_allow_and_neutral",
+    "description": "Role A allows perm and Role B is neutral -> permission granted",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 0
+      },
+      {
+        "id": 101,
+        "guild_id": 100,
+        "name": "Speaker",
+        "position": 1,
+        "permissions": 0
+      },
+      {
+        "id": 102,
+        "guild_id": 100,
+        "name": "Citizen",
+        "position": 2,
+        "permissions": 0
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 101,
+        "target_type": 0,
+        "allow": 2048,
+        "deny": 0
+      },
+      {
+        "channel_id": 500,
+        "target_id": 102,
+        "target_type": 0,
+        "allow": 0,
+        "deny": 0
+      }
+    ],
+    "expected": 2048
+  },
+  {
+    "name": "26_two_roles_stacking_deny_and_neutral",
+    "description": "Role A denies perm and Role B is neutral -> permission denied",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 2048
+      },
+      {
+        "id": 101,
+        "guild_id": 100,
+        "name": "Muted",
+        "position": 1,
+        "permissions": 0
+      },
+      {
+        "id": 102,
+        "guild_id": 100,
+        "name": "Citizen",
+        "position": 2,
+        "permissions": 0
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 101,
+        "target_type": 0,
+        "allow": 0,
+        "deny": 2048
+      },
+      {
+        "channel_id": 500,
+        "target_id": 102,
+        "target_type": 0,
+        "allow": 0,
+        "deny": 0
+      }
+    ],
+    "expected": 0
+  },
+  {
+    "name": "27_role_stacking_allow_wins_over_deny",
+    "description": "Role A denies and Role B allows: ALLOW WINS over deny across roles",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 0
+      },
+      {
+        "id": 101,
+        "guild_id": 100,
+        "name": "DenierRole",
+        "position": 1,
+        "permissions": 0
+      },
+      {
+        "id": 102,
+        "guild_id": 100,
+        "name": "AllowerRole",
+        "position": 2,
+        "permissions": 0
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 101,
+        "target_type": 0,
+        "allow": 0,
+        "deny": 2048
+      },
+      {
+        "channel_id": 500,
+        "target_id": 102,
+        "target_type": 0,
+        "allow": 2048,
+        "deny": 0
+      }
+    ],
+    "expected": 2048
+  },
+  {
+    "name": "28_role_position_bias_test_high_denies_low_allows",
+    "description": "High position role denies, low position role allows: ALLOW still wins (no position bias)",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 0
+      },
+      {
+        "id": 101,
+        "guild_id": 100,
+        "name": "LowRoleAllows",
+        "position": 1,
+        "permissions": 0
+      },
+      {
+        "id": 102,
+        "guild_id": 100,
+        "name": "HighRoleDenies",
+        "position": 10,
+        "permissions": 0
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 101,
+        "target_type": 0,
+        "allow": 2048,
+        "deny": 0
+      },
+      {
+        "channel_id": 500,
+        "target_id": 102,
+        "target_type": 0,
+        "allow": 0,
+        "deny": 2048
+      }
+    ],
+    "expected": 2048
+  },
+  {
+    "name": "29_role_position_bias_test_low_denies_high_allows",
+    "description": "Low position role denies, high position role allows: ALLOW still wins",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 0
+      },
+      {
+        "id": 101,
+        "guild_id": 100,
+        "name": "LowRoleDenies",
+        "position": 1,
+        "permissions": 0
+      },
+      {
+        "id": 102,
+        "guild_id": 100,
+        "name": "HighRoleAllows",
+        "position": 10,
+        "permissions": 0
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 101,
+        "target_type": 0,
+        "allow": 0,
+        "deny": 2048
+      },
+      {
+        "channel_id": 500,
+        "target_id": 102,
+        "target_type": 0,
+        "allow": 2048,
+        "deny": 0
+      }
+    ],
+    "expected": 2048
+  },
+  {
+    "name": "30_three_roles_two_deny_one_allows",
+    "description": "Two roles deny and one role allows: ALLOW wins",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 0
+      },
+      {
+        "id": 101,
+        "guild_id": 100,
+        "name": "DenyA",
+        "position": 1,
+        "permissions": 0
+      },
+      {
+        "id": 102,
+        "guild_id": 100,
+        "name": "DenyB",
+        "position": 2,
+        "permissions": 0
+      },
+      {
+        "id": 103,
+        "guild_id": 100,
+        "name": "AllowC",
+        "position": 3,
+        "permissions": 0
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 101,
+        "target_type": 0,
+        "allow": 0,
+        "deny": 32768
+      },
+      {
+        "channel_id": 500,
+        "target_id": 102,
+        "target_type": 0,
+        "allow": 0,
+        "deny": 32768
+      },
+      {
+        "channel_id": 500,
+        "target_id": 103,
+        "target_type": 0,
+        "allow": 32768,
+        "deny": 0
+      }
+    ],
+    "expected": 32768
+  },
+  {
+    "name": "31_three_roles_disjoint_allows_and_denies",
+    "description": "Disjoint permissions across three roles all combine properly",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 3072
+      },
+      {
+        "id": 101,
+        "guild_id": 100,
+        "name": "Role1",
+        "position": 1,
+        "permissions": 0
+      },
+      {
+        "id": 102,
+        "guild_id": 100,
+        "name": "Role2",
+        "position": 2,
+        "permissions": 0
+      },
+      {
+        "id": 103,
+        "guild_id": 100,
+        "name": "Role3",
+        "position": 3,
+        "permissions": 0
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 101,
+        "target_type": 0,
+        "allow": 32768,
+        "deny": 2048
+      },
+      {
+        "channel_id": 500,
+        "target_id": 102,
+        "target_type": 0,
+        "allow": 16384,
+        "deny": 0
+      },
+      {
+        "channel_id": 500,
+        "target_id": 103,
+        "target_type": 0,
+        "allow": 2048,
+        "deny": 0
+      }
+    ],
+    "expected": 52224
+  },
+  {
+    "name": "32_member_overwrite_denies_base_everyone",
+    "description": "Member overwrite deny revokes permission granted by base @everyone",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 3072
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 42,
+        "target_type": 1,
+        "allow": 0,
+        "deny": 2048
+      }
+    ],
+    "expected": 1024
+  },
+  {
+    "name": "33_member_overwrite_denies_role_base",
+    "description": "Member overwrite deny revokes permission granted by a role base",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 1024
+      },
+      {
+        "id": 101,
+        "guild_id": 100,
+        "name": "Helper",
+        "position": 1,
+        "permissions": 8192
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 42,
+        "target_type": 1,
+        "allow": 0,
+        "deny": 8192
+      }
+    ],
+    "expected": 1024
+  },
+  {
+    "name": "34_member_overwrite_denies_what_roles_channel_allowed",
+    "description": "Member overwrite DENY overrides role channel ALLOW (member wins over roles)",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 0
+      },
+      {
+        "id": 101,
+        "guild_id": 100,
+        "name": "VIP",
+        "position": 1,
+        "permissions": 0
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 101,
+        "target_type": 0,
+        "allow": 2048,
+        "deny": 0
+      },
+      {
+        "channel_id": 500,
+        "target_id": 42,
+        "target_type": 1,
+        "allow": 0,
+        "deny": 2048
+      }
+    ],
+    "expected": 0
+  },
+  {
+    "name": "35_member_overwrite_allows_what_roles_channel_denied",
+    "description": "Member overwrite ALLOW overrides role channel DENY (member wins over roles)",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 0
+      },
+      {
+        "id": 101,
+        "guild_id": 100,
+        "name": "Muted",
+        "position": 1,
+        "permissions": 0
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 101,
+        "target_type": 0,
+        "allow": 0,
+        "deny": 2048
+      },
+      {
+        "channel_id": 500,
+        "target_id": 42,
+        "target_type": 1,
+        "allow": 2048,
+        "deny": 0
+      }
+    ],
+    "expected": 2048
+  },
+  {
+    "name": "36_member_overwrite_allows_what_everyone_channel_denied",
+    "description": "Member overwrite ALLOW overrides @everyone channel DENY",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 1024
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 100,
+        "target_type": 0,
+        "allow": 0,
+        "deny": 1024
+      },
+      {
+        "channel_id": 500,
+        "target_id": 42,
+        "target_type": 1,
+        "allow": 1024,
+        "deny": 0
+      }
+    ],
+    "expected": 1024
+  },
+  {
+    "name": "37_member_overwrite_neutral_preserves_role_resolutions",
+    "description": "Member overwrite with 0 allow and 0 deny preserves role resolution",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 1024
+      },
+      {
+        "id": 101,
+        "guild_id": 100,
+        "name": "Role1",
+        "position": 1,
+        "permissions": 2048
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 101,
+        "target_type": 0,
+        "allow": 32768,
+        "deny": 0
+      },
+      {
+        "channel_id": 500,
+        "target_id": 42,
+        "target_type": 1,
+        "allow": 0,
+        "deny": 0
+      }
+    ],
+    "expected": 35840
+  },
+  {
+    "name": "38_unheld_role_channel_overwrite_ignored",
+    "description": "Channel overwrite for a role the member does NOT have is ignored",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 1024
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 9999,
+        "target_type": 0,
+        "allow": 0,
+        "deny": 1024
+      }
+    ],
+    "expected": 1024
+  },
+  {
+    "name": "39_other_member_channel_overwrite_ignored",
+    "description": "Channel overwrite for a different member is ignored",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 1024
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 8888,
+        "target_type": 1,
+        "allow": 0,
+        "deny": 1024
+      }
+    ],
+    "expected": 1024
+  },
+  {
+    "name": "40_unrelated_channel_overwrite_types",
+    "description": "Overwrites for other targets do not affect current member permissions",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 3072
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 7777,
+        "target_type": 0,
+        "allow": 16384,
+        "deny": 2048
+      },
+      {
+        "channel_id": 500,
+        "target_id": 8888,
+        "target_type": 1,
+        "allow": 32768,
+        "deny": 1024
+      }
+    ],
+    "expected": 3072
+  },
+  {
+    "name": "41_boundary_bit_0_create_instant_invite",
+    "description": "Bit 0 (CREATE_INSTANT_INVITE = 1) granted and denied properly",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 1
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 100,
+        "target_type": 0,
+        "allow": 0,
+        "deny": 1
+      }
+    ],
+    "expected": 0
+  },
+  {
+    "name": "42_boundary_bit_28_manage_roles",
+    "description": "Bit 28 (MANAGE_ROLES = 1 << 28) granted and denied properly",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 0
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 100,
+        "target_type": 0,
+        "allow": 268435456,
+        "deny": 0
+      }
+    ],
+    "expected": 268435456
+  },
+  {
+    "name": "43_all_29_bits_granted_in_base",
+    "description": "Base role with all 29 bits granted yields ALL_PERMISSIONS without overwrites",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 536870911
+      }
+    ],
+    "overwrites": [],
+    "expected": 536870911
+  },
+  {
+    "name": "44_all_29_bits_denied_in_channel_overwrite",
+    "description": "All 29 bits granted in base then explicitly denied in channel overwrite yields 0",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 536870911
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 100,
+        "target_type": 0,
+        "allow": 0,
+        "deny": 536870911
+      }
+    ],
+    "expected": 536870911
+  },
+  {
+    "name": "45_voice_permissions_combination",
+    "description": "Voice permissions (CONNECT, SPEAK, MUTE, DEAFEN, MOVE) correctly resolved",
+    "guild_id": 100,
+    "owner_id": 999,
+    "user_id": 42,
+    "roles": [
+      {
+        "id": 100,
+        "guild_id": 100,
+        "name": "@everyone",
+        "position": 0,
+        "permissions": 3145728
+      },
+      {
+        "id": 101,
+        "guild_id": 100,
+        "name": "Moderator",
+        "position": 1,
+        "permissions": 12582912
+      }
+    ],
+    "overwrites": [
+      {
+        "channel_id": 500,
+        "target_id": 100,
+        "target_type": 0,
+        "allow": 0,
+        "deny": 2097152
+      },
+      {
+        "channel_id": 500,
+        "target_id": 101,
+        "target_type": 0,
+        "allow": 18874368,
+        "deny": 0
+      }
+    ],
+    "expected": 32505856
+  }
+]

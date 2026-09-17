@@ -98,4 +98,90 @@ describe('Cross-language Permission Engine - TypeScript Golden Parity (#60)', ()
     expect(union).toBe(Perms.ALL_PERMISSIONS)
     expect(Perms.ALL_PERMISSIONS).toBe((1n << 29n) - 1n)
   })
+
+  it('identifies private channels where @everyone is denied VIEW_CHANNEL', () => {
+    const guildId = '100'
+
+    const publicChannelOverwrites: Perms.OverwriteLike[] = []
+    const isPublic = publicChannelOverwrites.some(
+      (ow) => Number(ow.target_type) === 0 && String(ow.target_id) === guildId && Perms.hasPermission(ow.deny, Perms.VIEW_CHANNEL)
+    )
+    expect(isPublic).toBe(false)
+
+    const privateChannelOverwrites: Perms.OverwriteLike[] = [
+      { target_id: guildId, target_type: 0, allow: '0', deny: Perms.VIEW_CHANNEL.toString() },
+      { target_id: '200', target_type: 0, allow: Perms.VIEW_CHANNEL.toString(), deny: '0' },
+    ]
+    const isPrivate = privateChannelOverwrites.some(
+      (ow) => Number(ow.target_type) === 0 && String(ow.target_id) === guildId && Perms.hasPermission(ow.deny, Perms.VIEW_CHANNEL)
+    )
+    expect(isPrivate).toBe(true)
+  })
+
+  it('validates MANAGE_CHANNELS permission gating', () => {
+    expect(Perms.hasPermission(0n, Perms.MANAGE_CHANNELS)).toBe(false)
+    expect(Perms.hasPermission(Perms.MANAGE_CHANNELS, Perms.MANAGE_CHANNELS)).toBe(true)
+    expect(Perms.hasPermission(Perms.ADMINISTRATOR, Perms.ADMINISTRATOR)).toBe(true)
+  })
+
+  it('resolves SEND_MESSAGES gating for message input', () => {
+    const guildId = '100'
+    const ownerId = '999'
+    const memberId = '42'
+
+    const baseRoles: Perms.RoleLike[] = [
+      { id: guildId, permissions: (Perms.VIEW_CHANNEL | Perms.SEND_MESSAGES).toString() },
+    ]
+
+    // 1. Normal channel allows send
+    const normalPerms = Perms.resolveChannelPermissions(guildId, ownerId, memberId, baseRoles, [])
+    expect(Perms.hasPermission(normalPerms, Perms.SEND_MESSAGES)).toBe(true)
+
+    // 2. Read-only channel with SEND_MESSAGES denied for @everyone
+    const readOnlyOverwrites: Perms.OverwriteLike[] = [
+      { target_id: guildId, type: 0, allow: '0', deny: Perms.SEND_MESSAGES.toString() },
+    ]
+    const readOnlyPerms = Perms.resolveChannelPermissions(guildId, ownerId, memberId, baseRoles, readOnlyOverwrites)
+    expect(Perms.hasPermission(readOnlyPerms, Perms.SEND_MESSAGES)).toBe(false)
+
+    // 3. Member with VIP role allowed SEND_MESSAGES overrides @everyone deny
+    const vipRoles: Perms.RoleLike[] = [
+      ...baseRoles,
+      { id: '200', permissions: '0' },
+    ]
+    const vipOverwrites: Perms.OverwriteLike[] = [
+      { target_id: guildId, type: 0, allow: '0', deny: Perms.SEND_MESSAGES.toString() },
+      { target_id: '200', type: 0, allow: Perms.SEND_MESSAGES.toString(), deny: '0' },
+    ]
+    const vipPerms = Perms.resolveChannelPermissions(guildId, ownerId, memberId, vipRoles, vipOverwrites)
+    expect(Perms.hasPermission(vipPerms, Perms.SEND_MESSAGES)).toBe(true)
+
+    // 4. Owner bypasses read-only deny unconditionally
+    const ownerPerms = Perms.resolveChannelPermissions(guildId, ownerId, ownerId, [], readOnlyOverwrites)
+    expect(Perms.hasPermission(ownerPerms, Perms.SEND_MESSAGES)).toBe(true)
+
+    // 5. Server base role override: @everyone has SEND_MESSAGES=0, but custom role has SEND_MESSAGES=1
+    const baseRolesWithoutEveryoneSend: Perms.RoleLike[] = [
+      { id: guildId, permissions: Perms.VIEW_CHANNEL.toString() }, // @everyone: no SEND_MESSAGES
+      { id: '300', permissions: Perms.SEND_MESSAGES.toString() },   // @nerds: has SEND_MESSAGES
+    ]
+    const resolvedMemberWithRole = Perms.resolveChannelPermissions(
+      guildId,
+      ownerId,
+      memberId,
+      baseRolesWithoutEveryoneSend,
+      []
+    )
+    expect(Perms.hasPermission(resolvedMemberWithRole, Perms.SEND_MESSAGES)).toBe(true)
+
+    // Member without the custom role cannot send messages
+    const resolvedMemberWithoutRole = Perms.resolveChannelPermissions(
+      guildId,
+      ownerId,
+      memberId,
+      [{ id: guildId, permissions: Perms.VIEW_CHANNEL.toString() }],
+      []
+    )
+    expect(Perms.hasPermission(resolvedMemberWithoutRole, Perms.SEND_MESSAGES)).toBe(false)
+  })
 })

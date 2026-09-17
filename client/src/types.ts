@@ -20,6 +20,14 @@ export interface Guild {
   created_at: string
 }
 
+export interface ChannelOverwrite {
+  channel_id?: string
+  target_id: string
+  type: number // 0 = role, 1 = member
+  allow: string
+  deny: string
+}
+
 export interface Channel {
   id: string
   guild_id: string
@@ -28,6 +36,7 @@ export interface Channel {
   position: number
   parent_id?: string | null
   created_at: string
+  permission_overwrites?: ChannelOverwrite[]
 }
 
 export interface AuthorRef {
@@ -143,4 +152,31 @@ export interface MemberAddPayload extends Member {
 export interface MemberRemovePayload {
   guild_id: string
   user: { id: string }
+}
+
+export interface MemberUpdatePayload {
+  guild_id: string
+  roles: string[]
+  user: AuthorRef
+  nick?: string | null
+}
+
+export interface RoleEventPayload {
+  guild_id: string
+  role: Role
+}
+
+export interface RoleDeletePayload {
+  guild_id: string
+  role_id: string
+}
+
+export interface ChannelEventPayload {
+  guild_id: string
+  channel?: Channel
+  id?: string
+  name?: string
+  type?: number
+  position?: number
+  permission_overwrites?: ChannelOverwrite[]
 }

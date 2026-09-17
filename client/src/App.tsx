@@ -1,10 +1,12 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { api } from './api'
 import { AuthView } from './components/auth/AuthView'
 import { ChatArea } from './components/chat/ChatArea'
+import { ChannelSettingsModal } from './components/modals/ChannelSettingsModal'
 import { CreateChannelModal } from './components/modals/CreateChannelModal'
 import { CreateGuildModal } from './components/modals/CreateGuildModal'
 import { InviteModal } from './components/modals/InviteModal'
+import { ServerSettingsModal } from './components/modals/ServerSettingsModal'
 import { ChannelSidebar } from './components/navigation/ChannelSidebar'
 import { MemberSidebar } from './components/navigation/MemberSidebar'
 import { ServerSidebar } from './components/navigation/ServerSidebar'
@@ -39,7 +41,12 @@ if (initialInvite && typeof window !== 'undefined') {
 
 function Dashboard() {
   const { user, loading } = useAuth()
-  const { onSessionReset } = useGateway()
+  const {
+    onSessionReset,
+    subscribeToChannelCreates,
+    subscribeToChannelUpdates,
+    subscribeToChannelDeletes,
+  } = useGateway()
   const [guilds, setGuilds] = useState<Guild[]>([])
   const [selectedGuildId, setSelectedGuildId] = useState<string | null>(null)
   const [channels, setChannels] = useState<Channel[]>([])
@@ -48,7 +55,19 @@ function Dashboard() {
   const [isGuildModalOpen, setIsGuildModalOpen] = useState(false)
   const [isChannelModalOpen, setIsChannelModalOpen] = useState(false)
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false)
+  const [isServerSettingsModalOpen, setIsServerSettingsModalOpen] = useState(false)
+  const [channelSettingsTarget, setChannelSettingsTarget] = useState<Channel | null>(null)
   const [inviteFeedback, setInviteFeedback] = useState<{ message: string; isError?: boolean } | null>(null)
+
+  const refreshChannels = useCallback(async () => {
+    if (!selectedGuildId) return
+    try {
+      const list = await api.getChannels(selectedGuildId)
+      setChannels(list)
+    } catch (err) {
+      console.error('Failed to reload channels:', err)
+    }
+  }, [selectedGuildId])
 
   // Fetch guilds when user is authenticated
   useEffect(() => {
@@ -108,6 +127,69 @@ function Dashboard() {
       }
     })
   }, [onSessionReset, selectedGuildId])
+
+  // Real-time channel creates, updates, and deletes via WebSocket
+  useEffect(() => {
+    if (!selectedGuildId) return
+
+    const uCreate = subscribeToChannelCreates((payload) => {
+      const gid = payload.guild_id || (payload.channel as any)?.guild_id
+      if (gid && gid !== selectedGuildId) return
+      const newChan: Channel = (payload.channel || payload) as Channel
+      if (!newChan?.id) return
+      setChannels((prev) => {
+        if (prev.some((c) => c.id === newChan.id)) return prev
+        return [...prev, newChan]
+      })
+    })
+
+    const uUpdate = subscribeToChannelUpdates((payload) => {
+      const gid = payload.guild_id || (payload.channel as any)?.guild_id
+      if (gid && gid !== selectedGuildId) return
+      const updatedChan: Channel = (payload.channel || payload) as Channel
+      if (!updatedChan?.id) return
+      setChannels((prev) =>
+        prev.map((c) => {
+          if (c.id !== updatedChan.id) return c
+          return {
+            ...c,
+            ...updatedChan,
+            permission_overwrites:
+              payload.permission_overwrites ??
+              updatedChan.permission_overwrites ??
+              c.permission_overwrites,
+          }
+        })
+      )
+    })
+
+    const uDelete = subscribeToChannelDeletes((payload) => {
+      const gid = payload.guild_id
+      if (gid && gid !== selectedGuildId) return
+      const delId = payload.id || (payload.channel as any)?.id
+      if (!delId) return
+      setChannels((prev) => prev.filter((c) => c.id !== delId))
+      setSelectedChannelId((prev) => {
+        if (prev === delId) {
+          const remaining = channels.filter((c) => c.id !== delId)
+          return remaining[0]?.id ?? null
+        }
+        return prev
+      })
+    })
+
+    return () => {
+      uCreate()
+      uUpdate()
+      uDelete()
+    }
+  }, [
+    selectedGuildId,
+    channels,
+    subscribeToChannelCreates,
+    subscribeToChannelUpdates,
+    subscribeToChannelDeletes,
+  ])
 
   const handleCreateGuild = async (name: string) => {
     const newGuild = await api.createGuild(name)
@@ -247,6 +329,8 @@ function Dashboard() {
         onSelectChannel={(id) => setSelectedChannelId(id)}
         onOpenCreateChannelModal={() => setIsChannelModalOpen(true)}
         onOpenInviteModal={() => setIsInviteModalOpen(true)}
+        onOpenServerSettingsModal={() => setIsServerSettingsModalOpen(true)}
+        onOpenChannelSettingsModal={(ch) => setChannelSettingsTarget(ch)}
       />
 
       {/* Main Chat Area */}
@@ -259,7 +343,7 @@ function Dashboard() {
 
       {/* 240px Member Sidebar (right of chat). Keyed by guild so switching
           guilds remounts it with fresh state instead of hand-rolled resets. */}
-      <MemberSidebar key={selectedGuildId ?? 'none'} guildId={selectedGuildId} />
+      <MemberSidebar key={selectedGuildId ?? 'none'} guildId={selectedGuildId} guild={currentGuild} />
 
       {/* Modals */}
       <CreateGuildModal
@@ -280,6 +364,26 @@ function Dashboard() {
         onClose={() => setIsInviteModalOpen(false)}
         guild={currentGuild}
         channel={currentChannel ?? channels[0] ?? null}
+      />
+
+      <ServerSettingsModal
+        isOpen={isServerSettingsModalOpen}
+        guild={currentGuild}
+        onClose={() => setIsServerSettingsModalOpen(false)}
+      />
+
+      <ChannelSettingsModal
+        isOpen={channelSettingsTarget != null}
+        guild={currentGuild}
+        channel={channelSettingsTarget}
+        onClose={() => setChannelSettingsTarget(null)}
+        onChannelUpdated={refreshChannels}
+        onChannelDeleted={(deletedId) => {
+          setChannels((prev) => prev.filter((c) => c.id !== deletedId))
+          if (selectedChannelId === deletedId) {
+            setSelectedChannelId(channels.find((c) => c.id !== deletedId)?.id ?? null)
+          }
+        }}
       />
       </div>
     </div>

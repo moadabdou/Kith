@@ -1,7 +1,8 @@
 import { useMemo, useRef, useEffect } from 'react'
 import { ArrowRight, ChevronLeft, ChevronRight, Hash, Loader2, Search, User, X } from 'lucide-react'
 import { highlightMatches } from '../../lib/search'
-import type { Channel, Member, Message } from '../../types'
+import { memberNameColor } from '../../lib/members'
+import type { Channel, Member, Message, Role } from '../../types'
 import { SearchFilterDropdown } from './SearchFilterDropdown'
 
 interface SearchResultsProps {
@@ -16,6 +17,7 @@ interface SearchResultsProps {
   onPageChange: (page: number) => void
   channels: Channel[]
   members?: Member[]
+  roles?: Role[]
   currentChannel: Channel | null
   selectedChannelId: string // '' for all channels
   onSelectChannelFilter: (channelId: string) => void
@@ -49,6 +51,7 @@ export function SearchResults({
   onPageChange,
   channels,
   members = [],
+  roles = [],
   currentChannel,
   selectedChannelId,
   onSelectChannelFilter,
@@ -271,17 +274,27 @@ export function SearchResults({
                   </div>
 
                   {/* Author Meta */}
-                  <div className="search-result-author-row">
-                    <div className="user-avatar" style={{ width: 28, height: 28, fontSize: 12 }}>
-                      {msg.author?.username?.substring(0, 2).toUpperCase() ?? 'U'}
-                    </div>
-                    <span className="search-result-author">
-                      {msg.author?.username ?? 'Unknown'}
-                    </span>
-                    <span className="search-result-time">
-                      {formatTimestamp(msg.timestamp)}
-                    </span>
-                  </div>
+                  {(() => {
+                    const authorMember = members.find((m) => m.user.id === msg.author?.id)
+                    const authorColor = authorMember ? memberNameColor(authorMember, roles) : null
+                    const authorName = authorMember?.nick || msg.author?.username || 'Unknown'
+                    return (
+                      <div className="search-result-author-row">
+                        <div className="user-avatar" style={{ width: 28, height: 28, fontSize: 12 }}>
+                          {msg.author?.username?.substring(0, 2).toUpperCase() ?? 'U'}
+                        </div>
+                        <span
+                          className="search-result-author"
+                          style={authorColor ? { color: authorColor } : undefined}
+                        >
+                          {authorName}
+                        </span>
+                        <span className="search-result-time">
+                          {formatTimestamp(msg.timestamp)}
+                        </span>
+                      </div>
+                    )
+                  })()}
 
                   {/* Message Content with Highlighted Query Terms */}
                   <div className="search-result-text">

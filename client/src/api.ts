@@ -1,4 +1,4 @@
-import type { AuthResponse, Channel, Guild, Member, Message, Role, SearchFilters, SearchResponse, User } from './types'
+import type { AuthResponse, Channel, ChannelOverwrite, Guild, Member, Message, Role, SearchFilters, SearchResponse, User } from './types'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api'
 
@@ -120,8 +120,65 @@ class ApiClient {
     return this.request<Role[]>(`/guilds/${guildId}/roles`)
   }
 
+  async createRole(
+    guildId: string,
+    data?: {
+      name?: string
+      color?: number
+      hoist?: boolean
+      position?: number
+      permissions?: string
+      mentionable?: boolean
+    }
+  ): Promise<Role> {
+    return this.request<Role>(`/guilds/${guildId}/roles`, {
+      method: 'POST',
+      body: JSON.stringify(data ?? {}),
+    })
+  }
+
+  async updateRole(
+    guildId: string,
+    roleId: string,
+    data: {
+      name?: string
+      color?: number
+      hoist?: boolean
+      position?: number
+      permissions?: string
+      mentionable?: boolean
+    }
+  ): Promise<Role> {
+    return this.request<Role>(`/guilds/${guildId}/roles/${roleId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async deleteRole(guildId: string, roleId: string): Promise<void> {
+    await this.request(`/guilds/${guildId}/roles/${roleId}`, {
+      method: 'DELETE',
+    })
+  }
+
+  async getMyPermissions(guildId: string): Promise<{ permissions: string }> {
+    return this.request<{ permissions: string }>(`/guilds/${guildId}/permissions/me`)
+  }
+
   async getMembers(guildId: string): Promise<Member[]> {
     return this.request<Member[]>(`/guilds/${guildId}/members`)
+  }
+
+  async assignMemberRole(guildId: string, userId: string, roleId: string): Promise<void> {
+    await this.request(`/guilds/${guildId}/members/${userId}/roles/${roleId}`, {
+      method: 'PUT',
+    })
+  }
+
+  async unassignMemberRole(guildId: string, userId: string, roleId: string): Promise<void> {
+    await this.request(`/guilds/${guildId}/members/${userId}/roles/${roleId}`, {
+      method: 'DELETE',
+    })
   }
 
   // ── Channels ───────────────────────────────────────
@@ -133,6 +190,43 @@ class ApiClient {
     return this.request<Channel>(`/guilds/${guildId}/channels`, {
       method: 'POST',
       body: JSON.stringify({ name, type }),
+    })
+  }
+
+  async updateChannel(
+    channelId: string,
+    data: { name?: string; position?: number }
+  ): Promise<Channel> {
+    return this.request<Channel>(`/channels/${channelId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async deleteChannel(channelId: string): Promise<void> {
+    await this.request(`/channels/${channelId}`, {
+      method: 'DELETE',
+    })
+  }
+
+  async getChannelOverwrites(channelId: string): Promise<ChannelOverwrite[]> {
+    return this.request<ChannelOverwrite[]>(`/channels/${channelId}/permissions`)
+  }
+
+  async setChannelOverwrite(
+    channelId: string,
+    targetId: string,
+    data: { type: number; allow: string; deny: string }
+  ): Promise<void> {
+    await this.request(`/channels/${channelId}/permissions/${targetId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async deleteChannelOverwrite(channelId: string, targetId: string): Promise<void> {
+    await this.request(`/channels/${channelId}/permissions/${targetId}`, {
+      method: 'DELETE',
     })
   }
 

@@ -56,7 +56,9 @@ const (
 	eventTypeRoleCreate        = "GUILD_ROLE_CREATE"
 	eventTypeRoleUpdate        = "GUILD_ROLE_UPDATE"
 	eventTypeRoleDelete        = "GUILD_ROLE_DELETE"
+	eventTypeChannelCreate     = "CHANNEL_CREATE"
 	eventTypeChannelUpdate     = "CHANNEL_UPDATE"
+	eventTypeChannelDelete     = "CHANNEL_DELETE"
 	eventVersion               = 1
 )
 
@@ -92,6 +94,11 @@ type roleDeleteEventPayload struct {
 	RoleID  string `json:"role_id"`
 }
 
+type channelDeleteEventPayload struct {
+	GuildID string `json:"guild_id"`
+	ID      string `json:"id"`
+}
+
 type channelUpdateEventPayload struct {
 	GuildID              string             `json:"guild_id"`
 	Channel              Channel            `json:"channel"`
@@ -108,13 +115,14 @@ type Guild struct {
 }
 
 type Channel struct {
-	ID        string    `json:"id"`
-	GuildID   string    `json:"guild_id"`
-	Type      int16     `json:"type"`
-	Name      string    `json:"name"`
-	Position  int32     `json:"position"`
-	ParentID  *string   `json:"parent_id"`
-	CreatedAt time.Time `json:"created_at"`
+	ID                   string             `json:"id"`
+	GuildID              string             `json:"guild_id"`
+	Type                 int16              `json:"type"`
+	Name                 string             `json:"name"`
+	Position             int32              `json:"position"`
+	ParentID             *string            `json:"parent_id"`
+	CreatedAt            time.Time          `json:"created_at"`
+	PermissionOverwrites []ChannelOverwrite `json:"permission_overwrites"`
 }
 
 type UserRef struct {
@@ -126,6 +134,7 @@ type UserRef struct {
 type Member struct {
 	User     UserRef   `json:"user"`
 	Nick     *string   `json:"nick"`
+	Roles    []string  `json:"roles"`
 	JoinedAt time.Time `json:"joined_at"`
 }
 
@@ -336,14 +345,19 @@ func (s *Service) ListChannels(ctx context.Context, userID, guildID int64) ([]Ch
 		return nil, err
 	}
 
-	// Owner or ADMINISTRATOR can view all channels
-	if state.IsOwner || permissions.Has(state.Permissions, permissions.ADMINISTRATOR) {
-		return allChannels, nil
-	}
-
 	overwritesByChannel, err := s.getGuildChannelOverwrites(ctx, guildID)
 	if err != nil {
 		return nil, err
+	}
+
+	for i := range allChannels {
+		cid, _ := snowflake.Parse(allChannels[i].ID)
+		allChannels[i].PermissionOverwrites = toChannelOverwrites(overwritesByChannel[cid])
+	}
+
+	// Owner or ADMINISTRATOR can view all channels
+	if state.IsOwner || permissions.Has(state.Permissions, permissions.ADMINISTRATOR) {
+		return allChannels, nil
 	}
 
 	visibleChannels := make([]Channel, 0, len(allChannels))
@@ -391,6 +405,7 @@ func (s *Service) CreateChannel(ctx context.Context, userID, guildID int64, chTy
 		return nil, err
 	}
 	c.ParentID = idPtr(parent)
+	s.publishChannelCreate(ctx, guildID, &c)
 	return &c, nil
 }
 
@@ -439,6 +454,7 @@ func (s *Service) UpdateChannel(ctx context.Context, userID, guildID, channelID 
 		return nil, err
 	}
 	c.ParentID = idPtr(parent)
+	s.publishChannelUpdate(ctx, guildID, channelID)
 	return &c, nil
 }
 
@@ -465,6 +481,7 @@ func (s *Service) DeleteChannel(ctx context.Context, userID, guildID, channelID 
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrUnknownChannel
 	}
+	s.publishChannelDelete(ctx, guildID, channelID)
 	return nil
 }
 
@@ -496,9 +513,34 @@ func (s *Service) ListMembers(ctx context.Context, userID, guildID int64) ([]Mem
 		if nick.Valid {
 			m.Nick = &nick.String
 		}
+		m.Roles = []string{}
 		members = append(members, m)
 	}
-	return members, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	roleRows, err := s.db.QueryContext(ctx, `
+		SELECT user_id::text, role_id::text
+		FROM member_roles
+		WHERE guild_id = $1`, guildID)
+	if err == nil {
+		defer roleRows.Close()
+		userRoles := make(map[string][]string)
+		for roleRows.Next() {
+			var uid, rid string
+			if err := roleRows.Scan(&uid, &rid); err == nil {
+				userRoles[uid] = append(userRoles[uid], rid)
+			}
+		}
+		for i := range members {
+			if rids, ok := userRoles[members[i].User.ID]; ok {
+				members[i].Roles = rids
+			}
+		}
+	}
+
+	return members, nil
 }
 
 // AddMember puts a user into a guild (owner only until Phase 4; idempotent).
@@ -772,7 +814,25 @@ func scanChannel(rows *sql.Rows) (Channel, error) {
 		return c, err
 	}
 	c.ParentID = idPtr(parent)
+	c.PermissionOverwrites = []ChannelOverwrite{}
 	return c, nil
+}
+
+func toChannelOverwrites(pows []permissions.Overwrite) []ChannelOverwrite {
+	if len(pows) == 0 {
+		return []ChannelOverwrite{}
+	}
+	out := make([]ChannelOverwrite, len(pows))
+	for i, o := range pows {
+		out[i] = ChannelOverwrite{
+			ChannelID:  strconv.FormatInt(o.ChannelID, 10),
+			TargetID:   strconv.FormatInt(o.TargetID, 10),
+			TargetType: int16(o.TargetType),
+			Allow:      strconv.FormatUint(o.Allow, 10),
+			Deny:       strconv.FormatUint(o.Deny, 10),
+		}
+	}
+	return out
 }
 
 func idPtr(n sql.NullInt64) *string {
@@ -1686,6 +1746,40 @@ func (s *Service) publishChannelUpdate(ctx context.Context, guildID, channelID i
 	}); err != nil {
 		slog.ErrorContext(ctx, "failed to publish event",
 			"type", eventTypeChannelUpdate, "guild_id", gidStr, "err", err)
+	}
+}
+
+func (s *Service) publishChannelCreate(ctx context.Context, guildID int64, ch *Channel) {
+	gidStr := strconv.FormatInt(guildID, 10)
+	if err := s.pub.Publish(ctx, events.Event{
+		Type:    eventTypeChannelCreate,
+		Version: eventVersion,
+		GuildID: gidStr,
+		Payload: channelUpdateEventPayload{
+			GuildID:              gidStr,
+			Channel:              *ch,
+			PermissionOverwrites: []ChannelOverwrite{},
+		},
+	}); err != nil {
+		slog.ErrorContext(ctx, "failed to publish event",
+			"type", eventTypeChannelCreate, "guild_id", gidStr, "err", err)
+	}
+}
+
+func (s *Service) publishChannelDelete(ctx context.Context, guildID, channelID int64) {
+	gidStr := strconv.FormatInt(guildID, 10)
+	cidStr := strconv.FormatInt(channelID, 10)
+	if err := s.pub.Publish(ctx, events.Event{
+		Type:    eventTypeChannelDelete,
+		Version: eventVersion,
+		GuildID: gidStr,
+		Payload: channelDeleteEventPayload{
+			GuildID: gidStr,
+			ID:      cidStr,
+		},
+	}); err != nil {
+		slog.ErrorContext(ctx, "failed to publish event",
+			"type", eventTypeChannelDelete, "guild_id", gidStr, "err", err)
 	}
 }
 

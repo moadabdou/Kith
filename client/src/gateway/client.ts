@@ -1,9 +1,13 @@
 import type {
+  ChannelEventPayload,
   MemberAddPayload,
   MemberChunkPayload,
   MemberRemovePayload,
+  MemberUpdatePayload,
   Message,
   PresenceUpdatePayload,
+  RoleDeletePayload,
+  RoleEventPayload,
   TypingStartPayload,
 } from '../types'
 
@@ -202,6 +206,34 @@ export class GatewayClient {
 
   public onGuildMemberRemove(callback: (payload: MemberRemovePayload) => void): () => void {
     return this.on('GUILD_MEMBER_REMOVE', callback)
+  }
+
+  public onGuildMemberUpdate(callback: (payload: MemberUpdatePayload) => void): () => void {
+    return this.on('GUILD_MEMBER_UPDATE', callback)
+  }
+
+  public onGuildRoleCreate(callback: (payload: RoleEventPayload) => void): () => void {
+    return this.on('GUILD_ROLE_CREATE', callback)
+  }
+
+  public onGuildRoleUpdate(callback: (payload: RoleEventPayload) => void): () => void {
+    return this.on('GUILD_ROLE_UPDATE', callback)
+  }
+
+  public onGuildRoleDelete(callback: (payload: RoleDeletePayload) => void): () => void {
+    return this.on('GUILD_ROLE_DELETE', callback)
+  }
+
+  public onChannelCreate(callback: (payload: ChannelEventPayload) => void): () => void {
+    return this.on('CHANNEL_CREATE', callback)
+  }
+
+  public onChannelUpdate(callback: (payload: ChannelEventPayload) => void): () => void {
+    return this.on('CHANNEL_UPDATE', callback)
+  }
+
+  public onChannelDelete(callback: (payload: ChannelEventPayload) => void): () => void {
+    return this.on('CHANNEL_DELETE', callback)
   }
 
   /**

@@ -1,13 +1,16 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
-import { AlertCircle, ArrowDown, Hash, Loader2, Send } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { AlertCircle, ArrowDown, Hash, Loader2 } from 'lucide-react'
 import { api } from '../../api'
 import { useAuth } from '../../context/useAuth'
 import { useGateway } from '../../gateway/useGateway'
+import { memberNameColor } from '../../lib/members'
+import { hasPermission, resolveChannelPermissions, SEND_MESSAGES } from '../../lib/permissions'
 import { parseSearchQuery } from '../../lib/search'
 import { remainingMs, typingDisplayName, typingIndicatorText } from '../../lib/typing'
-import type { Channel, Guild, Member, Message, SearchFilters } from '../../types'
+import type { Channel, Guild, Member, Message, Role, SearchFilters } from '../../types'
 import { SearchBar } from '../search/SearchBar'
 import { SearchResults } from '../search/SearchResults'
+import { MessageInput } from './MessageInput'
 
 interface ChatAreaProps {
   currentGuild: Guild | null
@@ -24,7 +27,17 @@ interface ActiveTyper {
 
 export function ChatArea({ currentGuild, currentChannel, channels = [], onSelectChannel }: ChatAreaProps) {
   const { user } = useAuth()
-  const { subscribeToMessages, subscribeToTyping, sendTyping, connected, onSessionReset } = useGateway()
+  const {
+    subscribeToMessages,
+    subscribeToTyping,
+    sendTyping,
+    connected,
+    onSessionReset,
+    subscribeToRoleCreates,
+    subscribeToRoleUpdates,
+    subscribeToRoleDeletes,
+    subscribeToMemberUpdates,
+  } = useGateway()
   const [messages, setMessages] = useState<Message[]>([])
   const [inputText, setInputText] = useState('')
   const [sending, setSending] = useState(false)
@@ -68,16 +81,107 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
     }, 2500)
   }, [])
 
-  // Load guild members when server changes (for search filters)
+  // Load guild members and roles when server changes
+  const [guildRoles, setGuildRoles] = useState<Role[]>([])
+
   useEffect(() => {
     if (!currentGuild) {
       setGuildMembers([])
+      setGuildRoles([])
       return
     }
-    api.getMembers(currentGuild.id)
-      .then((m) => setGuildMembers(m))
-      .catch((err) => console.error('Failed to load guild members for search:', err))
-  }, [currentGuild])
+    let active = true
+    const reloadMembers = () => {
+      api.getMembers(currentGuild.id)
+        .then((m) => {
+          if (active) setGuildMembers(m)
+        })
+        .catch((err) => console.error('Failed to load guild members for search:', err))
+    }
+
+    const reloadRoles = () => {
+      api.getRoles(currentGuild.id)
+        .then((r) => {
+          if (active) setGuildRoles(r)
+        })
+        .catch((err) => console.error('Failed to load guild roles for permissions:', err))
+    }
+
+    reloadMembers()
+    reloadRoles()
+    window.addEventListener('focus', reloadRoles)
+
+    const uRoleCreate = subscribeToRoleCreates((p) => {
+      if (p.guild_id === currentGuild.id) reloadRoles()
+    })
+    const uRoleUpdate = subscribeToRoleUpdates((p) => {
+      if (p.guild_id === currentGuild.id) reloadRoles()
+    })
+    const uRoleDelete = subscribeToRoleDeletes((p) => {
+      if (p.guild_id === currentGuild.id) reloadRoles()
+    })
+    const uMemberUpdate = subscribeToMemberUpdates((p) => {
+      if (p.guild_id === currentGuild.id) {
+        setGuildMembers((prev) =>
+          prev.map((m) =>
+            m.user.id === p.user?.id
+              ? { ...m, roles: p.roles ?? m.roles, nick: p.nick !== undefined ? p.nick : m.nick }
+              : m
+          )
+        )
+      }
+    })
+
+    return () => {
+      active = false
+      window.removeEventListener('focus', reloadRoles)
+      uRoleCreate()
+      uRoleUpdate()
+      uRoleDelete()
+      uMemberUpdate()
+    }
+  }, [
+    currentGuild,
+    currentChannel?.id,
+    subscribeToRoleCreates,
+    subscribeToRoleUpdates,
+    subscribeToRoleDeletes,
+    subscribeToMemberUpdates,
+  ])
+
+  // Resolve channel-scoped permissions for the current user
+  const canSendMessages = useMemo(() => {
+    if (!currentGuild || !currentChannel || !user) return false
+    // 1. Guild owner bypass
+    if (currentGuild.owner_id === user.id) return true
+
+    // 2. Identify member's assigned roles (plus @everyone role where id === guildId)
+    const currentMember = guildMembers.find((m) => m.user.id === user.id)
+    const assignedRoleIds = new Set(currentMember?.roles ?? [])
+
+    const memberRoles = guildRoles.filter(
+      (r) => r.id === currentGuild.id || assignedRoleIds.has(r.id)
+    )
+
+    const resolved = resolveChannelPermissions(
+      currentGuild.id,
+      currentGuild.owner_id,
+      user.id,
+      memberRoles,
+      currentChannel.permission_overwrites ?? []
+    )
+
+    return hasPermission(resolved, SEND_MESSAGES)
+  }, [currentGuild, currentChannel, user, guildMembers, guildRoles])
+
+  // Fast author member lookup for message history role colors and nicknames
+  const memberByUserId = useMemo(() => {
+    const map = new Map<string, Member>()
+    for (const m of guildMembers) {
+      map.set(m.user.id, m)
+    }
+    return map
+  }, [guildMembers])
 
   // Reset to latest present messages
   const resetToLatestMessages = useCallback(async () => {
@@ -525,7 +629,7 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
 
   const handleInputChange = (value: string) => {
     setInputText(value)
-    if (value.length > 0 && currentChannel) {
+    if (value.length > 0 && currentChannel && canSendMessages) {
       sendTyping(currentChannel.id)
     }
   }
@@ -620,6 +724,9 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
             {/* Message List */}
             {messages.map((msg) => {
               const isHighlighted = highlightedMessageId === msg.id
+              const authorMember = msg.author ? memberByUserId.get(msg.author.id) : undefined
+              const authorColor = authorMember ? memberNameColor(authorMember, guildRoles) : null
+              const authorName = authorMember?.nick || msg.author?.username || 'Unknown'
 
               return (
                 <div
@@ -632,7 +739,12 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
                   </div>
                   <div className="message-content-wrap">
                     <div className="message-meta">
-                      <span className="message-author">{msg.author?.username ?? 'Unknown'}</span>
+                      <span
+                        className="message-author"
+                        style={authorColor ? { color: authorColor } : undefined}
+                      >
+                        {authorName}
+                      </span>
                       <span className="message-time">{formatTime(msg.timestamp)}</span>
                     </div>
                     <div className="message-text">{msg.content}</div>
@@ -713,27 +825,14 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
           </div>
 
           {/* Message Input Box */}
-          <div className="chat-input-container">
-            <form onSubmit={handleSend} className="chat-input-bar">
-              <input
-                type="text"
-                className="chat-input"
-                value={inputText}
-                onChange={(e) => handleInputChange(e.target.value)}
-                placeholder={`Message #${currentChannel.name}`}
-                disabled={sending}
-                autoFocus
-              />
-              <button
-                type="submit"
-                className="send-btn"
-                disabled={sending || !inputText.trim()}
-                title="Send Message"
-              >
-                <Send size={18} />
-              </button>
-            </form>
-          </div>
+          <MessageInput
+            channelName={currentChannel.name}
+            canSend={canSendMessages}
+            inputText={inputText}
+            onChange={handleInputChange}
+            onSend={handleSend}
+            sending={sending}
+          />
         </div>
 
         {/* Search Results Drawer */}
@@ -749,6 +848,7 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
           onPageChange={setSearchPage}
           channels={channels}
           members={guildMembers}
+          roles={guildRoles}
           currentChannel={currentChannel}
           selectedChannelId={selectedChannelId}
           onSelectChannelFilter={handleSelectChannelFilter}

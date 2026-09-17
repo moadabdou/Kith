@@ -46,9 +46,16 @@ export interface RoleLike {
 export interface OverwriteLike {
   channel_id?: string | number | bigint
   target_id: string | number | bigint
-  target_type: TargetType | number
+  type?: TargetType | number
+  target_type?: TargetType | number
   allow: string | number | bigint
   deny: string | number | bigint
+}
+
+export function getOverwriteTargetType(ow: OverwriteLike): number {
+  if (ow.target_type !== undefined) return Number(ow.target_type)
+  if (ow.type !== undefined) return Number(ow.type)
+  return 0
 }
 
 export function toBigInt(val: string | number | bigint | null | undefined): bigint {
@@ -61,7 +68,7 @@ export function toBigInt(val: string | number | bigint | null | undefined): bigi
  * Returns ALL_PERMISSIONS if the user is the guild owner or has ADMINISTRATOR.
  */
 export function resolveGuildPermissions(
-  guildId: string | number | bigint,
+  _guildId: string | number | bigint,
   ownerId: string | number | bigint,
   userId: string | number | bigint,
   roles: RoleLike[]
@@ -125,7 +132,7 @@ export function resolveChannelPermissions(
 
   // 4a. Apply @everyone overwrite (target_type === 0 && target_id === guild_id)
   const everyoneOw = overwrites.find(
-    (ow) => Number(ow.target_type) === 0 && toBigInt(ow.target_id) === gId
+    (ow) => getOverwriteTargetType(ow) === 0 && toBigInt(ow.target_id) === gId
   )
   if (everyoneOw) {
     perms = (perms & ~toBigInt(everyoneOw.deny)) | toBigInt(everyoneOw.allow)
@@ -142,7 +149,7 @@ export function resolveChannelPermissions(
   let roleDeny = 0n
   let roleAllow = 0n
   for (const ow of overwrites) {
-    if (Number(ow.target_type) === 0 && toBigInt(ow.target_id) !== gId) {
+    if (getOverwriteTargetType(ow) === 0 && toBigInt(ow.target_id) !== gId) {
       if (roleIds.has(toBigInt(ow.target_id))) {
         roleDeny |= toBigInt(ow.deny)
         roleAllow |= toBigInt(ow.allow)
@@ -153,7 +160,7 @@ export function resolveChannelPermissions(
 
   // 4c. Apply member-specific overwrite (target_type === 1 && target_id === user_id)
   const memberOw = overwrites.find(
-    (ow) => Number(ow.target_type) === 1 && toBigInt(ow.target_id) === uId
+    (ow) => getOverwriteTargetType(ow) === 1 && toBigInt(ow.target_id) === uId
   )
   if (memberOw) {
     perms = (perms & ~toBigInt(memberOw.deny)) | toBigInt(memberOw.allow)

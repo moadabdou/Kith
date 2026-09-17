@@ -1,10 +1,14 @@
 import { createContext } from 'react'
 import type {
+  ChannelEventPayload,
   MemberAddPayload,
   MemberChunkPayload,
   MemberRemovePayload,
+  MemberUpdatePayload,
   Message,
   PresenceUpdatePayload,
+  RoleDeletePayload,
+  RoleEventPayload,
   TypingStartPayload,
 } from '../types'
 import type { GatewayStatus } from './client'
@@ -31,6 +35,13 @@ export interface GatewayContextValue {
   subscribeToTyping: (callback: (typing: TypingStartPayload) => void) => () => void
   subscribeToMemberAdds: (callback: (payload: MemberAddPayload) => void) => () => void
   subscribeToMemberRemoves: (callback: (payload: MemberRemovePayload) => void) => () => void
+  subscribeToMemberUpdates: (callback: (payload: MemberUpdatePayload) => void) => () => void
+  subscribeToRoleCreates: (callback: (payload: RoleEventPayload) => void) => () => void
+  subscribeToRoleUpdates: (callback: (payload: RoleEventPayload) => void) => () => void
+  subscribeToRoleDeletes: (callback: (payload: RoleDeletePayload) => void) => () => void
+  subscribeToChannelCreates: (callback: (payload: ChannelEventPayload) => void) => () => void
+  subscribeToChannelUpdates: (callback: (payload: ChannelEventPayload) => void) => () => void
+  subscribeToChannelDeletes: (callback: (payload: ChannelEventPayload) => void) => () => void
 }
 
 export const GatewayContext = createContext<GatewayContextValue | null>(null)

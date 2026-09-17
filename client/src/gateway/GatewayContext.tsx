@@ -1,11 +1,15 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { useAuth } from '../context/useAuth'
 import type {
+  ChannelEventPayload,
   MemberAddPayload,
   MemberChunkPayload,
   MemberRemovePayload,
+  MemberUpdatePayload,
   Message,
   PresenceUpdatePayload,
+  RoleDeletePayload,
+  RoleEventPayload,
   TypingStartPayload,
 } from '../types'
 import { gatewayClient, type GatewayStatus, type ReconnectState } from './client'
@@ -74,6 +78,34 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
     return gatewayClient.onGuildMemberRemove(callback)
   }
 
+  const subscribeToMemberUpdates = (callback: (payload: MemberUpdatePayload) => void) => {
+    return gatewayClient.onGuildMemberUpdate(callback)
+  }
+
+  const subscribeToRoleCreates = (callback: (payload: RoleEventPayload) => void) => {
+    return gatewayClient.onGuildRoleCreate(callback)
+  }
+
+  const subscribeToRoleUpdates = (callback: (payload: RoleEventPayload) => void) => {
+    return gatewayClient.onGuildRoleUpdate(callback)
+  }
+
+  const subscribeToRoleDeletes = (callback: (payload: RoleDeletePayload) => void) => {
+    return gatewayClient.onGuildRoleDelete(callback)
+  }
+
+  const subscribeToChannelCreates = (callback: (payload: ChannelEventPayload) => void) => {
+    return gatewayClient.onChannelCreate(callback)
+  }
+
+  const subscribeToChannelUpdates = (callback: (payload: ChannelEventPayload) => void) => {
+    return gatewayClient.onChannelUpdate(callback)
+  }
+
+  const subscribeToChannelDeletes = (callback: (payload: ChannelEventPayload) => void) => {
+    return gatewayClient.onChannelDelete(callback)
+  }
+
   const reconnectNow = () => {
     gatewayClient.reconnectNow()
   }
@@ -96,6 +128,13 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
         subscribeToTyping,
         subscribeToMemberAdds,
         subscribeToMemberRemoves,
+        subscribeToMemberUpdates,
+        subscribeToRoleCreates,
+        subscribeToRoleUpdates,
+        subscribeToRoleDeletes,
+        subscribeToChannelCreates,
+        subscribeToChannelUpdates,
+        subscribeToChannelDeletes,
       }}
     >
       {children}

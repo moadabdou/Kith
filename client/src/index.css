@@ -211,6 +211,20 @@ body {
   color: var(--text-header);
 }
 
+.channel-item .channel-settings-btn {
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+
+.channel-item:hover .channel-settings-btn,
+.channel-item.active .channel-settings-btn {
+  opacity: 1;
+}
+
+.channel-item .channel-settings-btn:hover {
+  color: var(--text-header);
+}
+
 .user-profile-bar {
   height: 52px;
   background-color: var(--bg-user-bar);
@@ -377,6 +391,11 @@ body {
   gap: 12px;
 }
 
+.chat-input-bar.disabled {
+  background-color: rgba(43, 45, 49, 0.6);
+  cursor: not-allowed;
+}
+
 .chat-input {
   flex: 1;
   background: transparent;
@@ -384,6 +403,11 @@ body {
   color: var(--text-header);
   font-size: 15px;
   outline: none;
+}
+
+.chat-input:disabled {
+  cursor: not-allowed;
+  color: var(--text-muted);
 }
 
 .chat-input::placeholder {

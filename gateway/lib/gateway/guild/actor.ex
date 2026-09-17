@@ -262,6 +262,9 @@ defmodule Gateway.Guild.Actor do
         "GUILD_MEMBER_UPDATE" ->
           handle_guild_member_update_dispatch(event, bus_received_at, state)
 
+        "GUILD_ROLE_CREATE" ->
+          handle_guild_role_change_dispatch(event, bus_received_at, state)
+
         "GUILD_ROLE_UPDATE" ->
           handle_guild_role_change_dispatch(event, bus_received_at, state)
 

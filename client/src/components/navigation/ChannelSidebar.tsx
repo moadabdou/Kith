@@ -1,5 +1,9 @@
-import { Hash, LogOut, Plus, UserPlus, Volume2 } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { Hash, Lock, LogOut, Plus, Settings, UserPlus, Volume2 } from 'lucide-react'
+import { api } from '../../api'
 import { useAuth } from '../../context/useAuth'
+import { useGateway } from '../../gateway/useGateway'
+import { ADMINISTRATOR, ALL_PERMISSIONS, hasPermission, MANAGE_CHANNELS, MANAGE_GUILD, MANAGE_ROLES, VIEW_CHANNEL } from '../../lib/permissions'
 import type { Channel, Guild } from '../../types'
 
 interface ChannelSidebarProps {
@@ -9,6 +13,17 @@ interface ChannelSidebarProps {
   onSelectChannel: (channelId: string) => void
   onOpenCreateChannelModal: () => void
   onOpenInviteModal: () => void
+  onOpenServerSettingsModal?: () => void
+  onOpenChannelSettingsModal?: (channel: Channel) => void
+}
+
+function isPrivateChannel(channel: Channel, guildId?: string): boolean {
+  if (!channel.permission_overwrites || !guildId) return false
+  const everyoneOw = channel.permission_overwrites.find(
+    (ow) => Number(ow.type) === 0 && ow.target_id === guildId
+  )
+  if (!everyoneOw) return false
+  return hasPermission(everyoneOw.deny, VIEW_CHANNEL)
 }
 
 export function ChannelSidebar({
@@ -18,8 +33,77 @@ export function ChannelSidebar({
   onSelectChannel,
   onOpenCreateChannelModal,
   onOpenInviteModal,
+  onOpenServerSettingsModal,
+  onOpenChannelSettingsModal,
 }: ChannelSidebarProps) {
   const { user, logout } = useAuth()
+  const { subscribeToMemberUpdates, subscribeToRoleUpdates, subscribeToRoleDeletes } = useGateway()
+  const [userPermissions, setUserPermissions] = useState<bigint | null>(null)
+
+  useEffect(() => {
+    if (!currentGuild || !user) {
+      setUserPermissions(null)
+      return
+    }
+
+    if (currentGuild.owner_id === user.id) {
+      setUserPermissions(ALL_PERMISSIONS)
+      return
+    }
+
+    let active = true
+    const fetchPerms = () => {
+      api.getMyPermissions(currentGuild.id)
+        .then((res) => {
+          if (active) {
+            setUserPermissions(BigInt(res.permissions))
+          }
+        })
+        .catch((err) => {
+          console.error('Failed to load user permissions:', err)
+        })
+    }
+
+    fetchPerms()
+
+    const uMember = subscribeToMemberUpdates((p) => {
+      if (p.guild_id === currentGuild.id && p.user?.id === user.id) {
+        fetchPerms()
+      }
+    })
+    const uRoleUpdate = subscribeToRoleUpdates((p) => {
+      if (p.guild_id === currentGuild.id) {
+        fetchPerms()
+      }
+    })
+    const uRoleDelete = subscribeToRoleDeletes((p) => {
+      if (p.guild_id === currentGuild.id) {
+        fetchPerms()
+      }
+    })
+
+    return () => {
+      active = false
+      uMember()
+      uRoleUpdate()
+      uRoleDelete()
+    }
+  }, [currentGuild, user, subscribeToMemberUpdates, subscribeToRoleUpdates, subscribeToRoleDeletes])
+
+  const isOwner = currentGuild && user && currentGuild.owner_id === user.id
+  const canManageChannels =
+    Boolean(isOwner) ||
+    (userPermissions != null &&
+      (hasPermission(userPermissions, ADMINISTRATOR) ||
+        hasPermission(userPermissions, MANAGE_CHANNELS) ||
+        hasPermission(userPermissions, MANAGE_GUILD)))
+
+  const canManageServer =
+    Boolean(isOwner) ||
+    (userPermissions != null &&
+      (hasPermission(userPermissions, ADMINISTRATOR) ||
+        hasPermission(userPermissions, MANAGE_GUILD) ||
+        hasPermission(userPermissions, MANAGE_ROLES)))
 
   const textChannels = channels.filter((c) => c.type === 0)
   const voiceChannels = channels.filter((c) => c.type === 2)
@@ -32,23 +116,44 @@ export function ChannelSidebar({
           {currentGuild?.name ?? 'Select a Server'}
         </span>
         {currentGuild && (
-          <button
-            type="button"
-            onClick={onOpenInviteModal}
-            style={{
-              background: 'none',
-              border: 'none',
-              color: 'var(--text-muted)',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              padding: 4,
-              borderRadius: 4,
-            }}
-            title="Invite People"
-          >
-            <UserPlus size={18} />
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            {canManageServer && onOpenServerSettingsModal && (
+              <button
+                type="button"
+                onClick={onOpenServerSettingsModal}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: 'var(--text-muted)',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  padding: 4,
+                  borderRadius: 4,
+                }}
+                title="Server Settings"
+              >
+                <Settings size={18} />
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onOpenInviteModal}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: 'var(--text-muted)',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                padding: 4,
+                borderRadius: 4,
+              }}
+              title="Invite People"
+            >
+              <UserPlus size={18} />
+            </button>
+          </div>
         )}
       </div>
 
@@ -58,34 +163,63 @@ export function ChannelSidebar({
           <>
             <div className="channels-list-header">
               <span>Text Channels</span>
-              <button
-                onClick={onOpenCreateChannelModal}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  color: 'inherit',
-                  cursor: 'pointer',
-                  padding: 2,
-                  display: 'flex',
-                }}
-                title="Create Channel"
-              >
-                <Plus size={16} />
-              </button>
+              {canManageChannels && (
+                <button
+                  onClick={onOpenCreateChannelModal}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: 'inherit',
+                    cursor: 'pointer',
+                    padding: 2,
+                    display: 'flex',
+                  }}
+                  title="Create Channel"
+                >
+                  <Plus size={16} />
+                </button>
+              )}
             </div>
 
             {textChannels.map((channel) => {
               const isActive = selectedChannelId === channel.id
+              const isPrivate = isPrivateChannel(channel, currentGuild.id)
               return (
                 <div
                   key={channel.id}
                   className={`channel-item ${isActive ? 'active' : ''}`}
                   onClick={() => onSelectChannel(channel.id)}
+                  title={isPrivate ? `${channel.name} (Private Channel)` : channel.name}
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
                 >
-                  <Hash size={18} />
-                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {channel.name}
-                  </span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden' }}>
+                    {isPrivate ? <Lock size={18} /> : <Hash size={18} />}
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {channel.name}
+                    </span>
+                  </div>
+                  {canManageChannels && onOpenChannelSettingsModal && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onOpenChannelSettingsModal(channel)
+                      }}
+                      className="channel-settings-btn"
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        color: 'var(--text-muted)',
+                        cursor: 'pointer',
+                        padding: 2,
+                        display: 'flex',
+                        alignItems: 'center',
+                      }}
+                      title="Edit Channel"
+                    >
+                      <Settings size={14} />
+                    </button>
+                  )}
                 </div>
               )
             })}

@@ -16,6 +16,17 @@ export function roleColorHex(color: number): string | null {
   return '#' + (color & 0xffffff).toString(16).padStart(6, '0')
 }
 
+/**
+ * Converts a #RRGGBB hex string to an int RGB role color.
+ * Returns 0 if empty or default.
+ */
+export function hexToRoleColor(hex: string | null | undefined): number {
+  if (!hex || hex === 'default' || hex === 'none') return 0
+  const clean = hex.replace('#', '').trim()
+  const val = parseInt(clean, 16)
+  return isNaN(val) ? 0 : val
+}
+
 /** A status counts as "online" for sidebar grouping unless offline/invisible. */
 export function isOnline(status: PresenceStatus | undefined): boolean {
   return status === 'online' || status === 'idle' || status === 'dnd'

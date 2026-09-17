@@ -76,6 +76,15 @@ defmodule Gateway.WS.Handler do
         {:ok, %{"op" => 8} = msg} ->
           handle_request_guild_members(Map.get(msg, "d"), state)
 
+        {:ok, %{"op" => 4} = msg} ->
+          handle_voice_state_update(Map.get(msg, "d") || %{}, state)
+
+        {:ok, %{"op" => 12} = msg} ->
+          handle_voice_signaling(Map.get(msg, "d") || %{}, state)
+
+        {:ok, %{"t" => "VOICE_SIGNALING"} = msg} ->
+          handle_voice_signaling(Map.get(msg, "d") || %{}, state)
+
         {:ok, %{"t" => "TYPING_START"} = msg} ->
           handle_typing_start(Map.get(msg, "d"), state)
 
@@ -106,11 +115,19 @@ defmodule Gateway.WS.Handler do
       Gateway.Metrics.record_fanout_latency(latency_s)
     end
 
+    op =
+      cond do
+        Map.has_key?(event, "op") -> event["op"]
+        Map.has_key?(event, :op) -> event[:op]
+        event["type"] == "VOICE_SIGNALING" -> 12
+        true -> 0
+      end
+
     frame =
       Jason.encode!(%{
         "t" => event["type"],
         "s" => seq,
-        "op" => 0,
+        "op" => op,
         "d" => event["payload"] || event["data"] || event
       })
 
@@ -344,6 +361,62 @@ defmodule Gateway.WS.Handler do
     end
   end
 
+  defp handle_voice_state_update(d, state) do
+    if not state.identified do
+      Logger.warning("Gateway.WS.Handler: op 4 received before IDENTIFY, closing with 4003")
+      close(4003, "Not identified", state)
+    else
+      guild_id = d["guild_id"] || d[:guild_id]
+
+      if is_nil(guild_id) or to_string(guild_id) == "" do
+        {:ok, state}
+      else
+        gid = to_string(guild_id)
+
+        case Gateway.Guild.Actor.update_voice_state(gid, state.user_id, state.session_id, d) do
+          {:ok, _vs} ->
+            {:ok, state}
+
+          {:error, :not_a_voice_channel} ->
+            Logger.warning("Gateway.WS.Handler: channel is not a voice channel in guild #{gid}")
+            {:ok, state}
+
+          {:error, :missing_permissions} ->
+            Logger.warning("Gateway.WS.Handler: user #{state.user_id} lacks permission to join voice channel in guild #{gid}")
+            {:ok, state}
+
+          {:error, reason} ->
+            Logger.warning("Gateway.WS.Handler: voice state update failed: #{inspect(reason)}")
+            {:ok, state}
+        end
+      end
+    end
+  end
+
+  defp handle_voice_signaling(d, state) do
+    if not state.identified do
+      Logger.warning("Gateway.WS.Handler: voice signaling received before IDENTIFY, closing with 4003")
+      close(4003, "Not identified", state)
+    else
+      guild_id = d["guild_id"] || d[:guild_id]
+
+      if is_nil(guild_id) or to_string(guild_id) == "" do
+        {:ok, state}
+      else
+        gid = to_string(guild_id)
+
+        case Gateway.Guild.Actor.voice_signaling(gid, state.user_id, d) do
+          :ok ->
+            {:ok, state}
+
+          {:error, reason} ->
+            Logger.debug("Gateway.WS.Handler: voice signaling dropped (#{inspect(reason)})")
+            {:ok, state}
+        end
+      end
+    end
+  end
+
   defp handle_identify(d, state) do
     if state.identify_timer do
       Process.cancel_timer(state.identify_timer)
@@ -367,6 +440,14 @@ defmodule Gateway.WS.Handler do
               {:ok, user, guilds} ->
                 guild_ids = Enum.map(guilds, & &1["id"])
 
+                # Hydrate active voice states for each guild filtered by caller visibility
+                guilds_with_voice =
+                  Enum.map(guilds, fn guild ->
+                    gid = to_string(guild["id"])
+                    visible_states = Gateway.Guild.Actor.get_visible_voice_states(gid, user_id)
+                    Map.put(guild, "voice_states", visible_states)
+                  end)
+
                 # Spawn Session Actor under Gateway.ConnSupervisor
                 {:ok, session_pid} =
                   Gateway.Session.get_or_spawn(
@@ -384,7 +465,7 @@ defmodule Gateway.WS.Handler do
                     "d" => %{
                       "v" => 1,
                       "user" => user,
-                      "guilds" => guilds,
+                      "guilds" => guilds_with_voice,
                       "session_id" => session_id
                     }
                   })

@@ -171,6 +171,17 @@ defmodule Gateway.Permissions do
   end
 
   @doc """
+  Determines whether a user has both VIEW_CHANNEL and CONNECT permissions in a voice channel.
+  Used to gate voice channel joins.
+  Bypasses checks if user is the guild owner.
+  """
+  def can_connect?(user_id, channel_id, guild_id \\ nil) do
+    req = bor(@view_channel, @connect)
+    has_channel_permission?(user_id, channel_id, guild_id, req)
+  end
+
+
+  @doc """
   Determines whether a user has a specific required permission in a channel within a guild.
   """
   def has_channel_permission?(user_id, channel_id, guild_id, required_permission) do

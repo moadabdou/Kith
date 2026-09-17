@@ -126,6 +126,58 @@ defmodule Gateway.Guild.Actor do
     end
   end
 
+  @doc """
+  Updates or clears the voice state for a user in this guild.
+  """
+  def update_voice_state(guild_id, user_id, session_id, params) do
+    case get_or_spawn(guild_id) do
+      {:ok, pid} ->
+        GenServer.call(pid, {:update_voice_state, user_id, session_id, params})
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  Returns all active voice states in this guild.
+  """
+  def get_voice_states(guild_id) do
+    case whereis(guild_id) do
+      pid when is_pid(pid) ->
+        GenServer.call(pid, :get_voice_states)
+
+      nil ->
+        %{}
+    end
+  end
+
+  @doc """
+  Returns all active voice states in this guild visible to `user_id`.
+  """
+  def get_visible_voice_states(guild_id, user_id) do
+    get_voice_states(guild_id)
+    |> Map.values()
+    |> Enum.filter(fn vs ->
+      vs.channel_id != nil and
+        Gateway.Permissions.can_view?(user_id, vs.channel_id, guild_id)
+    end)
+    |> Enum.map(&Gateway.Voice.VoiceState.to_map/1)
+  end
+
+  @doc """
+  Relays a voice signaling packet (offer, answer, or candidate) to a peer in the same voice channel.
+  """
+  def voice_signaling(guild_id, from_user_id, data) do
+    case whereis(guild_id) do
+      pid when is_pid(pid) ->
+        GenServer.call(pid, {:voice_signaling, from_user_id, data})
+
+      nil ->
+        {:error, :guild_not_found}
+    end
+  end
+
   # ── GenServer Callbacks ─────────────────────────────────────────────────────
 
   @impl true
@@ -143,7 +195,8 @@ defmodule Gateway.Guild.Actor do
       subscribers: %{},
       subscriber_refs: %{},
       ttl_ms: ttl_ms,
-      ttl_timer: ttl_timer
+      ttl_timer: ttl_timer,
+      voice_states: %{}
     }
 
     Logger.debug("Gateway.Guild.Actor [#{guild_id}] started")
@@ -205,6 +258,7 @@ defmodule Gateway.Guild.Actor do
       end
 
     subscribers = Map.delete(state.subscribers, session_id)
+    state = cleanup_voice_state_for_session(session_id, %{state | subscribers: subscribers, subscriber_refs: subscriber_refs})
 
     ttl_timer =
       if map_size(subscribers) == 0 do
@@ -213,7 +267,7 @@ defmodule Gateway.Guild.Actor do
         nil
       end
 
-    {:reply, :ok, %{state | subscribers: subscribers, subscriber_refs: subscriber_refs, ttl_timer: ttl_timer}}
+    {:reply, :ok, %{state | ttl_timer: ttl_timer}}
   end
 
   def handle_call(:subscribers, _from, state) do
@@ -230,6 +284,118 @@ defmodule Gateway.Guild.Actor do
   def handle_call(:subscriber_count, _from, state) do
     {:reply, map_size(state.subscribers), state}
   end
+
+  def handle_call({:update_voice_state, user_id, session_id, params}, _from, state) do
+    uid = to_string(user_id)
+    sid = to_string(session_id)
+    channel_id = params["channel_id"] || params[:channel_id]
+    cid = if channel_id && channel_id != "", do: to_string(channel_id), else: nil
+    self_mute = params["self_mute"] == true or params[:self_mute] == true
+    self_deaf = params["self_deaf"] == true or params[:self_deaf] == true
+
+    old_vs = Map.get(state.voice_states, uid)
+    old_cid = if old_vs, do: old_vs.channel_id, else: nil
+
+    cond do
+      cid != nil ->
+        case Gateway.Guild.Cache.get_channel(cid) do
+          {:ok, %{"type" => type}} when type in [2, :voice, "2"] ->
+            can_view = can_subscriber_view?(uid, cid, state.guild_id)
+            can_connect = Gateway.Permissions.can_connect?(uid, cid, state.guild_id)
+
+            if can_view and can_connect do
+              new_vs =
+                Gateway.Voice.VoiceState.new(%{
+                  guild_id: state.guild_id,
+                  channel_id: cid,
+                  user_id: uid,
+                  session_id: sid,
+                  self_mute: self_mute,
+                  self_deaf: self_deaf
+                })
+
+              new_voice_states = Map.put(state.voice_states, uid, new_vs)
+              fan_out_voice_state_update(new_vs, old_cid, state)
+              dispatch_voice_server_update(sid, cid, state)
+              {:reply, {:ok, new_vs}, %{state | voice_states: new_voice_states}}
+            else
+              {:reply, {:error, :missing_permissions}, state}
+            end
+
+          _ ->
+            {:reply, {:error, :not_a_voice_channel}, state}
+        end
+
+      true ->
+        # Leaving voice channel
+        if old_vs do
+          new_voice_states = Map.delete(state.voice_states, uid)
+
+          leave_vs = %Gateway.Voice.VoiceState{
+            guild_id: state.guild_id,
+            channel_id: nil,
+            user_id: uid,
+            session_id: sid,
+            self_mute: self_mute,
+            self_deaf: self_deaf
+          }
+
+          fan_out_voice_state_update(leave_vs, old_cid, state)
+          {:reply, {:ok, leave_vs}, %{state | voice_states: new_voice_states}}
+        else
+          {:reply, :ok, state}
+        end
+    end
+  end
+
+  def handle_call(:get_voice_states, _from, state) do
+    {:reply, state.voice_states, state}
+  end
+
+  def handle_call({:voice_signaling, from_user_id, data}, _from, state) do
+    sender_uid = to_string(from_user_id)
+    target_uid = to_string(data["to_user_id"] || data[:to_user_id])
+    target_cid = to_string(data["channel_id"] || data[:channel_id])
+
+    sender_vs = Map.get(state.voice_states, sender_uid)
+    target_vs = Map.get(state.voice_states, target_uid)
+
+    cond do
+      is_nil(sender_vs) or sender_vs.channel_id != target_cid ->
+        {:reply, {:error, :sender_not_in_channel}, state}
+
+      is_nil(target_vs) or target_vs.channel_id != target_cid ->
+        {:reply, {:error, :target_not_in_channel}, state}
+
+      true ->
+        recipient_sid = target_vs.session_id
+
+        case Map.get(state.subscribers, recipient_sid) do
+          sub when not is_nil(sub) ->
+            {pid, _uid, _vis} = normalize_subscriber(recipient_sid, sub, state.guild_id)
+
+            sig_event = %{
+              "type" => "VOICE_SIGNALING",
+              "op" => 12,
+              "guild_id" => state.guild_id,
+              "payload" => %{
+                "guild_id" => state.guild_id,
+                "channel_id" => target_cid,
+                "from_user_id" => sender_uid,
+                "type" => data["type"] || data[:type],
+                "payload" => data["payload"] || data[:payload] || data["signal"] || data[:signal]
+              }
+            }
+
+            send(pid, {:dispatch, sig_event, System.monotonic_time(:microsecond)})
+            {:reply, :ok, state}
+
+          _ ->
+            {:reply, {:error, :recipient_session_not_found}, state}
+        end
+    end
+  end
+
 
   @channel_scoped_events [
     "MESSAGE_CREATE",
@@ -695,6 +861,7 @@ defmodule Gateway.Guild.Actor do
 
       {session_id, new_refs} ->
         new_subscribers = Map.delete(state.subscribers, session_id)
+        state = cleanup_voice_state_for_session(session_id, %{state | subscribers: new_subscribers, subscriber_refs: new_refs})
 
         ttl_timer =
           if map_size(new_subscribers) == 0 do
@@ -703,7 +870,7 @@ defmodule Gateway.Guild.Actor do
             state.ttl_timer
           end
 
-        {:noreply, %{state | subscribers: new_subscribers, subscriber_refs: new_refs, ttl_timer: ttl_timer}}
+        {:noreply, %{state | ttl_timer: ttl_timer}}
     end
   end
 
@@ -730,6 +897,98 @@ defmodule Gateway.Guild.Actor do
 
   # ── Internal Helpers ────────────────────────────────────────────────────────
 
+  defp fan_out_voice_state_update(vs, old_cid, state) do
+    now = System.monotonic_time(:microsecond)
+    new_cid = vs.channel_id
+
+    Enum.each(state.subscribers, fn {session_id, sub} ->
+      {pid, user_id, _visible_channels} = normalize_subscriber(session_id, sub, state.guild_id)
+
+      cond do
+        new_cid != nil and can_subscriber_view?(user_id, new_cid, state.guild_id) ->
+          event = %{
+            "type" => "VOICE_STATE_UPDATE",
+            "guild_id" => state.guild_id,
+            "payload" => Gateway.Voice.VoiceState.to_map(vs)
+          }
+
+          send(pid, {:dispatch, event, now})
+
+        old_cid != nil and can_subscriber_view?(user_id, old_cid, state.guild_id) ->
+          synthetic_disconnect = %{
+            "type" => "VOICE_STATE_UPDATE",
+            "guild_id" => state.guild_id,
+            "payload" => %{
+              "guild_id" => state.guild_id,
+              "channel_id" => nil,
+              "user_id" => vs.user_id,
+              "session_id" => vs.session_id
+            }
+          }
+
+          send(pid, {:dispatch, synthetic_disconnect, now})
+
+        true ->
+          :ok
+      end
+    end)
+  end
+
+  defp cleanup_voice_state_for_session(session_id, state) do
+    case Enum.find(state.voice_states, fn {_uid, vs} -> vs.session_id == session_id end) do
+      {uid, vs} ->
+        new_voice_states = Map.delete(state.voice_states, uid)
+
+        leave_vs = %Gateway.Voice.VoiceState{
+          guild_id: state.guild_id,
+          channel_id: nil,
+          user_id: uid,
+          session_id: session_id,
+          self_mute: vs.self_mute,
+          self_deaf: vs.self_deaf
+        }
+
+        fan_out_voice_state_update(leave_vs, vs.channel_id, state)
+        %{state | voice_states: new_voice_states}
+
+      nil ->
+        state
+    end
+  end
+
+
+  defp dispatch_voice_server_update(session_id, channel_id, state) do
+    case Map.get(state.subscribers, session_id) do
+      sub when not is_nil(sub) ->
+        {pid, _user_id, _visible} = normalize_subscriber(session_id, sub, state.guild_id)
+
+        endpoint =
+          Application.get_env(
+            :gateway,
+            :voice_endpoint,
+            System.get_env("VOICE_ENDPOINT", "127.0.0.1:5000")
+          )
+
+        token = :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower)
+
+        event = %{
+          "type" => "VOICE_SERVER_UPDATE",
+          "guild_id" => state.guild_id,
+          "payload" => %{
+            "guild_id" => state.guild_id,
+            "channel_id" => channel_id,
+            "endpoint" => endpoint,
+            "token" => token
+          }
+        }
+
+        send(pid, {:dispatch, event, System.monotonic_time(:microsecond)})
+
+      nil ->
+        :ok
+    end
+  end
+
   defp cancel_timer(nil), do: :ok
 
   defp cancel_timer(timer) when is_reference(timer) do
@@ -740,3 +999,4 @@ defmodule Gateway.Guild.Actor do
     :ok
   end
 end
+

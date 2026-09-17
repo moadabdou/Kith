@@ -135,6 +135,7 @@ defmodule Gateway.WS.HandlerTest do
       assert hq_guild != nil
       assert hq_guild["name"] == "Kith HQ"
       assert length(hq_guild["channels"]) >= 3
+      assert is_list(hq_guild["voice_states"])
 
       # Verify ETS cache was warmed
       assert {:ok, cached_guild} = Gateway.Guild.Cache.get_guild("87000000000000100")
@@ -521,7 +522,7 @@ defmodule Gateway.WS.HandlerTest do
       assert {:ok, s1} = Handler.handle_in({typing_payload, opcode: :text}, identified_state)
       assert s1.close_code == nil
 
-      assert_receive {:send_frame, event, seq, bus_ts}, 1000
+      assert_receive {:send_frame, %{"type" => "TYPING_START"} = event, seq, bus_ts}, 1000
 
       assert event["type"] == "TYPING_START"
       assert event["version"] == 1
@@ -882,6 +883,52 @@ defmodule Gateway.WS.HandlerTest do
                Handler.handle_in({resume_payload, opcode: :text}, state)
 
       assert closing_state.close_code == 4004
+    end
+
+    test "Opcode 4 and Opcode 12 over WebSocket handler" do
+      {:push, _, state} = Handler.init(heartbeat_interval: 10_000)
+      user_id = 87000000000000001
+      token = Gateway.Auth.JWT.issue(user_id, state.jwt_secret, 3600)
+      id_payload = Jason.encode!(%{"op" => 2, "d" => %{"token" => token}})
+
+      {:push, _, identified_state} = Handler.handle_in({id_payload, opcode: :text}, state)
+      session_id = identified_state.session_id
+      guild_id = "87000000000000100"
+
+      # Opcode 4: Attempt to join text channel -> logged, handled safely without crashing
+      text_chan = "87000000000000201"
+      vsu_msg =
+        Jason.encode!(%{
+          "op" => 4,
+          "d" => %{
+            "guild_id" => guild_id,
+            "channel_id" => text_chan,
+            "self_mute" => false,
+            "self_deaf" => false
+          }
+        })
+
+      assert {:ok, s1} = Handler.handle_in({vsu_msg, opcode: :text}, identified_state)
+      assert s1.close_code == nil
+
+      # Opcode 12: Voice signaling when not in channel -> dropped, handled safely
+      sig_msg =
+        Jason.encode!(%{
+          "op" => 12,
+          "d" => %{
+            "guild_id" => guild_id,
+            "channel_id" => text_chan,
+            "to_user_id" => "87000000000000002",
+            "type" => "offer",
+            "payload" => %{"sdp" => "test"}
+          }
+        })
+
+      assert {:ok, s2} = Handler.handle_in({sig_msg, opcode: :text}, s1)
+      assert s2.close_code == nil
+
+      Handler.terminate(:normal, s2)
+      close_session(session_id)
     end
   end
 

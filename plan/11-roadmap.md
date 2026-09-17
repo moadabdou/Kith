@@ -99,6 +99,11 @@ prove the gateway stops delivering their private-channel events. Run the
 attack against a pre-fix build first and *watch it leak*.
 
 **Gate:** see `06-permissions.md` §7.
+- [x] Phase 4 completed and all 4 gates signed off (see [postmortems/phase-4.md](../postmortems/phase-4.md))
+  - [x] 40+ case matrix green in Go (45/45 golden vectors pass)
+  - [x] Same test vectors green in Elixir and TS (golden-file parity verified)
+  - [x] TOCTOU chaos experiment green (`docs/chaos-phase4.md`)
+  - [x] Hierarchy rules enforced (can't assign role above your own)
 
 ## Phase 5 — Voice: P2P mesh → TURN → SFU (wk 13–16)
 

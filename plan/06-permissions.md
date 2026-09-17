@@ -144,11 +144,11 @@ GET /guilds/:id/permissions/me (or in READY payload — client computes too,
 
 ## 7. Phase 4 gate
 
-- [ ] 40+ case matrix green in Go
-- [ ] Same test vectors green in Elixir and TS (golden-file)
-- [ ] TOCTOU chaos experiment: role revoked → private events stop within
-      one cache-refresh event
-- [ ] Hierarchy rules enforced (can't assign role above your own)
+- [x] 40+ case matrix green in Go (45/45 golden vectors pass in `api/pkg/permissions`)
+- [x] Same test vectors green in Elixir and TS (golden-file parity verified in `client` and `gateway`)
+- [x] TOCTOU chaos experiment: role revoked → private events stop within
+      one cache-refresh event (verified across 5 drills in `docs/chaos-phase4.md`)
+- [x] Hierarchy rules enforced (can't assign role above your own) (enforced in `service.go` and client UI)
 
 ## 8. Reading
 - Discord docs: "Permissions" + "Permission overwrites" (your spec)

@@ -16,6 +16,12 @@ type subscriberEntry struct {
 	sender   *webrtc.RTPSender
 }
 
+type peerEntry struct {
+	peer                 *peer.Peer
+	renegotiate          RenegotiateCallback
+	renegotiationPending bool
+}
+
 // Router coordinates audio routing between publishers and subscribers within a room.
 type Router struct {
 	roomID string
@@ -24,24 +30,20 @@ type Router struct {
 	// Registered publishers: pubUserID -> PublisherUplink
 	publishers map[string]*PublisherUplink
 
-	// Registered peers: userID -> *peer.Peer
-	peers map[string]*peer.Peer
+	// Registered peers: userID -> *peerEntry (bundles peer, callback, and pending state)
+	peers map[string]*peerEntry
 
 	// Downlinks per subscriber: subUserID -> map[pubUserID]*subscriberEntry
 	subscribers map[string]map[string]*subscriberEntry
-
-	// Renegotiation callbacks: userID -> RenegotiateCallback
-	renegotiators map[string]RenegotiateCallback
 }
 
 // NewRouter creates a new audio track router for a room.
 func NewRouter(roomID string) *Router {
 	return &Router{
-		roomID:        roomID,
-		publishers:    make(map[string]*PublisherUplink),
-		peers:         make(map[string]*peer.Peer),
-		subscribers:   make(map[string]map[string]*subscriberEntry),
-		renegotiators: make(map[string]RenegotiateCallback),
+		roomID:      roomID,
+		publishers:  make(map[string]*PublisherUplink),
+		peers:       make(map[string]*peerEntry),
+		subscribers: make(map[string]map[string]*subscriberEntry),
 	}
 }
 
@@ -50,11 +52,18 @@ func (r *Router) AddPeer(p *peer.Peer, renegotiate RenegotiateCallback) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.peers[p.UserID] = p
-	r.renegotiators[p.UserID] = renegotiate
+	r.peers[p.UserID] = &peerEntry{
+		peer:        p,
+		renegotiate: renegotiate,
+	}
 	if r.subscribers[p.UserID] == nil {
 		r.subscribers[p.UserID] = make(map[string]*subscriberEntry)
 	}
+
+	// Whenever the peer connection returns to Stable, automatically flush any postponed renegotiation
+	p.SetOnSignalingStable(func() {
+		r.OnSignalingStateStable(p.UserID)
+	})
 }
 
 // RemovePeer unregisters a peer, tearing down any publishing uplinks and subscriber downlinks.
@@ -69,8 +78,8 @@ func (r *Router) RemovePeer(userID string) {
 		for subID, subMap := range r.subscribers {
 			if entry, exists := subMap[userID]; exists {
 				entry.downlink.Close()
-				if p, okPeer := r.peers[subID]; okPeer {
-					_ = p.RemoveTrack(entry.sender)
+				if pe, okPeer := r.peers[subID]; okPeer && pe.peer != nil {
+					_ = pe.peer.RemoveTrack(entry.sender)
 				}
 				delete(subMap, userID)
 			}
@@ -89,7 +98,6 @@ func (r *Router) RemovePeer(userID string) {
 	}
 
 	delete(r.peers, userID)
-	delete(r.renegotiators, userID)
 	r.mu.Unlock()
 }
 
@@ -113,8 +121,8 @@ func (r *Router) AddPublisher(pubID string, trackRemote *webrtc.TrackRemote, rec
 	}
 
 	var peersToRenegotiate []string
-	for subID, p := range r.peers {
-		if subID == pubID {
+	for subID, pe := range r.peers {
+		if subID == pubID || pe.peer == nil {
 			continue
 		}
 
@@ -128,7 +136,7 @@ func (r *Router) AddPublisher(pubID string, trackRemote *webrtc.TrackRemote, rec
 			continue
 		}
 
-		sender, err := p.AddTrack(trackLocal)
+		sender, err := pe.peer.AddTrack(trackLocal)
 		if err != nil {
 			slog.Error("Failed to add track to subscriber peer", "sub_id", subID, "pub_id", pubID, "err", err)
 			continue
@@ -163,8 +171,8 @@ func (r *Router) RemovePublisher(pubID string) {
 		for subID, subMap := range r.subscribers {
 			if entry, exists := subMap[pubID]; exists {
 				entry.downlink.Close()
-				if p, okPeer := r.peers[subID]; okPeer {
-					_ = p.RemoveTrack(entry.sender)
+				if pe, okPeer := r.peers[subID]; okPeer && pe.peer != nil {
+					_ = pe.peer.RemoveTrack(entry.sender)
 				}
 				delete(subMap, pubID)
 			}
@@ -176,11 +184,12 @@ func (r *Router) RemovePublisher(pubID string) {
 // SubscribeToExistingPublishers attaches downlinks for all currently active publishers to the given subscriber.
 func (r *Router) SubscribeToExistingPublishers(userID string) {
 	r.mu.Lock()
-	p, ok := r.peers[userID]
-	if !ok {
+	pe, ok := r.peers[userID]
+	if !ok || pe == nil || pe.peer == nil {
 		r.mu.Unlock()
 		return
 	}
+	p := pe.peer
 
 	needsRenegotiate := false
 	for pubID, pub := range r.publishers {
@@ -238,20 +247,30 @@ func (r *Router) SubscribeToExistingPublishers(userID string) {
 }
 
 // TriggerRenegotiation sends a renegotiation offer to the subscriber if its signaling state is stable.
+// If the connection is currently in an in-flight offer/answer exchange, it marks renegotiationPending
+// so it will automatically trigger once the state returns to Stable.
 func (r *Router) TriggerRenegotiation(userID string) {
-	r.mu.RLock()
-	p, okPeer := r.peers[userID]
-	cb, okCb := r.renegotiators[userID]
-	r.mu.RUnlock()
-
-	if !okPeer || !okCb || cb == nil || p == nil {
+	r.mu.Lock()
+	entry, ok := r.peers[userID]
+	if !ok || entry == nil || entry.renegotiate == nil || entry.peer == nil {
+		r.mu.Unlock()
 		return
 	}
 
-	if p.PC.SignalingState() != webrtc.SignalingStateStable {
-		slog.Debug("Postponing renegotiation: signaling state not stable", "user_id", userID, "state", p.PC.SignalingState().String())
+	if entry.peer.PC.SignalingState() != webrtc.SignalingStateStable {
+		slog.Debug("Postponing renegotiation: signaling state not stable, queued for retry",
+			"user_id", userID,
+			"state", entry.peer.PC.SignalingState().String(),
+		)
+		entry.renegotiationPending = true
+		r.mu.Unlock()
 		return
 	}
+
+	entry.renegotiationPending = false
+	p := entry.peer
+	cb := entry.renegotiate
+	r.mu.Unlock()
 
 	offer, err := p.CreateOffer()
 	if err != nil {
@@ -260,6 +279,19 @@ func (r *Router) TriggerRenegotiation(userID string) {
 	}
 
 	cb(*offer)
+}
+
+// OnSignalingStateStable checks if a postponed renegotiation is pending and executes it immediately.
+func (r *Router) OnSignalingStateStable(userID string) {
+	r.mu.Lock()
+	entry, ok := r.peers[userID]
+	if !ok || entry == nil || !entry.renegotiationPending {
+		r.mu.Unlock()
+		return
+	}
+	r.mu.Unlock()
+
+	r.TriggerRenegotiation(userID)
 }
 
 // Close terminates all publisher uplinks and subscriber downlinks in the router.
@@ -278,6 +310,5 @@ func (r *Router) Close() {
 		}
 	}
 	r.subscribers = make(map[string]map[string]*subscriberEntry)
-	r.peers = make(map[string]*peer.Peer)
-	r.renegotiators = make(map[string]RenegotiateCallback)
+	r.peers = make(map[string]*peerEntry)
 }

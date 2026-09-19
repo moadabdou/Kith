@@ -253,3 +253,80 @@ func TestRouter_Lifecycle(t *testing.T) {
 	}
 	r.mu.RUnlock()
 }
+
+func TestRouter_PostponedRenegotiation(t *testing.T) {
+	api, err := peer.CreateAPI(peer.Config{})
+	if err != nil {
+		t.Fatalf("failed to create api: %v", err)
+	}
+
+	p, err := peer.NewPeer(api, webrtc.Configuration{}, "user_retry", "sess_retry", "chan_retry")
+	if err != nil {
+		t.Fatalf("failed to create peer: %v", err)
+	}
+	defer p.Close()
+	go func() {
+		for range p.Candidates {
+		}
+	}()
+
+	r := NewRouter("chan_retry")
+	defer r.Close()
+
+	renegFired := make(chan struct{}, 2)
+	r.AddPeer(p, func(offer webrtc.SessionDescription) {
+		renegFired <- struct{}{}
+	})
+
+	// Put peer into HaveLocalOffer state by creating an initial offer
+	track, _ := webrtc.NewTrackLocalStaticRTP(
+		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus}, "audio", "stream",
+	)
+	_, _ = p.AddTrack(track)
+	initialOffer, err := p.CreateOffer()
+	if err != nil {
+		t.Fatalf("failed to create initial offer: %v", err)
+	}
+
+	// Now signaling state is HaveLocalOffer (NOT Stable)
+	if p.PC.SignalingState() == webrtc.SignalingStateStable {
+		t.Fatalf("expected state to be non-stable, got %s", p.PC.SignalingState())
+	}
+
+	// Trigger renegotiation while unstable -> should be queued in renegotiationPending
+	r.TriggerRenegotiation("user_retry")
+
+	r.mu.RLock()
+	entry := r.peers["user_retry"]
+	pending := entry != nil && entry.renegotiationPending
+	r.mu.RUnlock()
+
+	if !pending {
+		t.Errorf("expected renegotiationPending to be true while peer is unstable")
+	}
+
+	// Now simulate remote answer arriving using a dummy answerer
+	answerer, _ := peer.NewPeer(api, webrtc.Configuration{}, "user_mock", "sess_mock", "chan_retry")
+	defer answerer.Close()
+	go func() {
+		for range answerer.Candidates {
+		}
+	}()
+	mockAnswer, err := answerer.HandleOffer(initialOffer.SDP)
+	if err != nil {
+		t.Fatalf("failed to handle offer on mock answerer: %v", err)
+	}
+
+	// Handle answer on p -> transitions state back to Stable!
+	if err := p.HandleAnswer(mockAnswer.SDP); err != nil {
+		t.Fatalf("failed to handle answer: %v", err)
+	}
+
+	// Verify that the postponed renegotiation fires!
+	select {
+	case <-renegFired:
+		// Successfully executed postponed renegotiation!
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("timed out waiting for postponed renegotiation to fire after returning to Stable")
+	}
+}

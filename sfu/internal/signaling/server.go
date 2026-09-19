@@ -20,16 +20,17 @@ import (
 
 // Inbound/Outbound message payload structures
 type Message struct {
-	Type      string                   `json:"type"`
-	Token     string                   `json:"token,omitempty"`
-	ChannelID string                   `json:"channel_id,omitempty"`
-	GuildID   string                   `json:"guild_id,omitempty"`
-	SDP       string                   `json:"sdp,omitempty"`
-	Candidate *webrtc.ICECandidateInit `json:"candidate,omitempty"`
-	Peers     []string                 `json:"peers,omitempty"`
-	UserID    string                   `json:"user_id,omitempty"`
-	Speaking  *bool                    `json:"speaking,omitempty"`
-	Message   string                   `json:"message,omitempty"`
+	Type       string                   `json:"type"`
+	Token      string                   `json:"token,omitempty"`
+	ChannelID  string                   `json:"channel_id,omitempty"`
+	GuildID    string                   `json:"guild_id,omitempty"`
+	SDP        string                   `json:"sdp,omitempty"`
+	Candidate  *webrtc.ICECandidateInit `json:"candidate,omitempty"`
+	Peers      []string                 `json:"peers,omitempty"`
+	UserID     string                   `json:"user_id,omitempty"`
+	Speaking   *bool                    `json:"speaking,omitempty"`
+	ListenOnly *bool                    `json:"listen_only,omitempty"`
+	Message    string                   `json:"message,omitempty"`
 }
 
 // Server provides the HTTP handler for WebSocket signaling.
@@ -176,6 +177,11 @@ func (s *Server) handleSession(ctx context.Context, conn *websocket.Conn) {
 				Peers:     peers,
 			})
 
+			// If the user joined in listen-only mode, immediately subscribe to existing speakers
+			if msg.ListenOnly != nil && *msg.ListenOnly && currentRoom != nil {
+				currentRoom.Router().SubscribeToExistingPublishers(userID)
+			}
+
 		case "offer":
 			if currentPeer == nil {
 				_ = writeJSON(Message{Type: "error", Message: "must join before sending offer"})
@@ -209,6 +215,11 @@ func (s *Server) handleSession(ctx context.Context, conn *websocket.Conn) {
 				slog.Error("Failed to handle answer", "user_id", userID, "err", err)
 				_ = writeJSON(Message{Type: "error", Message: "failed to process answer"})
 				continue
+			}
+
+			// Signaling state has returned to Stable; flush any postponed renegotiation
+			if currentRoom != nil {
+				currentRoom.Router().OnSignalingStateStable(userID)
 			}
 
 		case "candidate":

@@ -19,12 +19,14 @@ type Config struct {
 
 // Peer represents a connected participant in a voice room.
 type Peer struct {
-	UserID     string
-	SessionID  string
-	ChannelID  string
-	PC         *webrtc.PeerConnection
-	Candidates chan webrtc.ICECandidateInit
-	onTrack    func(*webrtc.TrackRemote, *webrtc.RTPReceiver)
+	UserID            string
+	SessionID         string
+	ChannelID         string
+	PC                *webrtc.PeerConnection
+	Candidates        chan webrtc.ICECandidateInit
+	onTrack           func(*webrtc.TrackRemote, *webrtc.RTPReceiver)
+	onClose           func()
+	onSignalingStable func()
 
 	mu     sync.Mutex
 	closed bool
@@ -70,6 +72,16 @@ func NewPeer(api *webrtc.API, config webrtc.Configuration, userID, sessionID, ch
 		metrics.ICEStates.WithLabelValues(state.String()).Inc()
 	})
 
+	pc.OnSignalingStateChange(func(state webrtc.SignalingState) {
+		slog.Debug("Signaling state changed", "user_id", userID, "state", state.String())
+		p.mu.Lock()
+		cb := p.onSignalingStable
+		p.mu.Unlock()
+		if state == webrtc.SignalingStateStable && cb != nil {
+			cb()
+		}
+	})
+
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		slog.Info("PeerConnection state changed", "user_id", userID, "state", state.String())
 		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed {
@@ -98,6 +110,20 @@ func (p *Peer) SetOnTrack(cb func(*webrtc.TrackRemote, *webrtc.RTPReceiver)) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.onTrack = cb
+}
+
+// SetOnClose sets the callback invoked when the Peer is closed or fails.
+func (p *Peer) SetOnClose(cb func()) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.onClose = cb
+}
+
+// SetOnSignalingStable sets the callback invoked when the connection transitions to SignalingStateStable.
+func (p *Peer) SetOnSignalingStable(cb func()) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.onSignalingStable = cb
 }
 
 // HandleOffer processes an incoming SDP offer and creates an SDP answer.
@@ -187,13 +213,18 @@ func (p *Peer) HandleAnswer(sdp string) error {
 // Close gracefully closes the PeerConnection.
 func (p *Peer) Close() error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	if p.closed {
+		p.mu.Unlock()
 		return nil
 	}
 	p.closed = true
 	close(p.Candidates)
+	onClose := p.onClose
+	p.mu.Unlock()
+
+	if onClose != nil {
+		onClose()
+	}
 	return p.PC.Close()
 }
 

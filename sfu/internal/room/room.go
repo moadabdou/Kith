@@ -170,6 +170,13 @@ func (r *Room) handleJoin(m joinMsg) {
 		r.router.AddPublisher(uid, track, receiver)
 	})
 
+	// Clean up room when peer connection fails or closes asynchronously
+	m.p.SetOnClose(func() {
+		go func() {
+			_ = r.Leave(uid)
+		}()
+	})
+
 	// Notify other peers in room
 	r.broadcastExcept(uid, Event{
 		Type:      "peer_joined",

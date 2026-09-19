@@ -80,4 +80,31 @@ defmodule Gateway.MetricsTest do
     assert out =~ ~s(gateway_ws_close_codes_total{code="4001"} 1)
     assert out =~ ~s(gateway_ws_close_codes_total{code="4004"} 1)
   end
+
+  test "voice metrics increment and render properly" do
+    Metrics.incr_voice_connection()
+    Metrics.incr_voice_connection()
+    Metrics.decr_voice_connection()
+
+    Metrics.incr_voice_state_update()
+    Metrics.incr_voice_server_update()
+
+    assert Metrics.get_voice_connections_active() >= 1
+    assert Metrics.get_voice_state_updates() >= 1
+    assert Metrics.get_voice_server_updates() >= 1
+
+    out = Metrics.render()
+
+    assert out =~ "# HELP gateway_voice_connections_active "
+    assert out =~ "# TYPE gateway_voice_connections_active gauge"
+    assert out =~ "gateway_voice_connections_active "
+
+    assert out =~ "# HELP gateway_voice_state_updates_total "
+    assert out =~ "# TYPE gateway_voice_state_updates_total counter"
+    assert out =~ "gateway_voice_state_updates_total "
+
+    assert out =~ "# HELP gateway_voice_server_updates_total "
+    assert out =~ "# TYPE gateway_voice_server_updates_total counter"
+    assert out =~ "gateway_voice_server_updates_total "
+  end
 end

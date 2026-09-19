@@ -132,6 +132,42 @@ defmodule Gateway.Metrics do
     Agent.get(__MODULE__, fn state -> state.slow_consumer_drops end)
   end
 
+  def incr_voice_state_update do
+    Agent.update(__MODULE__, fn state ->
+      %{state | voice_state_updates: state.voice_state_updates + 1}
+    end)
+  end
+
+  def incr_voice_server_update do
+    Agent.update(__MODULE__, fn state ->
+      %{state | voice_server_updates: state.voice_server_updates + 1}
+    end)
+  end
+
+  def incr_voice_connection do
+    Agent.update(__MODULE__, fn state ->
+      %{state | voice_connections_active: state.voice_connections_active + 1}
+    end)
+  end
+
+  def decr_voice_connection(count \\ 1) do
+    Agent.update(__MODULE__, fn state ->
+      %{state | voice_connections_active: max(0, state.voice_connections_active - count)}
+    end)
+  end
+
+  def get_voice_connections_active do
+    Agent.get(__MODULE__, fn state -> state.voice_connections_active end)
+  end
+
+  def get_voice_state_updates do
+    Agent.get(__MODULE__, fn state -> state.voice_state_updates end)
+  end
+
+  def get_voice_server_updates do
+    Agent.get(__MODULE__, fn state -> state.voice_server_updates end)
+  end
+
   @fanout_buckets [0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0]
 
   def record_fanout_latency(seconds) when is_number(seconds) do
@@ -256,6 +292,15 @@ defmodule Gateway.Metrics do
            "# HELP gateway_members_chunks_total Total GUILD_MEMBERS_CHUNK events streamed to requesting sessions.",
            "# TYPE gateway_members_chunks_total counter",
            "gateway_members_chunks_total #{state.members_chunks}",
+           "# HELP gateway_voice_connections_active Active voice channel connections across all guilds.",
+           "# TYPE gateway_voice_connections_active gauge",
+           "gateway_voice_connections_active #{state.voice_connections_active}",
+           "# HELP gateway_voice_state_updates_total Total Opcode 4 VOICE_STATE_UPDATE payloads processed.",
+           "# TYPE gateway_voice_state_updates_total counter",
+           "gateway_voice_state_updates_total #{state.voice_state_updates}",
+           "# HELP gateway_voice_server_updates_total Total VOICE_SERVER_UPDATE events dispatched to clients.",
+           "# TYPE gateway_voice_server_updates_total counter",
+           "gateway_voice_server_updates_total #{state.voice_server_updates}",
           "# HELP gateway_events_consumed_total Total events consumed and acknowledged from event bus.",
           "# TYPE gateway_events_consumed_total counter",
           "gateway_events_consumed_total #{state.events_consumed}",
@@ -345,6 +390,9 @@ defmodule Gateway.Metrics do
       typing_broadcasts: 0,
       members_requests: 0,
       members_chunks: 0,
+      voice_state_updates: 0,
+      voice_server_updates: 0,
+      voice_connections_active: 0,
       close_codes: %{},
       fanout_latency: %{sum: 0.0, count: 0, buckets: %{}},
       send_queue_depth: %{sum: 0, count: 0, buckets: %{}},

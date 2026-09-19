@@ -291,6 +291,10 @@ defmodule Gateway.Guild.Actor do
             can_connect = Gateway.Permissions.can_connect?(uid, cid, state.guild_id)
 
             if can_view and can_connect do
+              if is_nil(old_vs) or is_nil(old_vs.channel_id) do
+                Gateway.Metrics.incr_voice_connection()
+              end
+
               new_vs =
                 Gateway.Voice.VoiceState.new(%{
                   guild_id: state.guild_id,
@@ -316,6 +320,10 @@ defmodule Gateway.Guild.Actor do
       true ->
         # Leaving voice channel
         if old_vs do
+          if not is_nil(old_vs.channel_id) do
+            Gateway.Metrics.decr_voice_connection()
+          end
+
           new_voice_states = Map.delete(state.voice_states, uid)
 
           leave_vs = %Gateway.Voice.VoiceState{
@@ -835,6 +843,10 @@ defmodule Gateway.Guild.Actor do
   @impl true
   def terminate(_reason, state) do
     Gateway.Metrics.decr_guild_actor()
+    active_voice_count = Enum.count(state.voice_states, fn {_uid, vs} -> not is_nil(vs.channel_id) end)
+    if active_voice_count > 0 do
+      Gateway.Metrics.decr_voice_connection(active_voice_count)
+    end
     cancel_timer(state.ttl_timer)
     Logger.debug("Gateway.Guild.Actor [#{state.guild_id}] terminated")
     :ok
@@ -882,6 +894,10 @@ defmodule Gateway.Guild.Actor do
   defp cleanup_voice_state_for_session(session_id, state) do
     case Enum.find(state.voice_states, fn {_uid, vs} -> vs.session_id == session_id end) do
       {uid, vs} ->
+        if not is_nil(vs.channel_id) do
+          Gateway.Metrics.decr_voice_connection()
+        end
+
         new_voice_states = Map.delete(state.voice_states, uid)
 
         leave_vs = %Gateway.Voice.VoiceState{
@@ -905,6 +921,7 @@ defmodule Gateway.Guild.Actor do
   defp dispatch_voice_server_update(session_id, channel_id, state) do
     case Map.get(state.subscribers, session_id) do
       sub when not is_nil(sub) ->
+        Gateway.Metrics.incr_voice_server_update()
         {pid, _user_id, _visible} = normalize_subscriber(session_id, sub, state.guild_id)
 
         endpoint =

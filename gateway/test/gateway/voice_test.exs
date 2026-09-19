@@ -142,6 +142,9 @@ defmodule Gateway.VoiceTest do
 
       voice_session = "voice-sess-1"
 
+      initial_active_voice = Gateway.Metrics.get_voice_connections_active()
+      initial_server_updates = Gateway.Metrics.get_voice_server_updates()
+
       # Join public voice channel
       join_params = %{
         "channel_id" => @public_voice_channel,
@@ -153,6 +156,8 @@ defmodule Gateway.VoiceTest do
                Actor.update_voice_state(@test_guild_id, @voice_user_id, voice_session, join_params)
 
       assert vs.channel_id == @public_voice_channel
+      assert Gateway.Metrics.get_voice_connections_active() == initial_active_voice + 1
+      assert Gateway.Metrics.get_voice_server_updates() == initial_server_updates + 1
 
       # Subscriber receives broadcast
       assert_receive {:dispatch, event, _ts}, 1000
@@ -172,6 +177,7 @@ defmodule Gateway.VoiceTest do
                Actor.update_voice_state(@test_guild_id, @voice_user_id, voice_session, leave_params)
 
       assert leave_vs.channel_id == nil
+      assert Gateway.Metrics.get_voice_connections_active() == initial_active_voice
 
       # Subscriber receives leave update
       assert_receive {:dispatch, leave_event, _ts}, 1000

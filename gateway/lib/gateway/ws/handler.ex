@@ -359,6 +359,7 @@ defmodule Gateway.WS.Handler do
       Logger.warning("Gateway.WS.Handler: op 4 received before IDENTIFY, closing with 4003")
       close(4003, "Not identified", state)
     else
+      Gateway.Metrics.incr_voice_state_update()
       guild_id = d["guild_id"] || d[:guild_id]
 
       if is_nil(guild_id) or to_string(guild_id) == "" do

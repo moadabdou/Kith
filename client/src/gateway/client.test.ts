@@ -375,4 +375,137 @@ describe('Gateway Client Reconnection & RESUME (#26)', () => {
       expect(typingFrames(ws).length).toBe(2)
     })
   })
+
+  describe('Voice State Lifecycle (#68, #69)', () => {
+    it('sends Opcode 4 VOICE_STATE_UPDATE on join, move, mute, and leave', () => {
+      const client = new GatewayClient()
+      expect(client.sendVoiceStateUpdate('g-1', 'vc-1')).toBe(false) // not connected yet
+
+      client.connect('mock-jwt-token')
+      const ws = MockWebSocket.instances[0]
+      ws.receiveJson({ op: 10, d: { heartbeat_interval: 30000 } })
+
+      // Join channel vc-1
+      expect(client.sendVoiceStateUpdate('g-1', 'vc-1', false, false)).toBe(true)
+      const lastSent = () => JSON.parse(ws.sentData[ws.sentData.length - 1])
+
+      expect(lastSent()).toEqual({
+        op: 4,
+        d: {
+          guild_id: 'g-1',
+          channel_id: 'vc-1',
+          self_mute: false,
+          self_deaf: false,
+        },
+      })
+
+      // Toggle self_mute and self_deaf
+      expect(client.sendVoiceStateUpdate('g-1', 'vc-1', true, true)).toBe(true)
+      expect(lastSent()).toEqual({
+        op: 4,
+        d: {
+          guild_id: 'g-1',
+          channel_id: 'vc-1',
+          self_mute: true,
+          self_deaf: true,
+        },
+      })
+
+      // Move to channel vc-2
+      expect(client.sendVoiceStateUpdate('g-1', 'vc-2', true, false)).toBe(true)
+      expect(lastSent()).toEqual({
+        op: 4,
+        d: {
+          guild_id: 'g-1',
+          channel_id: 'vc-2',
+          self_mute: true,
+          self_deaf: false,
+        },
+      })
+
+      // Leave channel (channel_id: null)
+      expect(client.sendVoiceStateUpdate('g-1', null)).toBe(true)
+      expect(lastSent()).toEqual({
+        op: 4,
+        d: {
+          guild_id: 'g-1',
+          channel_id: null,
+          self_mute: false,
+          self_deaf: false,
+        },
+      })
+    })
+
+    it('receives VOICE_STATE_UPDATE dispatch events', () => {
+      const client = new GatewayClient()
+      client.connect('mock-jwt-token')
+      const ws = MockWebSocket.instances[0]
+      ws.receiveJson({ op: 10, d: { heartbeat_interval: 30000 } })
+
+      const voiceStateUpdates: any[] = []
+      const unsubscribe = client.onVoiceStateUpdate((payload) => {
+        voiceStateUpdates.push(payload)
+      })
+
+      const sampleUpdate = {
+        guild_id: 'g-1',
+        channel_id: 'vc-1',
+        user_id: 'u-123',
+        session_id: 'sess-abc',
+        self_mute: false,
+        self_deaf: false,
+      }
+
+      ws.receiveJson({
+        op: 0,
+        t: 'VOICE_STATE_UPDATE',
+        s: 15,
+        d: sampleUpdate,
+      })
+
+      expect(voiceStateUpdates.length).toBe(1)
+      expect(voiceStateUpdates[0]).toEqual(sampleUpdate)
+
+      // Unsubscribe check
+      unsubscribe()
+      ws.receiveJson({
+        op: 0,
+        t: 'VOICE_STATE_UPDATE',
+        s: 16,
+        d: { ...sampleUpdate, channel_id: null },
+      })
+      expect(voiceStateUpdates.length).toBe(1)
+    })
+
+    it('receives VOICE_SERVER_UPDATE dispatch events', () => {
+      const client = new GatewayClient()
+      client.connect('mock-jwt-token')
+      const ws = MockWebSocket.instances[0]
+      ws.receiveJson({ op: 10, d: { heartbeat_interval: 30000 } })
+
+      const serverUpdates: any[] = []
+      const unsubscribe = client.onVoiceServerUpdate((payload) => {
+        serverUpdates.push(payload)
+      })
+
+      const sampleServerUpdate = {
+        guild_id: 'g-1',
+        channel_id: 'vc-1',
+        endpoint: '127.0.0.1:5000',
+        token: 'voice-session-token-123',
+      }
+
+      ws.receiveJson({
+        op: 0,
+        t: 'VOICE_SERVER_UPDATE',
+        s: 17,
+        d: sampleServerUpdate,
+      })
+
+      expect(serverUpdates.length).toBe(1)
+      expect(serverUpdates[0]).toEqual(sampleServerUpdate)
+
+      unsubscribe()
+    })
+  })
 })

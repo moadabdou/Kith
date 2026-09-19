@@ -13,6 +13,8 @@ import { ServerSidebar } from './components/navigation/ServerSidebar'
 import { ConnectionBanner } from './components/common/ConnectionBanner'
 import { AuthProvider } from './context/AuthContext'
 import { useAuth } from './context/useAuth'
+import { VoiceProvider } from './context/VoiceContext'
+import { VoiceChannelView } from './components/voice/VoiceChannelView'
 import { GatewayProvider } from './gateway/GatewayContext'
 import { useGateway } from './gateway/useGateway'
 import type { Channel, Guild } from './types'
@@ -54,6 +56,7 @@ function Dashboard() {
 
   const [isGuildModalOpen, setIsGuildModalOpen] = useState(false)
   const [isChannelModalOpen, setIsChannelModalOpen] = useState(false)
+  const [createChannelDefaultType, setCreateChannelDefaultType] = useState<number>(0)
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false)
   const [isServerSettingsModalOpen, setIsServerSettingsModalOpen] = useState(false)
   const [channelSettingsTarget, setChannelSettingsTarget] = useState<Channel | null>(null)
@@ -134,29 +137,37 @@ function Dashboard() {
 
     const uCreate = subscribeToChannelCreates((payload) => {
       const gid = payload.guild_id || (payload.channel as any)?.guild_id
-      if (gid && gid !== selectedGuildId) return
-      const newChan: Channel = (payload.channel || payload) as Channel
-      if (!newChan?.id) return
+      if (gid && String(gid) !== String(selectedGuildId)) return
+      const rawChan: any = payload.channel || payload
+      const chanId = rawChan?.id || payload.id
+      if (!chanId) return
+      const newChan: Channel = {
+        ...rawChan,
+        id: String(chanId),
+        guild_id: String(rawChan.guild_id || gid || selectedGuildId),
+      }
       setChannels((prev) => {
-        if (prev.some((c) => c.id === newChan.id)) return prev
+        if (prev.some((c) => String(c.id) === String(newChan.id))) return prev
         return [...prev, newChan]
       })
     })
 
     const uUpdate = subscribeToChannelUpdates((payload) => {
       const gid = payload.guild_id || (payload.channel as any)?.guild_id
-      if (gid && gid !== selectedGuildId) return
-      const updatedChan: Channel = (payload.channel || payload) as Channel
-      if (!updatedChan?.id) return
+      if (gid && String(gid) !== String(selectedGuildId)) return
+      const rawChan: any = payload.channel || payload
+      const chanId = rawChan?.id || payload.id
+      if (!chanId) return
       setChannels((prev) =>
         prev.map((c) => {
-          if (c.id !== updatedChan.id) return c
+          if (String(c.id) !== String(chanId)) return c
           return {
             ...c,
-            ...updatedChan,
+            ...rawChan,
+            id: String(c.id),
             permission_overwrites:
               payload.permission_overwrites ??
-              updatedChan.permission_overwrites ??
+              rawChan.permission_overwrites ??
               c.permission_overwrites,
           }
         })
@@ -165,16 +176,18 @@ function Dashboard() {
 
     const uDelete = subscribeToChannelDeletes((payload) => {
       const gid = payload.guild_id
-      if (gid && gid !== selectedGuildId) return
+      if (gid && String(gid) !== String(selectedGuildId)) return
       const delId = payload.id || (payload.channel as any)?.id
       if (!delId) return
-      setChannels((prev) => prev.filter((c) => c.id !== delId))
-      setSelectedChannelId((prev) => {
-        if (prev === delId) {
-          const remaining = channels.filter((c) => c.id !== delId)
-          return remaining[0]?.id ?? null
-        }
-        return prev
+      setChannels((prev) => {
+        const next = prev.filter((c) => String(c.id) !== String(delId))
+        setSelectedChannelId((currentSelected) => {
+          if (String(currentSelected) === String(delId)) {
+            return next[0]?.id ?? null
+          }
+          return currentSelected
+        })
+        return next
       })
     })
 
@@ -185,7 +198,6 @@ function Dashboard() {
     }
   }, [
     selectedGuildId,
-    channels,
     subscribeToChannelCreates,
     subscribeToChannelUpdates,
     subscribeToChannelDeletes,
@@ -252,10 +264,18 @@ function Dashboard() {
     }
   }, [user])
 
-  const handleCreateChannel = async (name: string) => {
+  const handleOpenCreateChannelModal = (defaultType = 0) => {
+    setCreateChannelDefaultType(defaultType)
+    setIsChannelModalOpen(true)
+  }
+
+  const handleCreateChannel = async (name: string, type = 0) => {
     if (!selectedGuildId) return
-    const newChannel = await api.createChannel(selectedGuildId, name, 0)
-    setChannels((prev) => [...prev, newChannel])
+    const newChannel = await api.createChannel(selectedGuildId, name, type)
+    setChannels((prev) => {
+      if (prev.some((c) => String(c.id) === String(newChannel.id))) return prev
+      return [...prev, newChannel]
+    })
     setSelectedChannelId(newChannel.id)
   }
 
@@ -327,19 +347,26 @@ function Dashboard() {
         channels={channels}
         selectedChannelId={selectedChannelId}
         onSelectChannel={(id) => setSelectedChannelId(id)}
-        onOpenCreateChannelModal={() => setIsChannelModalOpen(true)}
+        onOpenCreateChannelModal={handleOpenCreateChannelModal}
         onOpenInviteModal={() => setIsInviteModalOpen(true)}
         onOpenServerSettingsModal={() => setIsServerSettingsModalOpen(true)}
         onOpenChannelSettingsModal={(ch) => setChannelSettingsTarget(ch)}
       />
 
-      {/* Main Chat Area */}
-      <ChatArea
-        currentGuild={currentGuild}
-        currentChannel={currentChannel}
-        channels={channels}
-        onSelectChannel={(id) => setSelectedChannelId(id)}
-      />
+      {/* Main Content Area: Voice Stage if voice channel, ChatArea if text channel */}
+      {currentChannel && Number(currentChannel.type) === 2 ? (
+        <VoiceChannelView
+          currentGuild={currentGuild}
+          channel={currentChannel}
+        />
+      ) : (
+        <ChatArea
+          currentGuild={currentGuild}
+          currentChannel={currentChannel}
+          channels={channels}
+          onSelectChannel={(id) => setSelectedChannelId(id)}
+        />
+      )}
 
       {/* 240px Member Sidebar (right of chat). Keyed by guild so switching
           guilds remounts it with fresh state instead of hand-rolled resets. */}
@@ -355,6 +382,7 @@ function Dashboard() {
 
       <CreateChannelModal
         isOpen={isChannelModalOpen}
+        initialType={createChannelDefaultType}
         onClose={() => setIsChannelModalOpen(false)}
         onCreate={handleCreateChannel}
       />
@@ -394,7 +422,9 @@ export default function App() {
   return (
     <AuthProvider>
       <GatewayProvider>
-        <Dashboard />
+        <VoiceProvider>
+          <Dashboard />
+        </VoiceProvider>
       </GatewayProvider>
     </AuthProvider>
   )

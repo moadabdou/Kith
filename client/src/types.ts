@@ -18,6 +18,7 @@ export interface Guild {
   name: string
   owner_id: string
   created_at: string
+  voice_states?: Record<string, VoiceState>
 }
 
 export interface ChannelOverwrite {
@@ -179,4 +180,22 @@ export interface ChannelEventPayload {
   type?: number
   position?: number
   permission_overwrites?: ChannelOverwrite[]
+}
+
+export interface VoiceState {
+  guild_id: string
+  channel_id: string | null
+  user_id: string
+  session_id: string
+  self_mute: boolean
+  self_deaf: boolean
+}
+
+export type VoiceStateUpdatePayload = VoiceState
+
+export interface VoiceServerUpdatePayload {
+  guild_id: string
+  channel_id: string
+  endpoint: string
+  token: string
 }

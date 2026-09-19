@@ -11,6 +11,8 @@ import type {
   RoleDeletePayload,
   RoleEventPayload,
   TypingStartPayload,
+  VoiceServerUpdatePayload,
+  VoiceStateUpdatePayload,
 } from '../types'
 import { gatewayClient, type GatewayStatus, type ReconnectState } from './client'
 import { GatewayContext } from './gateway-context-def'
@@ -48,6 +50,10 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
 
   const onSessionReset = (callback: () => void) => {
     return gatewayClient.onSessionReset(callback)
+  }
+
+  const subscribeToReady = (callback: (data?: any) => void) => {
+    return gatewayClient.onReady(callback)
   }
 
   const requestGuildMembers = (guildId: string, opts?: RequestGuildMembersOptions) => {
@@ -106,6 +112,23 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
     return gatewayClient.onChannelDelete(callback)
   }
 
+  const sendVoiceStateUpdate = (
+    guildId: string,
+    channelId: string | null,
+    selfMute = false,
+    selfDeaf = false
+  ) => {
+    return gatewayClient.sendVoiceStateUpdate(guildId, channelId, selfMute, selfDeaf)
+  }
+
+  const subscribeToVoiceStateUpdates = (callback: (payload: VoiceStateUpdatePayload) => void) => {
+    return gatewayClient.onVoiceStateUpdate(callback)
+  }
+
+  const subscribeToVoiceServerUpdates = (callback: (payload: VoiceServerUpdatePayload) => void) => {
+    return gatewayClient.onVoiceServerUpdate(callback)
+  }
+
   const reconnectNow = () => {
     gatewayClient.reconnectNow()
   }
@@ -121,6 +144,7 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
         reconnectNow,
         subscribeToMessages,
         onSessionReset,
+        subscribeToReady,
         requestGuildMembers,
         subscribeToMemberChunks,
         subscribeToPresenceUpdates,
@@ -135,6 +159,9 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
         subscribeToChannelCreates,
         subscribeToChannelUpdates,
         subscribeToChannelDeletes,
+        sendVoiceStateUpdate,
+        subscribeToVoiceStateUpdates,
+        subscribeToVoiceServerUpdates,
       }}
     >
       {children}

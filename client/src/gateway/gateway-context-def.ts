@@ -10,6 +10,8 @@ import type {
   RoleDeletePayload,
   RoleEventPayload,
   TypingStartPayload,
+  VoiceServerUpdatePayload,
+  VoiceStateUpdatePayload,
 } from '../types'
 import type { GatewayStatus } from './client'
 
@@ -28,6 +30,7 @@ export interface GatewayContextValue {
   reconnectNow: () => void
   subscribeToMessages: (callback: (msg: Message) => void) => () => void
   onSessionReset: (callback: () => void) => () => void
+  subscribeToReady: (callback: (data?: any) => void) => () => void
   requestGuildMembers: (guildId: string, opts?: RequestGuildMembersOptions) => void
   subscribeToMemberChunks: (callback: (chunk: MemberChunkPayload) => void) => () => void
   subscribeToPresenceUpdates: (callback: (update: PresenceUpdatePayload) => void) => () => void
@@ -42,6 +45,14 @@ export interface GatewayContextValue {
   subscribeToChannelCreates: (callback: (payload: ChannelEventPayload) => void) => () => void
   subscribeToChannelUpdates: (callback: (payload: ChannelEventPayload) => void) => () => void
   subscribeToChannelDeletes: (callback: (payload: ChannelEventPayload) => void) => () => void
+  sendVoiceStateUpdate: (
+    guildId: string,
+    channelId: string | null,
+    selfMute?: boolean,
+    selfDeaf?: boolean
+  ) => boolean
+  subscribeToVoiceStateUpdates: (callback: (payload: VoiceStateUpdatePayload) => void) => () => void
+  subscribeToVoiceServerUpdates: (callback: (payload: VoiceServerUpdatePayload) => void) => () => void
 }
 
 export const GatewayContext = createContext<GatewayContextValue | null>(null)

@@ -9,6 +9,8 @@ import type {
   RoleDeletePayload,
   RoleEventPayload,
   TypingStartPayload,
+  VoiceServerUpdatePayload,
+  VoiceStateUpdatePayload,
 } from '../types'
 
 export type GatewayStatus =
@@ -184,7 +186,7 @@ export class GatewayClient {
     return this.on('SESSION_RESET', callback)
   }
 
-  public onReady(callback: () => void): () => void {
+  public onReady(callback: (data?: any) => void): () => void {
     return this.on('READY', callback)
   }
 
@@ -234,6 +236,39 @@ export class GatewayClient {
 
   public onChannelDelete(callback: (payload: ChannelEventPayload) => void): () => void {
     return this.on('CHANNEL_DELETE', callback)
+  }
+
+  public onVoiceStateUpdate(callback: (payload: VoiceStateUpdatePayload) => void): () => void {
+    return this.on('VOICE_STATE_UPDATE', callback)
+  }
+
+  public onVoiceServerUpdate(callback: (payload: VoiceServerUpdatePayload) => void): () => void {
+    return this.on('VOICE_SERVER_UPDATE', callback)
+  }
+
+  /**
+   * Sends Opcode 4 VOICE_STATE_UPDATE to join, leave, or update voice connection settings.
+   * Passing channelId: null indicates leaving voice.
+   */
+  public sendVoiceStateUpdate(
+    guildId: string,
+    channelId: string | null,
+    selfMute = false,
+    selfDeaf = false
+  ): boolean {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false
+
+    const payload = {
+      op: 4,
+      d: {
+        guild_id: guildId,
+        channel_id: channelId,
+        self_mute: Boolean(selfMute),
+        self_deaf: Boolean(selfDeaf),
+      },
+    }
+    this.ws.send(JSON.stringify(payload))
+    return true
   }
 
   /**

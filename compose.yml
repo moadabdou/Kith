@@ -208,6 +208,30 @@ services:
       timeout: 3s
       retries: 10
 
+  sfu:
+    build:
+      context: ./sfu
+      network: host
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
+    environment:
+      PORT: ${SFU_PORT:-5000}
+      UDP_PORT_MIN: ${SFU_UDP_PORT_MIN:-50000}
+      UDP_PORT_MAX: ${SFU_UDP_PORT_MAX:-50020}
+      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me}
+      STUN_SERVER: ${STUN_SERVER:-stun:stun.l.google.com:19302}
+    ports:
+      - "127.0.0.1:5000:5000"
+      - "50000-50020:50000-50020/udp"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:${SFU_PORT:-5000}/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   caddy:
     image: caddy:2-alpine
     ports:

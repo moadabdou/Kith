@@ -79,12 +79,6 @@ defmodule Gateway.WS.Handler do
         {:ok, %{"op" => 4} = msg} ->
           handle_voice_state_update(Map.get(msg, "d") || %{}, state)
 
-        {:ok, %{"op" => 12} = msg} ->
-          handle_voice_signaling(Map.get(msg, "d") || %{}, state)
-
-        {:ok, %{"t" => "VOICE_SIGNALING"} = msg} ->
-          handle_voice_signaling(Map.get(msg, "d") || %{}, state)
-
         {:ok, %{"t" => "TYPING_START"} = msg} ->
           handle_typing_start(Map.get(msg, "d"), state)
 
@@ -119,7 +113,6 @@ defmodule Gateway.WS.Handler do
       cond do
         Map.has_key?(event, "op") -> event["op"]
         Map.has_key?(event, :op) -> event[:op]
-        event["type"] == "VOICE_SIGNALING" -> 12
         true -> 0
       end
 
@@ -393,29 +386,6 @@ defmodule Gateway.WS.Handler do
     end
   end
 
-  defp handle_voice_signaling(d, state) do
-    if not state.identified do
-      Logger.warning("Gateway.WS.Handler: voice signaling received before IDENTIFY, closing with 4003")
-      close(4003, "Not identified", state)
-    else
-      guild_id = d["guild_id"] || d[:guild_id]
-
-      if is_nil(guild_id) or to_string(guild_id) == "" do
-        {:ok, state}
-      else
-        gid = to_string(guild_id)
-
-        case Gateway.Guild.Actor.voice_signaling(gid, state.user_id, d) do
-          :ok ->
-            {:ok, state}
-
-          {:error, reason} ->
-            Logger.debug("Gateway.WS.Handler: voice signaling dropped (#{inspect(reason)})")
-            {:ok, state}
-        end
-      end
-    end
-  end
 
   defp handle_identify(d, state) do
     if state.identify_timer do

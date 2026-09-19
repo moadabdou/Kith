@@ -165,19 +165,6 @@ defmodule Gateway.Guild.Actor do
     |> Enum.map(&Gateway.Voice.VoiceState.to_map/1)
   end
 
-  @doc """
-  Relays a voice signaling packet (offer, answer, or candidate) to a peer in the same voice channel.
-  """
-  def voice_signaling(guild_id, from_user_id, data) do
-    case whereis(guild_id) do
-      pid when is_pid(pid) ->
-        GenServer.call(pid, {:voice_signaling, from_user_id, data})
-
-      nil ->
-        {:error, :guild_not_found}
-    end
-  end
-
   # ── GenServer Callbacks ─────────────────────────────────────────────────────
 
   @impl true
@@ -352,49 +339,7 @@ defmodule Gateway.Guild.Actor do
     {:reply, state.voice_states, state}
   end
 
-  def handle_call({:voice_signaling, from_user_id, data}, _from, state) do
-    sender_uid = to_string(from_user_id)
-    target_uid = to_string(data["to_user_id"] || data[:to_user_id])
-    target_cid = to_string(data["channel_id"] || data[:channel_id])
 
-    sender_vs = Map.get(state.voice_states, sender_uid)
-    target_vs = Map.get(state.voice_states, target_uid)
-
-    cond do
-      is_nil(sender_vs) or sender_vs.channel_id != target_cid ->
-        {:reply, {:error, :sender_not_in_channel}, state}
-
-      is_nil(target_vs) or target_vs.channel_id != target_cid ->
-        {:reply, {:error, :target_not_in_channel}, state}
-
-      true ->
-        recipient_sid = target_vs.session_id
-
-        case Map.get(state.subscribers, recipient_sid) do
-          sub when not is_nil(sub) ->
-            {pid, _uid, _vis} = normalize_subscriber(recipient_sid, sub, state.guild_id)
-
-            sig_event = %{
-              "type" => "VOICE_SIGNALING",
-              "op" => 12,
-              "guild_id" => state.guild_id,
-              "payload" => %{
-                "guild_id" => state.guild_id,
-                "channel_id" => target_cid,
-                "from_user_id" => sender_uid,
-                "type" => data["type"] || data[:type],
-                "payload" => data["payload"] || data[:payload] || data["signal"] || data[:signal]
-              }
-            }
-
-            send(pid, {:dispatch, sig_event, System.monotonic_time(:microsecond)})
-            {:reply, :ok, state}
-
-          _ ->
-            {:reply, {:error, :recipient_session_not_found}, state}
-        end
-    end
-  end
 
 
   @channel_scoped_events [

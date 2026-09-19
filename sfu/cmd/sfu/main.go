@@ -47,7 +47,7 @@ func main() {
 	udpMin := getEnvUint16("UDP_PORT_MIN", 50000)
 	udpMax := getEnvUint16("UDP_PORT_MAX", 50020)
 	natIPsRaw := getEnv("NAT_1TO1_IPS", "")
-	stunServer := getEnv("STUN_SERVER", "stun:stun.l.google.com:19302")
+	stunServer := getEnv("STUN_SERVER", "")
 
 	var natIPs []string
 	if natIPsRaw != "" {
@@ -59,10 +59,15 @@ func main() {
 		}
 	}
 
+	stunDisplay := stunServer
+	if stunDisplay == "" {
+		stunDisplay = "disabled (self-hosted)"
+	}
+
 	slog.Info("Starting Pion SFU service",
 		"port", port,
 		"udp_range", fmt.Sprintf("%d-%d", udpMin, udpMax),
-		"stun_server", stunServer,
+		"stun_server", stunDisplay,
 		"nat_ips", natIPs,
 	)
 

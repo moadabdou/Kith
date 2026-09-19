@@ -221,7 +221,7 @@ services:
       UDP_PORT_MIN: ${SFU_UDP_PORT_MIN:-50000}
       UDP_PORT_MAX: ${SFU_UDP_PORT_MAX:-50020}
       JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me}
-      STUN_SERVER: ${STUN_SERVER:-stun:stun.l.google.com:19302}
+      STUN_SERVER: ${STUN_SERVER:-}
     ports:
       - "127.0.0.1:5000:5000"
       - "50000-50020:50000-50020/udp"

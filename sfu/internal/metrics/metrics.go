@@ -25,4 +25,29 @@ var (
 		Name: "sfu_ice_connection_states_total",
 		Help: "Total count of ICE connection state transitions.",
 	}, []string{"state"})
+
+	PacketsForwarded = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "sfu_packets_forwarded_total",
+		Help: "Total number of RTP audio packets successfully forwarded.",
+	})
+
+	PacketsDropped = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "sfu_packets_dropped_total",
+		Help: "Total number of RTP packets dropped due to subscriber queue saturation.",
+	})
+
+	SubQueueDepth = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "sfu_sub_queue_depth",
+		Help: "Aggregated depth of active subscriber packet queues.",
+	})
+
+	RTCPNackTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "sfu_rtcp_nack_total",
+		Help: "Total number of RTCP NACK requests received from subscribers.",
+	})
+
+	FractionLost = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "sfu_fraction_lost",
+		Help: "Latest average fraction of packet loss reported by subscribers via RTCP Receiver Reports.",
+	})
 )

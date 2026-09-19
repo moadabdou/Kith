@@ -8,6 +8,8 @@ import (
 
 	"github.com/moadabdou/Kith/sfu/internal/metrics"
 	"github.com/moadabdou/Kith/sfu/internal/peer"
+	"github.com/moadabdou/Kith/sfu/internal/router"
+	"github.com/pion/webrtc/v4"
 )
 
 var (
@@ -22,6 +24,7 @@ type Event struct {
 	ChannelID string   `json:"channel_id,omitempty"`
 	Speaking  *bool    `json:"speaking,omitempty"`
 	Peers     []string `json:"peers,omitempty"`
+	SDP       string   `json:"sdp,omitempty"`
 	Data      any      `json:"data,omitempty"`
 }
 
@@ -33,6 +36,7 @@ type Room struct {
 	ID        string
 	peers     map[string]*peer.Peer
 	senders   map[string]BroadcastSender
+	router    *router.Router
 	inbox     chan roomMsg
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -79,6 +83,7 @@ func NewRoom(id string, onEmpty func(roomID string)) *Room {
 		ID:      id,
 		peers:   make(map[string]*peer.Peer),
 		senders: make(map[string]BroadcastSender),
+		router:  router.NewRouter(id),
 		inbox:   make(chan roomMsg, 64),
 		ctx:     ctx,
 		cancel:  cancel,
@@ -117,6 +122,11 @@ func (r *Room) loop() {
 	}
 }
 
+// Router returns the room's RTP router.
+func (r *Room) Router() *router.Router {
+	return r.router
+}
+
 func (r *Room) broadcastExcept(excludeUID string, ev Event) {
 	for uid, sender := range r.senders {
 		if uid != excludeUID && sender != nil {
@@ -131,6 +141,7 @@ func (r *Room) handleJoin(m joinMsg) {
 	// If existing peer with same user_id is already in room, cleanly close it first
 	if existing, ok := r.peers[uid]; ok {
 		slog.Warn("Replacing existing peer connection for user", "user_id", uid, "room_id", r.ID)
+		r.router.RemovePeer(uid)
 		_ = existing.Close()
 		metrics.ConnectedPeers.Dec()
 	}
@@ -140,6 +151,24 @@ func (r *Room) handleJoin(m joinMsg) {
 		r.senders[uid] = m.sender
 	}
 	metrics.ConnectedPeers.Inc()
+
+	// Register peer with router and configure renegotiation callback
+	r.router.AddPeer(m.p, func(offer webrtc.SessionDescription) {
+		if sender, ok := r.senders[uid]; ok && sender != nil {
+			sender(uid, Event{
+				Type:      "offer",
+				ChannelID: r.ID,
+				UserID:    uid,
+				SDP:       offer.SDP,
+			})
+		}
+	})
+
+	// Setup OnTrack to register incoming track with router
+	m.p.SetOnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
+		slog.Info("Remote audio track received from peer, registering with router", "user_id", uid, "room_id", r.ID)
+		r.router.AddPublisher(uid, track, receiver)
+	})
 
 	// Notify other peers in room
 	r.broadcastExcept(uid, Event{
@@ -158,6 +187,7 @@ func (r *Room) handleLeave(m leaveMsg) {
 		return
 	}
 
+	r.router.RemovePeer(m.userID)
 	delete(r.peers, m.userID)
 	delete(r.senders, m.userID)
 	_ = p.Close()
@@ -191,6 +221,7 @@ func (r *Room) handleBroadcast(m broadcastMsg) {
 }
 
 func (r *Room) drainAndClose() {
+	r.router.Close()
 	for uid, p := range r.peers {
 		_ = p.Close()
 		metrics.ConnectedPeers.Dec()

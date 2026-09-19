@@ -20,16 +20,16 @@ import (
 
 // Inbound/Outbound message payload structures
 type Message struct {
-	Type      string                  `json:"type"`
-	Token     string                  `json:"token,omitempty"`
-	ChannelID string                  `json:"channel_id,omitempty"`
-	GuildID   string                  `json:"guild_id,omitempty"`
-	SDP       string                  `json:"sdp,omitempty"`
+	Type      string                   `json:"type"`
+	Token     string                   `json:"token,omitempty"`
+	ChannelID string                   `json:"channel_id,omitempty"`
+	GuildID   string                   `json:"guild_id,omitempty"`
+	SDP       string                   `json:"sdp,omitempty"`
 	Candidate *webrtc.ICECandidateInit `json:"candidate,omitempty"`
-	Peers     []string                `json:"peers,omitempty"`
-	UserID    string                  `json:"user_id,omitempty"`
-	Speaking  *bool                   `json:"speaking,omitempty"`
-	Message   string                  `json:"message,omitempty"`
+	Peers     []string                 `json:"peers,omitempty"`
+	UserID    string                   `json:"user_id,omitempty"`
+	Speaking  *bool                    `json:"speaking,omitempty"`
+	Message   string                   `json:"message,omitempty"`
 }
 
 // Server provides the HTTP handler for WebSocket signaling.
@@ -159,6 +159,7 @@ func (s *Server) handleSession(ctx context.Context, conn *websocket.Conn) {
 					ChannelID: ev.ChannelID,
 					Speaking:  ev.Speaking,
 					Peers:     ev.Peers,
+					SDP:       ev.SDP,
 				})
 			}
 
@@ -192,6 +193,23 @@ func (s *Server) handleSession(ctx context.Context, conn *websocket.Conn) {
 				Type: "answer",
 				SDP:  answer.SDP,
 			})
+
+			// If other participants are already publishing, attach downlinks now that signaling is stable
+			if currentRoom != nil {
+				currentRoom.Router().SubscribeToExistingPublishers(userID)
+			}
+
+		case "answer":
+			if currentPeer == nil {
+				_ = writeJSON(Message{Type: "error", Message: "must join before sending answer"})
+				continue
+			}
+
+			if err := currentPeer.HandleAnswer(msg.SDP); err != nil {
+				slog.Error("Failed to handle answer", "user_id", userID, "err", err)
+				_ = writeJSON(Message{Type: "error", Message: "failed to process answer"})
+				continue
+			}
 
 		case "candidate":
 			if currentPeer == nil || msg.Candidate == nil {

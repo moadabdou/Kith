@@ -1,9 +1,12 @@
 package room
 
 import (
+	"errors"
 	"log/slog"
 	"sync"
 )
+
+var ErrNoSuchRoom = errors.New("room not found")
 
 // Manager coordinates room lifecycles across the SFU.
 type Manager struct {
@@ -42,6 +45,49 @@ func (m *Manager) Get(channelID string) (*Room, bool) {
 	defer m.mu.RUnlock()
 	r, ok := m.rooms[channelID]
 	return r, ok
+}
+
+// HasRoom checks if a room is currently active.
+func (m *Manager) HasRoom(channelID string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.rooms[channelID]
+	return ok
+}
+
+// Broadcast sends an event to all other peers in a specific room. Returns true if room was found.
+func (m *Manager) Broadcast(channelID, sourceUserID string, event Event) bool {
+	m.mu.RLock()
+	r, ok := m.rooms[channelID]
+	m.mu.RUnlock()
+
+	if !ok {
+		return false
+	}
+	r.Broadcast(sourceUserID, event)
+	return true
+}
+
+// BroadcastAll sends an event across all active rooms.
+func (m *Manager) BroadcastAll(sourceUserID string, event Event) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	for _, r := range m.rooms {
+		r.Broadcast(sourceUserID, event)
+	}
+}
+
+// GetPeers queries the list of connected user IDs in a channel.
+func (m *Manager) GetPeers(channelID string) ([]string, error) {
+	m.mu.RLock()
+	r, ok := m.rooms[channelID]
+	m.mu.RUnlock()
+
+	if !ok {
+		return nil, ErrNoSuchRoom
+	}
+	return r.GetPeers()
 }
 
 // Remove closes and deletes a room from the manager.

@@ -174,3 +174,80 @@ func TestSignalingUnauthorized(t *testing.T) {
 		t.Fatalf("expected error message, got: %+v", resp)
 	}
 }
+
+func TestSignalingSpeakingBroadcast(t *testing.T) {
+	ts, roomMgr := setupTestServer(t)
+	defer ts.Close()
+	defer roomMgr.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http")
+
+	// 1. Connect Bob
+	connBob, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("failed to dial Bob: %v", err)
+	}
+	defer connBob.CloseNow()
+
+	tokenBob := generateToken(t, "user_bob", "chan_voice_multi")
+	if err := wsjson.Write(ctx, connBob, Message{Type: "join", Token: tokenBob, ChannelID: "chan_voice_multi"}); err != nil {
+		t.Fatalf("failed to send Bob join: %v", err)
+	}
+	var bobJoined Message
+	if err := wsjson.Read(ctx, connBob, &bobJoined); err != nil || bobJoined.Type != "joined" {
+		t.Fatalf("unexpected bob joined: %+v, err: %v", bobJoined, err)
+	}
+
+	// 2. Connect Alice
+	connAlice, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("failed to dial Alice: %v", err)
+	}
+	defer connAlice.CloseNow()
+
+	tokenAlice := generateToken(t, "user_alice", "chan_voice_multi")
+	if err := wsjson.Write(ctx, connAlice, Message{Type: "join", Token: tokenAlice, ChannelID: "chan_voice_multi"}); err != nil {
+		t.Fatalf("failed to send Alice join: %v", err)
+	}
+	var aliceJoined Message
+	if err := wsjson.Read(ctx, connAlice, &aliceJoined); err != nil || aliceJoined.Type != "joined" {
+		t.Fatalf("unexpected alice joined: %+v, err: %v", aliceJoined, err)
+	}
+
+	// Bob should receive peer_joined for Alice
+	var bobSawJoin Message
+	for {
+		if err := wsjson.Read(ctx, connBob, &bobSawJoin); err != nil {
+			t.Fatalf("bob failed to read: %v", err)
+		}
+		if bobSawJoin.Type == "peer_joined" {
+			break
+		}
+	}
+	if bobSawJoin.UserID != "user_alice" {
+		t.Errorf("expected peer_joined for user_alice, got: %s", bobSawJoin.UserID)
+	}
+
+	// 3. Alice sends speaking=true
+	speakingTrue := true
+	if err := wsjson.Write(ctx, connAlice, Message{Type: "speaking", Speaking: &speakingTrue}); err != nil {
+		t.Fatalf("alice failed to send speaking: %v", err)
+	}
+
+	// Bob should receive speaking event
+	var bobSawSpeaking Message
+	for {
+		if err := wsjson.Read(ctx, connBob, &bobSawSpeaking); err != nil {
+			t.Fatalf("bob failed to read speaking: %v", err)
+		}
+		if bobSawSpeaking.Type == "speaking" {
+			break
+		}
+	}
+	if bobSawSpeaking.UserID != "user_alice" || bobSawSpeaking.Speaking == nil || !*bobSawSpeaking.Speaking {
+		t.Errorf("unexpected speaking event received by bob: %+v", bobSawSpeaking)
+	}
+}

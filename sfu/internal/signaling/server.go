@@ -2,7 +2,6 @@ package signaling
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -29,6 +28,7 @@ type Message struct {
 	Candidate *webrtc.ICECandidateInit `json:"candidate,omitempty"`
 	Peers     []string                `json:"peers,omitempty"`
 	UserID    string                  `json:"user_id,omitempty"`
+	Speaking  *bool                   `json:"speaking,omitempty"`
 	Message   string                  `json:"message,omitempty"`
 }
 
@@ -152,15 +152,14 @@ func (s *Server) handleSession(ctx context.Context, conn *websocket.Conn) {
 			r := s.roomMgr.GetOrCreate(channelID)
 			currentRoom = r
 
-			sender := func(_targetUID, msgType string, payload interface{}) {
-				out := Message{Type: msgType}
-				if pl, ok := payload.(map[string]string); ok {
-					out.UserID = pl["user_id"]
-					out.ChannelID = pl["channel_id"]
-				} else if b, err := json.Marshal(payload); err == nil {
-					_ = json.Unmarshal(b, &out)
-				}
-				_ = writeJSON(out)
+			sender := func(_targetUID string, ev room.Event) {
+				_ = writeJSON(Message{
+					Type:      ev.Type,
+					UserID:    ev.UserID,
+					ChannelID: ev.ChannelID,
+					Speaking:  ev.Speaking,
+					Peers:     ev.Peers,
+				})
 			}
 
 			if err := r.Join(p, sender); err != nil {
@@ -201,6 +200,16 @@ func (s *Server) handleSession(ctx context.Context, conn *websocket.Conn) {
 
 			if err := currentPeer.AddCandidate(*msg.Candidate); err != nil {
 				slog.Debug("Failed to add remote candidate", "user_id", userID, "err", err)
+			}
+
+		case "speaking":
+			if currentRoom != nil && userID != "" && msg.Speaking != nil {
+				currentRoom.Broadcast(userID, room.Event{
+					Type:      "speaking",
+					UserID:    userID,
+					ChannelID: currentRoom.ID,
+					Speaking:  msg.Speaking,
+				})
 			}
 
 		case "leave":

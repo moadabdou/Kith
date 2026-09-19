@@ -37,13 +37,17 @@ func TestRoomLifecycle(t *testing.T) {
 	p2 := createTestPeer(t, "user_2", "chan_test_1")
 
 	var p2ReceivedJoin bool
+	var p2ReceivedSpeaking bool
 	var p2Mu sync.Mutex
 
-	sender2 := func(targetUID, msgType string, payload interface{}) {
-		if msgType == "peer_joined" {
-			p2Mu.Lock()
+	sender2 := func(targetUID string, ev Event) {
+		p2Mu.Lock()
+		defer p2Mu.Unlock()
+		if ev.Type == "peer_joined" && ev.UserID == "user_1" {
 			p2ReceivedJoin = true
-			p2Mu.Unlock()
+		}
+		if ev.Type == "speaking" && ev.UserID == "user_1" {
+			p2ReceivedSpeaking = true
 		}
 	}
 
@@ -71,6 +75,22 @@ func TestRoomLifecycle(t *testing.T) {
 	p2Mu.Lock()
 	if !p2ReceivedJoin {
 		t.Errorf("expected p2 to receive peer_joined event")
+	}
+	p2Mu.Unlock()
+
+	// Test broadcast
+	speaking := true
+	r.Broadcast("user_1", Event{
+		Type:      "speaking",
+		UserID:    "user_1",
+		ChannelID: "chan_test_1",
+		Speaking:  &speaking,
+	})
+
+	time.Sleep(50 * time.Millisecond)
+	p2Mu.Lock()
+	if !p2ReceivedSpeaking {
+		t.Errorf("expected p2 to receive speaking broadcast event")
 	}
 	p2Mu.Unlock()
 
@@ -111,9 +131,50 @@ func TestManager(t *testing.T) {
 		t.Errorf("expected same room instance for chan_a")
 	}
 
+	if !m.HasRoom("chan_a") {
+		t.Errorf("expected HasRoom(chan_a) to be true")
+	}
+
+	if m.HasRoom("chan_nonexistent") {
+		t.Errorf("expected HasRoom(chan_nonexistent) to be false")
+	}
+
 	if m.Count() != 1 {
 		t.Errorf("expected count 1, got %d", m.Count())
 	}
+
+	// Join a peer to chan_a to test Manager.GetPeers and Manager.Broadcast
+	var receivedEvent bool
+	var mu sync.Mutex
+	p := createTestPeer(t, "user_mgr_test", "chan_a")
+	err := r1.Join(p, func(targetUID string, ev Event) {
+		if ev.Type == "system_announcement" {
+			mu.Lock()
+			receivedEvent = true
+			mu.Unlock()
+		}
+	})
+	if err != nil {
+		t.Fatalf("failed to join peer: %v", err)
+	}
+
+	peers, err := m.GetPeers("chan_a")
+	if err != nil || len(peers) != 1 || peers[0] != "user_mgr_test" {
+		t.Errorf("unexpected peers from manager: %v, err: %v", peers, err)
+	}
+
+	// Test Manager Broadcast
+	broadcastOk := m.Broadcast("chan_a", "system", Event{Type: "system_announcement"})
+	if !broadcastOk {
+		t.Errorf("expected Broadcast to return true for existing room")
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	if !receivedEvent {
+		t.Errorf("expected peer to receive announcement from manager broadcast")
+	}
+	mu.Unlock()
 
 	m.Remove("chan_a")
 	if m.Count() != 0 {

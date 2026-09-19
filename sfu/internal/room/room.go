@@ -15,8 +15,18 @@ var (
 	ErrPeerNotFound = errors.New("peer not found in room")
 )
 
-// BroadcastSender is a function that delivers a message to a specific peer.
-type BroadcastSender func(targetUserID string, msgType string, payload interface{})
+// Event represents a signaling/room notification event sent to peers.
+type Event struct {
+	Type      string   `json:"type"`
+	UserID    string   `json:"user_id,omitempty"`
+	ChannelID string   `json:"channel_id,omitempty"`
+	Speaking  *bool    `json:"speaking,omitempty"`
+	Peers     []string `json:"peers,omitempty"`
+	Data      any      `json:"data,omitempty"`
+}
+
+// BroadcastSender is a function that delivers a typed Event to a specific peer.
+type BroadcastSender func(targetUserID string, event Event)
 
 // Room manages a voice channel room actor.
 type Room struct {
@@ -57,8 +67,7 @@ func (peersMsg) isRoomMsg() {}
 
 type broadcastMsg struct {
 	sourceUserID string
-	msgType      string
-	payload      interface{}
+	event        Event
 }
 
 func (broadcastMsg) isRoomMsg() {}
@@ -108,6 +117,14 @@ func (r *Room) loop() {
 	}
 }
 
+func (r *Room) broadcastExcept(excludeUID string, ev Event) {
+	for uid, sender := range r.senders {
+		if uid != excludeUID && sender != nil {
+			sender(uid, ev)
+		}
+	}
+}
+
 func (r *Room) handleJoin(m joinMsg) {
 	uid := m.p.UserID
 
@@ -125,14 +142,11 @@ func (r *Room) handleJoin(m joinMsg) {
 	metrics.ConnectedPeers.Inc()
 
 	// Notify other peers in room
-	for otherUID, sender := range r.senders {
-		if otherUID != uid && sender != nil {
-			sender(otherUID, "peer_joined", map[string]string{
-				"user_id":    uid,
-				"channel_id": r.ID,
-			})
-		}
-	}
+	r.broadcastExcept(uid, Event{
+		Type:      "peer_joined",
+		UserID:    uid,
+		ChannelID: r.ID,
+	})
 
 	m.replyTo <- nil
 }
@@ -150,20 +164,17 @@ func (r *Room) handleLeave(m leaveMsg) {
 	metrics.ConnectedPeers.Dec()
 
 	// Notify remaining peers
-	for otherUID, sender := range r.senders {
-		if sender != nil {
-			sender(otherUID, "peer_left", map[string]string{
-				"user_id":    m.userID,
-				"channel_id": r.ID,
-			})
-		}
-	}
+	r.broadcastExcept(m.userID, Event{
+		Type:      "peer_left",
+		UserID:    m.userID,
+		ChannelID: r.ID,
+	})
 
 	m.replyTo <- nil
 
-	// If room is now empty, notify manager
+	// If room is now empty, notify manager asynchronously
 	if len(r.peers) == 0 && r.onEmpty != nil {
-		r.onEmpty(r.ID)
+		go r.onEmpty(r.ID)
 	}
 }
 
@@ -176,11 +187,7 @@ func (r *Room) handleGetPeers(m peersMsg) {
 }
 
 func (r *Room) handleBroadcast(m broadcastMsg) {
-	for uid, sender := range r.senders {
-		if uid != m.sourceUserID && sender != nil {
-			sender(uid, m.msgType, m.payload)
-		}
-	}
+	r.broadcastExcept(m.sourceUserID, m.event)
 }
 
 func (r *Room) drainAndClose() {
@@ -199,7 +206,12 @@ func (r *Room) Join(p *peer.Peer, sender BroadcastSender) error {
 	case <-r.ctx.Done():
 		return ErrRoomClosed
 	case r.inbox <- joinMsg{p: p, sender: sender, replyTo: reply}:
-		return <-reply
+		select {
+		case err := <-reply:
+			return err
+		case <-r.ctx.Done():
+			return ErrRoomClosed
+		}
 	}
 }
 
@@ -210,7 +222,12 @@ func (r *Room) Leave(userID string) error {
 	case <-r.ctx.Done():
 		return ErrRoomClosed
 	case r.inbox <- leaveMsg{userID: userID, replyTo: reply}:
-		return <-reply
+		select {
+		case err := <-reply:
+			return err
+		case <-r.ctx.Done():
+			return ErrRoomClosed
+		}
 	}
 }
 
@@ -221,16 +238,21 @@ func (r *Room) GetPeers() ([]string, error) {
 	case <-r.ctx.Done():
 		return nil, ErrRoomClosed
 	case r.inbox <- peersMsg{replyTo: reply}:
-		return <-reply, nil
+		select {
+		case peers := <-reply:
+			return peers, nil
+		case <-r.ctx.Done():
+			return nil, ErrRoomClosed
+		}
 	}
 }
 
-// Broadcast sends a message to all other peers in the room.
-func (r *Room) Broadcast(sourceUserID, msgType string, payload interface{}) {
+// Broadcast sends an event to all other peers in the room.
+func (r *Room) Broadcast(sourceUserID string, event Event) {
 	select {
 	case <-r.ctx.Done():
 		return
-	case r.inbox <- broadcastMsg{sourceUserID: sourceUserID, msgType: msgType, payload: payload}:
+	case r.inbox <- broadcastMsg{sourceUserID: sourceUserID, event: event}:
 	}
 }
 

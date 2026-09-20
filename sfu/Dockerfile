@@ -6,7 +6,7 @@ COPY . .
 RUN CGO_ENABLED=0 go build -o /bin/sfu ./cmd/sfu
 
 FROM alpine:3.22
-RUN adduser -D -u 10001 app
+RUN apk add --no-cache iproute2 && adduser -D -u 10001 app
 USER app
 COPY --from=build /bin/sfu /usr/local/bin/sfu
 EXPOSE 5000

@@ -225,6 +225,8 @@ services:
       STUN_SERVER: ${STUN_SERVER:-}
       NAT_1TO1_IPS: ${NAT_1TO1_IPS:-127.0.0.1}
       NATS_URL: ${NATS_URL:-nats://nats:4222}
+    cap_add:
+      - NET_ADMIN
     ports:
       - "127.0.0.1:5000:5000"
       - "50000-50020:50000-50020/udp"

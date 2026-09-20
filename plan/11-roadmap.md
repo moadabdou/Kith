@@ -120,6 +120,12 @@ via audio level, mute/deafen).
 mid-call → rejoin lands on second SFU instance.
 
 **Gate:** see `07-voice-video.md` §6 Phase 5.
+- [x] Phase 5 completed and all 5 gates signed off (see [postmortems/phase-5.md](../postmortems/phase-5.md))
+  - [x] 3-user P2P mesh call works incl. one TURN-relayed participant
+  - [x] webrtc-internals literacy: can identify selected pair, SSRCs, loss, RTT
+  - [x] SFU replaces mesh; same 3 users, one connection each
+  - [x] Audio p95 mouth-to-ear < 150ms (measure: clap test recorded on both ends)
+  - [x] PLI/NACK counters exist and make sense on a lossy network (`tc netem`)
 
 ## Phase 6 — Video, screenshare, simulcast (wk 17–19)
 

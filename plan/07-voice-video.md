@@ -210,11 +210,11 @@ Required experiments:
 ## 6. Phase 5/6 gates
 
 Phase 5:
-- [ ] 3-user P2P mesh call works incl. one TURN-relayed participant
-- [ ] webrtc-internals literacy: can identify selected pair, SSRCs, loss, RTT
-- [ ] SFU replaces mesh; same 3 users, one connection each
-- [ ] Audio p95 mouth-to-ear < 150ms (measure: clap test recorded on both ends)
-- [ ] PLI/NACK counters exist and make sense on a lossy network (tc netem: 
+- [x] 3-user P2P mesh call works incl. one TURN-relayed participant
+- [x] webrtc-internals literacy: can identify selected pair, SSRCs, loss, RTT
+- [x] SFU replaces mesh; same 3 users, one connection each
+- [x] Audio p95 mouth-to-ear < 150ms (measure: clap test recorded on both ends)
+- [x] PLI/NACK counters exist and make sense on a lossy network (tc netem: 
       `tc qdisc add dev eth0 root netem loss 5% delay 40ms`)
 
 Phase 6:

@@ -11,6 +11,8 @@ export interface SfuClientOptions {
   onConnectionStateChange?: (state: 'connecting' | 'connected' | 'disconnected' | 'failed') => void
   onSpeakingChange?: (userId: string, isSpeaking: boolean) => void
   onRemoteTrack?: (track: MediaStreamTrack, stream: MediaStream) => void
+  onRemoteVideoChange?: (userId: string, stream: MediaStream | null) => void
+  onLocalVideoChange?: (stream: MediaStream | null) => void
   onError?: (error: Error) => void
 }
 
@@ -49,6 +51,13 @@ export class SfuClient {
   private ws: WebSocket | null = null
   private pc: RTCPeerConnection | null = null
   private localStream: MediaStream | null = null
+  private localVideoStream: MediaStream | null = null
+  private localVideoTrack: MediaStreamTrack | null = null
+  private videoSender: RTCRtpSender | null = null
+  private isCameraOn = false
+  private selectedVideoDeviceId: string | null = null
+  private remoteVideoStreams: Map<string, MediaStream> = new Map()
+
   private audioElements: Map<string, HTMLAudioElement> = new Map()
   private userToTrackMap: Map<string, string> = new Map()
   private vadCleanup: (() => void) | null = null
@@ -172,7 +181,7 @@ export class SfuClient {
     }
 
     this.pc.ontrack = (event) => {
-      this.playRemoteTrack(event.track, event.streams[0] || null)
+      this.handleRemoteTrack(event.track, event.streams[0] || null)
     }
 
     // Try to acquire mic stream unless explicitly in listen-only mode
@@ -284,6 +293,10 @@ export class SfuClient {
         if (msg.user_id) {
           this.options.onSpeakingChange?.(msg.user_id, false)
           this.cleanupPeerAudio(msg.user_id)
+          if (this.remoteVideoStreams.has(msg.user_id)) {
+            this.remoteVideoStreams.delete(msg.user_id)
+            this.options.onRemoteVideoChange?.(msg.user_id, null)
+          }
         }
         break
 
@@ -345,13 +358,13 @@ export class SfuClient {
     if (!this.pc || typeof document === 'undefined') return
     for (const transceiver of this.pc.getTransceivers()) {
       const track = transceiver.receiver?.track
-      if (track && track.kind === 'audio' && track.readyState === 'live') {
-        this.playRemoteTrack(track, null)
+      if (track && track.readyState === 'live') {
+        this.handleRemoteTrack(track, null)
       }
     }
   }
 
-  private playRemoteTrack(track: MediaStreamTrack, initialStream: MediaStream | null): void {
+  private handleRemoteTrack(track: MediaStreamTrack, initialStream: MediaStream | null): void {
     const stream = initialStream || new MediaStream([track])
     this.options.onRemoteTrack?.(track, stream)
 
@@ -360,8 +373,22 @@ export class SfuClient {
     const publisherUid = streamId.startsWith('kith-stream-')
       ? streamId.replace('kith-stream-', '')
       : trackId.startsWith('kith-track-')
-      ? trackId.replace('kith-track-', '')
+      ? trackId.replace('kith-track-', '').replace('-video', '').replace('-audio', '')
       : ''
+
+    if (track.kind === 'video') {
+      const videoKey = publisherUid || track.id
+      this.remoteVideoStreams.set(videoKey, stream)
+      this.options.onRemoteVideoChange?.(videoKey, stream)
+
+      track.onended = () => {
+        if (this.remoteVideoStreams.get(videoKey) === stream) {
+          this.remoteVideoStreams.delete(videoKey)
+          this.options.onRemoteVideoChange?.(videoKey, null)
+        }
+      }
+      return
+    }
 
     const audioKey = publisherUid || track.id
     if (publisherUid) {
@@ -373,7 +400,7 @@ export class SfuClient {
       if (!audioEl || !document.body.contains(audioEl)) {
         audioEl = document.createElement('audio')
         audioEl.autoplay = true
-        audioEl.playsInline = true
+        audioEl.setAttribute?.('playsinline', 'true')
         audioEl.muted = this.isDeafened
         audioEl.style.position = 'fixed'
         audioEl.style.opacity = '0'
@@ -543,6 +570,131 @@ export class SfuClient {
     }
   }
 
+  public isConnected(): boolean {
+    return this.ws !== null && this.ws.readyState === WebSocket.OPEN && !this.isClosed
+  }
+
+  public isCameraActive(): boolean {
+    return this.isCameraOn
+  }
+
+  public getLocalVideoStream(): MediaStream | null {
+    return this.localVideoStream
+  }
+
+  public getRemoteVideoStreams(): Map<string, MediaStream> {
+    return new Map(this.remoteVideoStreams)
+  }
+
+  public async setCameraEnabled(enabled: boolean, deviceId?: string): Promise<MediaStream | null> {
+    if (this.isClosed) return null
+
+    if (deviceId) {
+      this.selectedVideoDeviceId = deviceId
+    }
+
+    if (enabled) {
+      try {
+        if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+          throw new Error('Camera access not supported in this environment')
+        }
+
+        const constraints: MediaStreamConstraints = {
+          video: {
+            deviceId: this.selectedVideoDeviceId ? { exact: this.selectedVideoDeviceId } : undefined,
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            frameRate: { ideal: 30 },
+          },
+          audio: false,
+        }
+
+        const stream = await navigator.mediaDevices.getUserMedia(constraints)
+        const track = stream.getVideoTracks()[0]
+        if (!track) {
+          throw new Error('No video track found in acquired media stream')
+        }
+
+        if (this.localVideoTrack) {
+          this.localVideoTrack.stop()
+        }
+
+        this.localVideoTrack = track
+        this.localVideoStream = stream
+        this.isCameraOn = true
+
+        if (this.pc) {
+          if (this.videoSender) {
+            await this.videoSender.replaceTrack(track)
+          } else {
+            this.videoSender = this.pc.addTrack(track, stream)
+            await this.renegotiate()
+          }
+        }
+
+        this.options.onLocalVideoChange?.(this.localVideoStream)
+        return this.localVideoStream
+      } catch (err: any) {
+        console.error('[SfuClient] Failed to enable camera:', err)
+        this.isCameraOn = false
+        this.options.onError?.(err instanceof Error ? err : new Error(String(err)))
+        throw err
+      }
+    } else {
+      if (this.localVideoTrack) {
+        this.localVideoTrack.stop()
+        this.localVideoTrack = null
+      }
+      this.localVideoStream = null
+      this.isCameraOn = false
+
+      if (this.pc && this.videoSender) {
+        try {
+          this.pc.removeTrack(this.videoSender)
+        } catch (err) {
+          console.warn('[SfuClient] Failed to remove video sender:', err)
+        }
+        this.videoSender = null
+        await this.renegotiate()
+      }
+
+      this.options.onLocalVideoChange?.(null)
+      return null
+    }
+  }
+
+  public async setCameraDevice(deviceId: string): Promise<void> {
+    this.selectedVideoDeviceId = deviceId
+    if (this.isCameraOn) {
+      await this.setCameraEnabled(true, deviceId)
+    }
+  }
+
+  private async renegotiate(): Promise<void> {
+    if (!this.pc || this.isClosed || !this.ws || this.ws.readyState !== WebSocket.OPEN) return
+
+    if (this.pc.signalingState && this.pc.signalingState !== 'stable') {
+      await new Promise<void>((resolve) => {
+        const check = () => {
+          if (!this.pc || this.pc.signalingState === 'stable') {
+            this.pc?.removeEventListener('signalingstatechange', check)
+            resolve()
+          }
+        }
+        this.pc?.addEventListener('signalingstatechange', check)
+        setTimeout(check, 1000)
+      })
+    }
+
+    const offer = await this.pc.createOffer()
+    await this.pc.setLocalDescription(offer)
+
+    this.sendWsMessage({
+      type: 'offer',
+      sdp: offer.sdp,
+    })
+  }
+
   public disconnect(isExplicitLeave = true): void {
     if (this.isClosed) return
     this.isClosed = true
@@ -573,6 +725,15 @@ export class SfuClient {
       this.localStream.getTracks().forEach((t) => t.stop())
       this.localStream = null
     }
+
+    if (this.localVideoTrack) {
+      this.localVideoTrack.stop()
+      this.localVideoTrack = null
+    }
+    this.localVideoStream = null
+    this.videoSender = null
+    this.isCameraOn = false
+    this.remoteVideoStreams.clear()
 
     for (const audioEl of this.audioElements.values()) {
       audioEl.srcObject = null

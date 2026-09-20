@@ -17,10 +17,17 @@ export interface VoiceContextValue {
   selfDeaf: boolean
   isSpeaking: boolean
   speakingUsers: Set<string>
+  isCameraOn: boolean
+  selectedCameraId: string | null
+  videoDevices: MediaDeviceInfo[]
+  localVideoStream: MediaStream | null
+  remoteVideoStreams: Map<string, MediaStream>
   joinVoice: (guildId: string, channelId: string) => void
   leaveVoice: () => void
   toggleMute: () => void
   toggleDeaf: () => void
+  toggleCamera: () => Promise<void>
+  setSelectedCameraId: (deviceId: string) => Promise<void>
   getChannelVoiceStates: (guildId: string, channelId: string) => VoiceState[]
 }
 

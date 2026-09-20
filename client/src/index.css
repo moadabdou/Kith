@@ -1970,3 +1970,231 @@ body {
   background: #c03135;
 }
 
+/* Video Grid and Tiles (#78) */
+.video-grid {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  gap: 16px;
+  align-content: center;
+  justify-content: center;
+}
+
+.video-grid.video-grid-1 {
+  grid-template-columns: minmax(280px, 800px);
+  grid-template-rows: auto;
+}
+
+.video-grid.video-grid-2 {
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  max-width: 1100px;
+}
+
+.video-grid.video-grid-4 {
+  grid-template-columns: repeat(2, minmax(280px, 1fr));
+  max-width: 1000px;
+}
+
+.video-grid.video-grid-6 {
+  grid-template-columns: repeat(3, minmax(240px, 1fr));
+  max-width: 1200px;
+}
+
+.video-grid.video-grid-9 {
+  grid-template-columns: repeat(3, minmax(220px, 1fr));
+  max-width: 1200px;
+}
+
+.video-grid.video-grid-many {
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  align-content: start;
+}
+
+.video-tile {
+  background-color: #1e1f22;
+  border-radius: 12px;
+  border: 2px solid transparent;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 16 / 9;
+  min-height: 180px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.video-tile.speaking {
+  border-color: #23a55a;
+  box-shadow: 0 0 0 1px #23a55a, 0 0 16px rgba(35, 165, 90, 0.5);
+  animation: pulse-speaking 1.2s infinite ease-in-out;
+}
+
+.video-tile-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.video-tile-video.hidden {
+  display: none;
+}
+
+.video-tile-mirror {
+  transform: scaleX(-1);
+}
+
+.video-tile-fallback {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #1e1f22;
+}
+
+.video-tile-overlay {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 8px 12px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.75), transparent);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.video-tile-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #f2f3f5;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.video-tile-self-tag {
+  font-size: 11px;
+  color: #949ba4;
+}
+
+.video-tile-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.voice-dock-btn.active-camera {
+  background: #23a55a;
+  color: white;
+}
+
+.voice-dock-btn.active-camera:hover {
+  background: #1f9250;
+}
+
+.voice-dock-device-group {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.voice-dock-chevron-btn {
+  position: absolute;
+  top: -4px;
+  right: -6px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #35373c;
+  color: #dbdee1;
+  border: 1px solid rgba(0, 0, 0, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.15s ease;
+  z-index: 5;
+}
+
+.voice-dock-chevron-btn:hover,
+.voice-dock-chevron-btn.active {
+  background: #4e5058;
+  color: white;
+}
+
+.camera-device-menu {
+  position: absolute;
+  bottom: calc(100% + 12px);
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: 200px;
+  max-width: 280px;
+  background: #2b2d31;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.camera-device-menu-header {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #949ba4;
+  padding: 6px 8px;
+  letter-spacing: 0.04em;
+}
+
+.camera-device-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #dbdee1;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.camera-device-item:hover {
+  background: #35373c;
+  color: #f2f3f5;
+}
+
+.camera-device-item.selected {
+  background: rgba(88, 101, 242, 0.2);
+  color: #5865f2;
+}
+
+.camera-device-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.camera-device-check {
+  font-weight: 700;
+  margin-left: 8px;
+}
+
+

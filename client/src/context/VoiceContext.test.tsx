@@ -104,6 +104,20 @@ vi.mock('../gateway/useGateway', () => ({
   }),
 }))
 
+// Mock video-devices
+let mockVideoDevices = [
+  { deviceId: 'cam-1', label: 'FaceTime HD Camera', kind: 'videoinput' } as MediaDeviceInfo,
+  { deviceId: 'cam-2', label: 'External USB Cam', kind: 'videoinput' } as MediaDeviceInfo,
+]
+let deviceChangeCb: any = null
+vi.mock('../lib/video-devices', () => ({
+  getVideoInputDevices: vi.fn().mockImplementation(() => Promise.resolve(mockVideoDevices)),
+  onDeviceChange: vi.fn().mockImplementation((cb) => {
+    deviceChangeCb = cb
+    return () => { deviceChangeCb = null }
+  }),
+}))
+
 // Mock SfuClient
 let sfuClientInstances: any[] = []
 vi.mock('../lib/sfu-client', async (importOriginal) => {
@@ -114,6 +128,16 @@ vi.mock('../lib/sfu-client', async (importOriginal) => {
     public disconnect = vi.fn()
     public setMute = vi.fn()
     public setDeaf = vi.fn()
+    public setCameraEnabled = vi.fn().mockImplementation((enabled: boolean) => {
+      const mockStream = enabled ? ({ id: 'stream-local-cam', getVideoTracks: () => [{ id: 'track-1' }] } as any) : null
+      this.options?.onLocalVideoChange?.(mockStream)
+      return Promise.resolve(mockStream)
+    })
+    public setCameraDevice = vi.fn().mockImplementation((_devId: string) => {
+      const mockStream = { id: 'stream-switched', getVideoTracks: () => [{ id: 'track-switched' }] } as any
+      this.options?.onLocalVideoChange?.(mockStream)
+      return Promise.resolve(mockStream)
+    })
 
     constructor(options: any) {
       this.options = options
@@ -451,5 +475,86 @@ describe('VoiceContext Client Integration (Phase 5c / Issue #74)', () => {
     expect(voiceValue?.activeVoice).toBeNull()
     expect(voiceValue?.connectionStatus).toBe('disconnected')
     expect(voiceValue?.speakingUsers.size).toBe(0)
+  })
+
+  it('populates video devices and reacts to devicechange events', async () => {
+    expect(voiceValue?.videoDevices).toHaveLength(2)
+    expect(voiceValue?.videoDevices[0].deviceId).toBe('cam-1')
+
+    await act(async () => {
+      deviceChangeCb?.([
+        { deviceId: 'cam-3', label: 'New WebCam', kind: 'videoinput' } as MediaDeviceInfo,
+      ])
+    })
+
+    expect(voiceValue?.videoDevices).toHaveLength(1)
+    expect(voiceValue?.videoDevices[0].deviceId).toBe('cam-3')
+  })
+
+  it('toggles camera on and off and switches camera devices', async () => {
+    await act(async () => {
+      voiceValue?.joinVoice('guild-1', 'channel-voice-1')
+      gatewayListeners.voiceServerUpdates.forEach((cb) =>
+        cb({
+          guild_id: 'guild-1',
+          channel_id: 'channel-voice-1',
+          endpoint: '127.0.0.1:5000',
+          token: 'token-abc',
+        })
+      )
+    })
+
+    const sfu = sfuClientInstances[0]
+    expect(voiceValue?.isCameraOn).toBe(false)
+    expect(voiceValue?.localVideoStream).toBeNull()
+
+    // Toggle camera ON
+    await act(async () => {
+      await voiceValue?.toggleCamera()
+    })
+
+    expect(sfu.setCameraEnabled).toHaveBeenCalledWith(true, undefined)
+    expect(voiceValue?.isCameraOn).toBe(true)
+    expect(voiceValue?.localVideoStream?.id).toBe('stream-local-cam')
+
+    // Switch camera device
+    await act(async () => {
+      await voiceValue?.setSelectedCameraId('cam-2')
+    })
+
+    expect(sfu.setCameraDevice).toHaveBeenCalledWith('cam-2')
+    expect(voiceValue?.selectedCameraId).toBe('cam-2')
+
+    // Toggle camera OFF
+    await act(async () => {
+      await voiceValue?.toggleCamera()
+    })
+
+    expect(sfu.setCameraEnabled).toHaveBeenCalledWith(false, 'cam-2')
+    expect(voiceValue?.isCameraOn).toBe(false)
+    expect(voiceValue?.localVideoStream).toBeNull()
+  })
+
+  it('receives remote video stream updates from SFU client', async () => {
+    await act(async () => {
+      voiceValue?.joinVoice('guild-1', 'channel-voice-1')
+      gatewayListeners.voiceServerUpdates.forEach((cb) =>
+        cb({
+          guild_id: 'guild-1',
+          channel_id: 'channel-voice-1',
+          endpoint: '127.0.0.1:5000',
+          token: 'token-abc',
+        })
+      )
+    })
+
+    const sfu = sfuClientInstances[0]
+    const remoteStream = { id: 'remote-stream-u2' } as MediaStream
+
+    await act(async () => {
+      sfu.options.onRemoteVideoChange?.('user-2', remoteStream)
+    })
+
+    expect(voiceValue?.remoteVideoStreams.get('user-2')).toBe(remoteStream)
   })
 })

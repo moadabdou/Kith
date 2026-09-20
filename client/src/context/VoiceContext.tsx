@@ -14,6 +14,7 @@ import {
   type GuildVoiceStates,
 } from '../lib/voice'
 import { SfuClient } from '../lib/sfu-client'
+import { getVideoInputDevices, onDeviceChange } from '../lib/video-devices'
 import {
   VoiceContext,
   type ActiveVoiceConnection,
@@ -55,10 +56,17 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   const [selfDeaf, setSelfDeaf] = useState(false)
   const [isSpeaking, setIsSpeaking] = useState(false)
   const [speakingUsers, setSpeakingUsers] = useState<Set<string>>(new Set())
+  const [isCameraOn, setIsCameraOn] = useState(false)
+  const [selectedCameraId, setSelectedCameraIdState] = useState<string | null>(null)
+  const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([])
+  const [localVideoStream, setLocalVideoStream] = useState<MediaStream | null>(null)
+  const [remoteVideoStreams, setRemoteVideoStreams] = useState<Map<string, MediaStream>>(new Map())
 
   // Ref to track selfMute and selfDeaf in callbacks without stale closures
   const selfMuteRef = useRef(selfMute)
   const selfDeafRef = useRef(selfDeaf)
+  const isCameraOnRef = useRef(isCameraOn)
+  const selectedCameraIdRef = useRef(selectedCameraId)
   const activeVoiceRef = useRef(activeVoice)
   const connectionStatusRef = useRef(connectionStatus)
   const sfuClientRef = useRef<SfuClient | null>(null)
@@ -66,9 +74,26 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     selfMuteRef.current = selfMute
     selfDeafRef.current = selfDeaf
+    isCameraOnRef.current = isCameraOn
+    selectedCameraIdRef.current = selectedCameraId
     activeVoiceRef.current = activeVoice
     connectionStatusRef.current = connectionStatus
-  }, [selfMute, selfDeaf, activeVoice, connectionStatus])
+  }, [selfMute, selfDeaf, isCameraOn, selectedCameraId, activeVoice, connectionStatus])
+
+  // Video devices enumeration and devicechange listener
+  useEffect(() => {
+    let mounted = true
+    getVideoInputDevices().then((devices) => {
+      if (mounted) setVideoDevices(devices)
+    })
+    const unsubscribe = onDeviceChange((devices) => {
+      if (mounted) setVideoDevices(devices)
+    })
+    return () => {
+      mounted = false
+      unsubscribe()
+    }
+  }, [])
 
   // Cleanup SFU client on unmount (graceful close without explicit leave message to preserve grace period on reload)
   useEffect(() => {
@@ -169,6 +194,9 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
           setActiveVoice(null)
           setConnectionStatus('disconnected')
           setIsSpeaking(false)
+          setIsCameraOn(false)
+          setLocalVideoStream(null)
+          setRemoteVideoStreams(new Map())
         } else {
           const conn = { guildId: payload.guild_id, channelId: payload.channel_id }
           setActiveVoice(conn)
@@ -242,6 +270,21 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
             setIsSpeaking(speaking)
           }
         },
+        onLocalVideoChange: (stream) => {
+          setLocalVideoStream(stream)
+          setIsCameraOn(!!stream)
+        },
+        onRemoteVideoChange: (userId, stream) => {
+          setRemoteVideoStreams((prev) => {
+            const next = new Map(prev)
+            if (stream) {
+              next.set(userId, stream)
+            } else {
+              next.delete(userId)
+            }
+            return next
+          })
+        },
         onError: (err) => {
           console.error('[VoiceContext] SFU error:', err)
         },
@@ -274,6 +317,9 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       setConnectionStatus('disconnected')
       setIsSpeaking(false)
       setSpeakingUsers(new Set())
+      setIsCameraOn(false)
+      setLocalVideoStream(null)
+      setRemoteVideoStreams(new Map())
     })
   }, [onSessionReset])
 
@@ -323,6 +369,9 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     setActiveVoice(null)
     setConnectionStatus('disconnected')
     setIsSpeaking(false)
+    setIsCameraOn(false)
+    setLocalVideoStream(null)
+    setRemoteVideoStreams(new Map())
     if (user) {
       setSpeakingUsers((prev) => {
         const next = new Set(prev)
@@ -372,6 +421,33 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     }
   }, [sendVoiceStateUpdate])
 
+  const toggleCamera = useCallback(async () => {
+    if (!sfuClientRef.current) return
+    const next = !isCameraOnRef.current
+    try {
+      const stream = await sfuClientRef.current.setCameraEnabled(
+        next,
+        selectedCameraIdRef.current || undefined
+      )
+      setIsCameraOn(next)
+      setLocalVideoStream(stream)
+    } catch (err) {
+      console.error('[VoiceContext] Failed to toggle camera:', err)
+    }
+  }, [])
+
+  const setSelectedCameraId = useCallback(async (deviceId: string) => {
+    setSelectedCameraIdState(deviceId)
+    selectedCameraIdRef.current = deviceId
+    if (sfuClientRef.current && isCameraOnRef.current) {
+      try {
+        await sfuClientRef.current.setCameraDevice(deviceId)
+      } catch (err) {
+        console.error('[VoiceContext] Failed to switch camera device:', err)
+      }
+    }
+  }, [])
+
   const getChannelVoiceStatesCb = useCallback(
     (guildId: string, channelId: string) => {
       return getUsersInVoiceChannel(voiceStates, guildId, channelId)
@@ -389,10 +465,17 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         selfDeaf,
         isSpeaking,
         speakingUsers,
+        isCameraOn,
+        selectedCameraId,
+        videoDevices,
+        localVideoStream,
+        remoteVideoStreams,
         joinVoice,
         leaveVoice,
         toggleMute,
         toggleDeaf,
+        toggleCamera,
+        setSelectedCameraId,
         getChannelVoiceStates: getChannelVoiceStatesCb,
       }}
     >

@@ -312,6 +312,7 @@ describe('SfuClient', () => {
       style: {} as any,
       play: vi.fn().mockResolvedValue(undefined),
       remove: vi.fn(),
+      setAttribute: vi.fn(),
     }
 
     vi.stubGlobal('document', {
@@ -521,5 +522,101 @@ describe('SfuClient', () => {
     expect(mockAudioTrack.stop).toHaveBeenCalled()
     expect(mockPc.close).toHaveBeenCalled()
     expect(mockWs.close).toHaveBeenCalled()
+  })
+
+  it('enables and disables camera, executing renegotiation with SFU', async () => {
+    const mockVideoTrack = {
+      id: 'vid-track-1',
+      kind: 'video',
+      enabled: true,
+      stop: vi.fn(),
+      onended: null,
+    }
+    const mockVideoStream = {
+      getVideoTracks: vi.fn(() => [mockVideoTrack]),
+      getTracks: vi.fn(() => [mockVideoTrack]),
+    }
+
+    const getUserMediaMock = vi.fn().mockResolvedValue(mockVideoStream)
+    vi.stubGlobal('navigator', {
+      mediaDevices: {
+        getUserMedia: getUserMediaMock,
+      },
+    })
+
+    const onLocalVideo = vi.fn()
+    const client = new SfuClient({
+      endpoint: '127.0.0.1:5000',
+      token: 'jwt-token-123',
+      channelId: 'voice-chan-1',
+      onLocalVideoChange: onLocalVideo,
+    })
+
+    await client.connect()
+
+    const mockSender = {
+      replaceTrack: vi.fn().mockResolvedValue(undefined),
+    }
+    mockPc.addTrack.mockReturnValue(mockSender)
+    mockPc.removeTrack = vi.fn()
+
+    // Enable camera
+    const stream = await client.setCameraEnabled(true)
+    expect(stream).toBe(mockVideoStream)
+    expect(client.isCameraActive()).toBe(true)
+    expect(getUserMediaMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        video: expect.objectContaining({
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          frameRate: { ideal: 30 },
+        }),
+      })
+    )
+    expect(mockPc.addTrack).toHaveBeenCalledWith(mockVideoTrack, mockVideoStream)
+    expect(onLocalVideo).toHaveBeenCalledWith(mockVideoStream)
+
+    // Disable camera
+    await client.setCameraEnabled(false)
+    expect(client.isCameraActive()).toBe(false)
+    expect(mockVideoTrack.stop).toHaveBeenCalled()
+    expect(mockPc.removeTrack).toHaveBeenCalledWith(mockSender)
+    expect(onLocalVideo).toHaveBeenCalledWith(null)
+
+    client.disconnect()
+  })
+
+  it('handles remote video tracks and triggers onRemoteVideoChange callback', async () => {
+    const onRemoteVideo = vi.fn()
+    const client = new SfuClient({
+      endpoint: '127.0.0.1:5000',
+      token: 'jwt-token-123',
+      channelId: 'voice-chan-1',
+      onRemoteVideoChange: onRemoteVideo,
+    })
+
+    await client.connect()
+
+    const remoteVideoTrack: any = {
+      id: 'kith-track-alice-video',
+      kind: 'video',
+      onended: null,
+    }
+    const remoteVideoStream: any = {
+      id: 'kith-stream-alice',
+      getTracks: () => [remoteVideoTrack],
+    }
+
+    mockPc.ontrack({ track: remoteVideoTrack, streams: [remoteVideoStream] })
+
+    expect(onRemoteVideo).toHaveBeenCalledWith('alice', remoteVideoStream)
+    expect(client.getRemoteVideoStreams().get('alice')).toBe(remoteVideoStream)
+
+    // When remote track ends
+    remoteVideoTrack.onended()
+    expect(onRemoteVideo).toHaveBeenCalledWith('alice', null)
+    expect(client.getRemoteVideoStreams().has('alice')).toBe(false)
+
+    client.disconnect()
   })
 })

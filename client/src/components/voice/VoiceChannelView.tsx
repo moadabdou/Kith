@@ -1,17 +1,21 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
+  ChevronUp,
   Headphones,
   Mic,
   MicOff,
   PhoneOff,
   Radio,
   Users,
+  Video,
+  VideoOff,
   Volume2,
 } from 'lucide-react'
 import { api } from '../../api'
 import { useAuth } from '../../context/useAuth'
 import { useVoice } from '../../context/useVoice'
 import type { Channel, Guild, Member } from '../../types'
+import { VideoGrid } from './VideoGrid'
 
 interface VoiceChannelViewProps {
   currentGuild: Guild | null
@@ -31,9 +35,18 @@ export function VoiceChannelView({ currentGuild, channel }: VoiceChannelViewProp
     toggleDeaf,
     getChannelVoiceStates,
     speakingUsers,
+    isCameraOn,
+    selectedCameraId,
+    videoDevices,
+    localVideoStream,
+    remoteVideoStreams,
+    toggleCamera,
+    setSelectedCameraId,
   } = useVoice()
 
   const [members, setMembers] = useState<Map<string, Member>>(new Map())
+  const [showDeviceMenu, setShowDeviceMenu] = useState(false)
+  const deviceMenuRef = useRef<HTMLDivElement | null>(null)
 
   // Load members for avatar and name resolution
   useEffect(() => {
@@ -57,6 +70,18 @@ export function VoiceChannelView({ currentGuild, channel }: VoiceChannelViewProp
     }
   }, [currentGuild])
 
+  // Close device menu when clicking outside
+  useEffect(() => {
+    if (!showDeviceMenu) return
+    const handleClickOutside = (e: MouseEvent) => {
+      if (deviceMenuRef.current && !deviceMenuRef.current.contains(e.target as Node)) {
+        setShowDeviceMenu(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [showDeviceMenu])
+
   const channelMembers = currentGuild
     ? getChannelVoiceStates(currentGuild.id, channel.id)
     : []
@@ -71,6 +96,26 @@ export function VoiceChannelView({ currentGuild, channel }: VoiceChannelViewProp
       joinVoice(currentGuild.id, channel.id)
     }
   }
+
+  const participants = channelMembers.map((vs) => {
+    const isSelf = user?.id === vs.user_id
+    const member = members.get(vs.user_id)
+    const displayName = isSelf
+      ? member?.nick || user?.username || 'You'
+      : member?.nick || member?.user?.username || `User #${vs.user_id.slice(-4)}`
+    const speaking = speakingUsers.has(vs.user_id)
+    const stream = isSelf ? localVideoStream : (remoteVideoStreams.get(vs.user_id) || null)
+
+    return {
+      userId: vs.user_id,
+      displayName,
+      isSelf,
+      stream,
+      speaking,
+      selfMute: vs.self_mute,
+      selfDeaf: vs.self_deaf,
+    }
+  })
 
   return (
     <div className="voice-channel-view">
@@ -129,51 +174,7 @@ export function VoiceChannelView({ currentGuild, channel }: VoiceChannelViewProp
             )}
           </div>
         ) : (
-          <div className="voice-stage-grid">
-            {channelMembers.map((vs) => {
-              const isSelf = user?.id === vs.user_id
-              const member = members.get(vs.user_id)
-              const displayName = isSelf
-                ? member?.nick || user?.username || 'You'
-                : member?.nick || member?.user?.username || `User #${vs.user_id.slice(-4)}`
-              const initials = displayName.substring(0, 2).toUpperCase()
-              const speaking = speakingUsers.has(vs.user_id)
-
-              return (
-                <div
-                  key={vs.user_id}
-                  className={`voice-participant-card ${speaking ? 'speaking' : ''}`}
-                >
-                  <div className="voice-participant-avatar-container">
-                    <div
-                      className={`voice-participant-avatar ${speaking ? 'speaking' : ''}`}
-                    >
-                      {initials}
-                    </div>
-                  </div>
-
-                  <div className="voice-participant-footer">
-                    <span className="voice-participant-name" title={displayName}>
-                      {displayName}
-                    </span>
-
-                    <div className="voice-participant-badges">
-                      {vs.self_deaf && (
-                        <span className="voice-badge deafened" title="Deafened">
-                          <Headphones size={15} />
-                        </span>
-                      )}
-                      {vs.self_mute && (
-                        <span className="voice-badge muted" title="Muted">
-                          <MicOff size={15} />
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
+          <VideoGrid participants={participants} />
         )}
       </div>
 
@@ -198,6 +199,58 @@ export function VoiceChannelView({ currentGuild, channel }: VoiceChannelViewProp
             >
               <Headphones size={20} />
             </button>
+
+            {/* Video Camera Toggle & Device Selector */}
+            <div className="voice-dock-device-group" ref={deviceMenuRef}>
+              <button
+                type="button"
+                onClick={toggleCamera}
+                className={`voice-dock-btn ${isCameraOn ? 'active-camera' : ''}`}
+                title={isCameraOn ? 'Turn Off Camera' : 'Turn On Camera'}
+              >
+                {isCameraOn ? <Video size={20} /> : <VideoOff size={20} />}
+              </button>
+
+              {videoDevices.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowDeviceMenu((prev) => !prev)}
+                  className={`voice-dock-chevron-btn ${showDeviceMenu ? 'active' : ''}`}
+                  title="Select Camera Device"
+                >
+                  <ChevronUp size={14} />
+                </button>
+              )}
+
+              {showDeviceMenu && videoDevices.length > 0 && (
+                <div className="camera-device-menu">
+                  <div className="camera-device-menu-header">Select Camera</div>
+                  {videoDevices.map((device, index) => {
+                    const isSelected = selectedCameraId
+                      ? selectedCameraId === device.deviceId
+                      : index === 0
+                    return (
+                      <button
+                        key={device.deviceId || index}
+                        type="button"
+                        className={`camera-device-item ${isSelected ? 'selected' : ''}`}
+                        onClick={() => {
+                          setSelectedCameraId(device.deviceId)
+                          setShowDeviceMenu(false)
+                        }}
+                      >
+                        <span className="camera-device-name">
+                          {device.label || `Camera ${index + 1}`}
+                        </span>
+                        {isSelected && (
+                          <span className="camera-device-check">✓</span>
+                        )}
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
 
             <button
               type="button"

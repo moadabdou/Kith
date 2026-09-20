@@ -1,10 +1,12 @@
 package room
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/moadabdou/Kith/sfu/internal/bus"
 	"github.com/moadabdou/Kith/sfu/internal/peer"
 	"github.com/pion/webrtc/v4"
 )
@@ -15,7 +17,7 @@ func createTestPeer(t *testing.T, userID, channelID string) *peer.Peer {
 		t.Fatalf("failed to create API: %v", err)
 	}
 
-	p, err := peer.NewPeer(api, webrtc.Configuration{}, userID, "sess-1", channelID)
+	p, err := peer.NewPeer(api, webrtc.Configuration{}, userID, "sess-1", channelID, "guild_test_1")
 	if err != nil {
 		t.Fatalf("failed to create peer: %v", err)
 	}
@@ -26,7 +28,7 @@ func TestRoomLifecycle(t *testing.T) {
 	var emptyCalled bool
 	var mu sync.Mutex
 
-	r := NewRoom("chan_test_1", func(roomID string) {
+	r := NewRoom("chan_test_1", nil, func(roomID string) {
 		mu.Lock()
 		emptyCalled = true
 		mu.Unlock()
@@ -118,7 +120,7 @@ func TestRoomLifecycle(t *testing.T) {
 }
 
 func TestManager(t *testing.T) {
-	m := NewManager()
+	m := NewManager(nil)
 	defer m.Close()
 
 	r1 := m.GetOrCreate("chan_a")
@@ -179,5 +181,73 @@ func TestManager(t *testing.T) {
 	m.Remove("chan_a")
 	if m.Count() != 0 {
 		t.Errorf("expected count 0 after removal, got %d", m.Count())
+	}
+}
+
+type mockPublisher struct {
+	mu     sync.Mutex
+	events []bus.Event
+}
+
+func (m *mockPublisher) Publish(ctx context.Context, e bus.Event) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.events = append(m.events, e)
+	return nil
+}
+
+func (m *mockPublisher) Close() error {
+	return nil
+}
+
+func TestRoomEventBusPublishing(t *testing.T) {
+	mockPub := &mockPublisher{}
+	r := NewRoom("chan_bus_1", mockPub, nil)
+	defer r.Close()
+
+	p := createTestPeer(t, "user_bus_1", "chan_bus_1")
+	p.GuildID = "guild_test_bus"
+
+	// Join peer
+	if err := r.Join(p, nil); err != nil {
+		t.Fatalf("failed to join peer: %v", err)
+	}
+
+	// Give goroutine time to publish
+	time.Sleep(50 * time.Millisecond)
+
+	mockPub.mu.Lock()
+	if len(mockPub.events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(mockPub.events))
+	}
+	ev1 := mockPub.events[0]
+	mockPub.mu.Unlock()
+
+	if ev1.Type != "voice.peer_joined" {
+		t.Errorf("expected voice.peer_joined, got %s", ev1.Type)
+	}
+	if ev1.GuildID != "guild_test_bus" {
+		t.Errorf("expected guild_test_bus, got %s", ev1.GuildID)
+	}
+
+	// Leave peer
+	if err := r.Leave("user_bus_1"); err != nil {
+		t.Fatalf("failed to leave peer: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	mockPub.mu.Lock()
+	if len(mockPub.events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(mockPub.events))
+	}
+	ev2 := mockPub.events[1]
+	mockPub.mu.Unlock()
+
+	if ev2.Type != "voice.peer_left" {
+		t.Errorf("expected voice.peer_left, got %s", ev2.Type)
+	}
+	if ev2.GuildID != "guild_test_bus" {
+		t.Errorf("expected guild_test_bus, got %s", ev2.GuildID)
 	}
 }

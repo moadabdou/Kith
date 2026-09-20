@@ -31,7 +31,7 @@ func generateToken(t *testing.T, userID, channelID string) string {
 }
 
 func setupTestServer(t *testing.T) (*httptest.Server, *room.Manager) {
-	roomMgr := room.NewManager()
+	roomMgr := room.NewManager(nil)
 	api, err := peer.CreateAPI(peer.Config{})
 	if err != nil {
 		t.Fatalf("failed to create WebRTC API: %v", err)

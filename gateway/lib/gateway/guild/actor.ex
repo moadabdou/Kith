@@ -390,6 +390,12 @@ defmodule Gateway.Guild.Actor do
         "GUILD_ROLE_DELETE" ->
           handle_guild_role_change_dispatch(event, bus_received_at, state)
 
+        type when type in ["VOICE_PEER_LEFT", "voice.peer_left"] ->
+          handle_voice_peer_left_dispatch(event, bus_received_at, state)
+
+        type when type in ["VOICE_PEER_JOINED", "voice.peer_joined"] ->
+          handle_voice_peer_joined_dispatch(event, bus_received_at, state)
+
         _ ->
           if type in @channel_scoped_events do
             handle_channel_scoped_dispatch(event, bus_received_at, state)
@@ -647,6 +653,72 @@ defmodule Gateway.Guild.Actor do
       end)
 
     %{state | subscribers: new_subscribers}
+  end
+
+  defp handle_voice_peer_left_dispatch(event, _bus_received_at, state) do
+    payload = event["payload"] || event
+    uid = to_string(payload["user_id"] || "")
+    leaving_cid = payload["channel_id"]
+
+    case Map.get(state.voice_states, uid) do
+      nil ->
+        state
+
+      vs ->
+        if is_nil(leaving_cid) or to_string(leaving_cid) == to_string(vs.channel_id) do
+          if not is_nil(vs.channel_id) do
+            Gateway.Metrics.decr_voice_connection()
+          end
+
+          new_voice_states = Map.delete(state.voice_states, uid)
+
+          leave_vs = %Gateway.Voice.VoiceState{
+            guild_id: state.guild_id,
+            channel_id: nil,
+            user_id: uid,
+            session_id: vs.session_id,
+            self_mute: vs.self_mute,
+            self_deaf: vs.self_deaf
+          }
+
+          fan_out_voice_state_update(leave_vs, vs.channel_id, state)
+          %{state | voice_states: new_voice_states}
+        else
+          state
+        end
+    end
+  end
+
+  defp handle_voice_peer_joined_dispatch(event, _bus_received_at, state) do
+    payload = event["payload"] || event
+    uid = to_string(payload["user_id"] || "")
+    cid = payload["channel_id"]
+    sid = payload["session_id"] || ""
+
+    if uid != "" and cid && cid != "" do
+      old_vs = Map.get(state.voice_states, uid)
+      old_cid = if old_vs, do: old_vs.channel_id, else: nil
+
+      if is_nil(old_cid) do
+        Gateway.Metrics.incr_voice_connection()
+      end
+
+      new_vs =
+        Gateway.Voice.VoiceState.new(%{
+          "guild_id" => state.guild_id,
+          "channel_id" => to_string(cid),
+          "user_id" => uid,
+          "session_id" => if(sid != "", do: to_string(sid), else: (old_vs && old_vs.session_id) || ""),
+          "self_mute" => (old_vs && old_vs.self_mute) || false,
+          "self_deaf" => (old_vs && old_vs.self_deaf) || false
+        })
+
+      new_voice_states = Map.put(state.voice_states, uid, new_vs)
+      fan_out_voice_state_update(new_vs, old_cid, state)
+      %{state | voice_states: new_voice_states}
+    else
+      state
+    end
   end
 
   defp handle_channel_scoped_dispatch(event, bus_received_at, state) do
@@ -919,10 +991,11 @@ defmodule Gateway.Guild.Actor do
 
 
   defp dispatch_voice_server_update(session_id, channel_id, state) do
+    Gateway.Metrics.incr_voice_server_update()
+
     case Map.get(state.subscribers, session_id) do
       sub when not is_nil(sub) ->
-        Gateway.Metrics.incr_voice_server_update()
-        {pid, _user_id, _visible} = normalize_subscriber(session_id, sub, state.guild_id)
+        {pid, user_id, _visible} = normalize_subscriber(session_id, sub, state.guild_id)
 
         endpoint =
           Application.get_env(
@@ -931,7 +1004,14 @@ defmodule Gateway.Guild.Actor do
             System.get_env("VOICE_ENDPOINT", "127.0.0.1:5000")
           )
 
-        token = :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower)
+        jwt_secret =
+          Application.get_env(
+            :gateway,
+            :jwt_secret,
+            System.get_env("JWT_SECRET", "dev-jwt-secret-change-me")
+          )
+
+        token = Gateway.Auth.JWT.issue_voice_token(user_id, state.guild_id, channel_id, jwt_secret)
 
         event = %{
           "type" => "VOICE_SERVER_UPDATE",

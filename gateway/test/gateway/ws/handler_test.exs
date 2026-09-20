@@ -885,7 +885,7 @@ defmodule Gateway.WS.HandlerTest do
       assert closing_state.close_code == 4004
     end
 
-    test "Opcode 4 and Opcode 12 over WebSocket handler" do
+    test "Opcode 4 over WebSocket handler" do
       {:push, _, state} = Handler.init(heartbeat_interval: 10_000)
       user_id = 87000000000000001
       token = Gateway.Auth.JWT.issue(user_id, state.jwt_secret, 3600)
@@ -911,23 +911,7 @@ defmodule Gateway.WS.HandlerTest do
       assert {:ok, s1} = Handler.handle_in({vsu_msg, opcode: :text}, identified_state)
       assert s1.close_code == nil
 
-      # Opcode 12: Voice signaling when not in channel -> dropped, handled safely
-      sig_msg =
-        Jason.encode!(%{
-          "op" => 12,
-          "d" => %{
-            "guild_id" => guild_id,
-            "channel_id" => text_chan,
-            "to_user_id" => "87000000000000002",
-            "type" => "offer",
-            "payload" => %{"sdp" => "test"}
-          }
-        })
-
-      assert {:ok, s2} = Handler.handle_in({sig_msg, opcode: :text}, s1)
-      assert s2.close_code == nil
-
-      Handler.terminate(:normal, s2)
+      Handler.terminate(:normal, s1)
       close_session(session_id)
     end
   end

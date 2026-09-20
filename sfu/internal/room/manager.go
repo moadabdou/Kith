@@ -4,20 +4,27 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+
+	"github.com/moadabdou/Kith/sfu/internal/bus"
 )
 
 var ErrNoSuchRoom = errors.New("room not found")
 
 // Manager coordinates room lifecycles across the SFU.
 type Manager struct {
-	mu    sync.RWMutex
-	rooms map[string]*Room
+	mu        sync.RWMutex
+	rooms     map[string]*Room
+	publisher bus.Publisher
 }
 
-// NewManager creates a new Room Manager.
-func NewManager() *Manager {
+// NewManager creates a new Room Manager with the given event publisher.
+func NewManager(publisher bus.Publisher) *Manager {
+	if publisher == nil {
+		publisher = &bus.NoopPublisher{}
+	}
 	return &Manager{
-		rooms: make(map[string]*Room),
+		rooms:     make(map[string]*Room),
+		publisher: publisher,
 	}
 }
 
@@ -30,7 +37,7 @@ func (m *Manager) GetOrCreate(channelID string) *Room {
 		return r
 	}
 
-	r := NewRoom(channelID, func(roomID string) {
+	r := NewRoom(channelID, m.publisher, func(roomID string) {
 		m.Remove(roomID)
 	})
 

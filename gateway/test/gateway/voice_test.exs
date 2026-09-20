@@ -414,4 +414,119 @@ defmodule Gateway.VoiceTest do
       assert hd(regular_visible)["channel_id"] == @public_voice_channel
     end
   end
+
+  describe "SFU & Gateway voice server routing & presence synchronization (Issue #74)" do
+    test "VOICE_SERVER_UPDATE issues valid HS256 JWT with sub, guild_id, and channel_id" do
+      {:ok, _pid} = Actor.get_or_spawn(@test_guild_id)
+
+      voice_session = "jwt-test-sess"
+      assert :ok == Actor.subscribe(@test_guild_id, voice_session, self(), @voice_user_id)
+
+      jwt_secret =
+        Application.get_env(
+          :gateway,
+          :jwt_secret,
+          System.get_env("JWT_SECRET", "dev-jwt-secret-change-me")
+        )
+
+      assert {:ok, _vs} =
+               Actor.update_voice_state(@test_guild_id, @voice_user_id, voice_session, %{
+                 "channel_id" => @public_voice_channel
+               })
+
+      assert_receive {:dispatch, %{"type" => "VOICE_SERVER_UPDATE", "payload" => payload}, _}, 1000
+      token = payload["token"]
+      assert is_binary(token)
+
+      # Verify token signature and user_id via Gateway.Auth.JWT
+      assert {:ok, uid} = Gateway.Auth.JWT.verify(token, jwt_secret)
+      assert to_string(uid) == @voice_user_id
+
+      # Verify claims payload structure
+      [_header_b64, payload_b64, _sig_b64] = String.split(token, ".")
+      {:ok, raw_claims} = Base.url_decode64(payload_b64, padding: false)
+      {:ok, claims} = Jason.decode(raw_claims)
+
+      assert claims["sub"] == @voice_user_id
+      assert claims["user_id"] == @voice_user_id
+      assert claims["guild_id"] == @test_guild_id
+      assert claims["channel_id"] == @public_voice_channel
+      assert is_integer(claims["exp"])
+      assert claims["exp"] > System.os_time(:second)
+    end
+
+    test "voice.peer_left clears voice state and broadcasts channel_id: nil in real time" do
+      {:ok, _pid} = Actor.get_or_spawn(@test_guild_id)
+
+      # Observer session
+      obs_session = "obs-sess"
+      assert :ok == Actor.subscribe(@test_guild_id, obs_session, self(), @regular_user_id)
+
+      # Voice user joins channel
+      voice_session = "voice-sess-drop"
+      assert :ok == Actor.subscribe(@test_guild_id, voice_session, spawn(fn -> :ok end), @voice_user_id)
+
+      assert {:ok, _vs} =
+               Actor.update_voice_state(@test_guild_id, @voice_user_id, voice_session, %{
+                 "channel_id" => @public_voice_channel
+               })
+
+      # Drain join dispatch for observer
+      assert_receive {:dispatch, %{"type" => "VOICE_STATE_UPDATE", "payload" => %{"channel_id" => @public_voice_channel}}, _}, 1000
+
+      # SFU emits voice.peer_left over event bus
+      event = %{
+        "type" => "voice.peer_left",
+        "guild_id" => @test_guild_id,
+        "payload" => %{
+          "guild_id" => @test_guild_id,
+          "channel_id" => @public_voice_channel,
+          "user_id" => @voice_user_id,
+          "session_id" => voice_session
+        }
+      }
+
+      Actor.dispatch_event(@test_guild_id, event)
+
+      # Observer receives real-time leave broadcast with channel_id: nil
+      assert_receive {:dispatch, %{"type" => "VOICE_STATE_UPDATE", "payload" => leave_payload}, _}, 1000
+      assert leave_payload["channel_id"] == nil
+      assert leave_payload["user_id"] == @voice_user_id
+
+      # Voice state is removed from Actor
+      states = Actor.get_voice_states(@test_guild_id)
+      refute Map.has_key?(states, @voice_user_id)
+    end
+
+    test "voice.peer_joined syncs active presence in Guild Actor" do
+      {:ok, _pid} = Actor.get_or_spawn(@test_guild_id)
+
+      obs_session = "obs-sync-sess"
+      assert :ok == Actor.subscribe(@test_guild_id, obs_session, self(), @regular_user_id)
+
+      # SFU emits voice.peer_joined
+      event = %{
+        "type" => "VOICE_PEER_JOINED",
+        "guild_id" => @test_guild_id,
+        "payload" => %{
+          "guild_id" => @test_guild_id,
+          "channel_id" => @public_voice_channel,
+          "user_id" => @voice_user_id,
+          "session_id" => "sess-sfu-sync"
+        }
+      }
+
+      Actor.dispatch_event(@test_guild_id, event)
+
+      # Observer receives VOICE_STATE_UPDATE
+      assert_receive {:dispatch, %{"type" => "VOICE_STATE_UPDATE", "payload" => join_payload}, _}, 1000
+      assert join_payload["channel_id"] == @public_voice_channel
+      assert join_payload["user_id"] == @voice_user_id
+
+      # State queryable in Actor
+      states = Actor.get_voice_states(@test_guild_id)
+      assert Map.has_key?(states, @voice_user_id)
+      assert states[@voice_user_id].channel_id == @public_voice_channel
+    end
+  end
 end

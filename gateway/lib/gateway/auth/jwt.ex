@@ -56,6 +56,34 @@ defmodule Gateway.Auth.JWT do
     "#{signing_input}.#{sig_b64}"
   end
 
+  @doc """
+  Issues an HS256 JWT token for SFU voice authentication, embedding user_id, guild_id, and channel_id.
+  """
+  def issue_voice_token(user_id, guild_id, channel_id, secret, ttl_seconds \\ 300)
+      when is_binary(secret) do
+    now = System.os_time(:second)
+    sub = to_string(user_id)
+
+    header = %{"alg" => "HS256", "typ" => "JWT"}
+
+    payload = %{
+      "sub" => sub,
+      "user_id" => sub,
+      "guild_id" => to_string(guild_id),
+      "channel_id" => to_string(channel_id),
+      "iat" => now,
+      "exp" => now + ttl_seconds
+    }
+
+    header_b64 = url_encode(Jason.encode!(header))
+    payload_b64 = url_encode(Jason.encode!(payload))
+    signing_input = "#{header_b64}.#{payload_b64}"
+    sig = :crypto.mac(:hmac, :sha256, secret, signing_input)
+    sig_b64 = url_encode(sig)
+
+    "#{signing_input}.#{sig_b64}"
+  end
+
   # ── Internal Helpers ────────────────────────────────────────────────────────
 
   defp url_encode(data) when is_binary(data) do

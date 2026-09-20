@@ -22,6 +22,7 @@ type Peer struct {
 	UserID            string
 	SessionID         string
 	ChannelID         string
+	GuildID           string
 	PC                *webrtc.PeerConnection
 	Candidates        chan webrtc.ICECandidateInit
 	onTrack           func(*webrtc.TrackRemote, *webrtc.RTPReceiver)
@@ -33,7 +34,7 @@ type Peer struct {
 }
 
 // NewPeer constructs and initializes a new WebRTC PeerConnection for a user.
-func NewPeer(api *webrtc.API, config webrtc.Configuration, userID, sessionID, channelID string) (*Peer, error) {
+func NewPeer(api *webrtc.API, config webrtc.Configuration, userID, sessionID, channelID, guildID string) (*Peer, error) {
 	pc, err := api.NewPeerConnection(config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create peer connection: %w", err)
@@ -43,6 +44,7 @@ func NewPeer(api *webrtc.API, config webrtc.Configuration, userID, sessionID, ch
 		UserID:     userID,
 		SessionID:  sessionID,
 		ChannelID:  channelID,
+		GuildID:    guildID,
 		PC:         pc,
 		Candidates: make(chan webrtc.ICECandidateInit, 64),
 	}
@@ -70,6 +72,10 @@ func NewPeer(api *webrtc.API, config webrtc.Configuration, userID, sessionID, ch
 	pc.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
 		slog.Debug("ICE Connection State changed", "user_id", userID, "state", state.String())
 		metrics.ICEStates.WithLabelValues(state.String()).Inc()
+		if state == webrtc.ICEConnectionStateFailed {
+			slog.Warn("ICE Connection failed, closing peer", "user_id", userID)
+			p.Close()
+		}
 	})
 
 	pc.OnSignalingStateChange(func(state webrtc.SignalingState) {

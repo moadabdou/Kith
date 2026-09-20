@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/moadabdou/Kith/sfu/internal/bus"
 	"github.com/moadabdou/Kith/sfu/internal/metrics"
 	"github.com/moadabdou/Kith/sfu/internal/peer"
 	"github.com/moadabdou/Kith/sfu/internal/router"
@@ -37,6 +38,7 @@ type Room struct {
 	peers     map[string]*peer.Peer
 	senders   map[string]BroadcastSender
 	router    *router.Router
+	publisher bus.Publisher
 	inbox     chan roomMsg
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -77,17 +79,22 @@ type broadcastMsg struct {
 func (broadcastMsg) isRoomMsg() {}
 
 // NewRoom creates and launches a new Room actor.
-func NewRoom(id string, onEmpty func(roomID string)) *Room {
+func NewRoom(id string, publisher bus.Publisher, onEmpty func(roomID string)) *Room {
 	ctx, cancel := context.WithCancel(context.Background())
+	if publisher == nil {
+		publisher = &bus.NoopPublisher{}
+	}
+
 	r := &Room{
-		ID:      id,
-		peers:   make(map[string]*peer.Peer),
-		senders: make(map[string]BroadcastSender),
-		router:  router.NewRouter(id),
-		inbox:   make(chan roomMsg, 64),
-		ctx:     ctx,
-		cancel:  cancel,
-		onEmpty: onEmpty,
+		ID:        id,
+		peers:     make(map[string]*peer.Peer),
+		senders:   make(map[string]BroadcastSender),
+		router:    router.NewRouter(id),
+		publisher: publisher,
+		inbox:     make(chan roomMsg, 64),
+		ctx:       ctx,
+		cancel:    cancel,
+		onEmpty:   onEmpty,
 	}
 
 	metrics.ActiveRooms.Inc()
@@ -184,6 +191,23 @@ func (r *Room) handleJoin(m joinMsg) {
 		ChannelID: r.ID,
 	})
 
+	// Publish voice.peer_joined to event bus
+	if r.publisher != nil && m.p.GuildID != "" {
+		go func(gid, cid, user, sid string) {
+			_ = r.publisher.Publish(context.Background(), bus.Event{
+				Type:    "voice.peer_joined",
+				Version: 1,
+				GuildID: gid,
+				Payload: map[string]any{
+					"guild_id":   gid,
+					"channel_id": cid,
+					"user_id":    user,
+					"session_id": sid,
+				},
+			})
+		}(m.p.GuildID, r.ID, uid, m.p.SessionID)
+	}
+
 	m.replyTo <- nil
 }
 
@@ -193,6 +217,9 @@ func (r *Room) handleLeave(m leaveMsg) {
 		m.replyTo <- ErrPeerNotFound
 		return
 	}
+
+	guildID := p.GuildID
+	sessionID := p.SessionID
 
 	r.router.RemovePeer(m.userID)
 	delete(r.peers, m.userID)
@@ -206,6 +233,23 @@ func (r *Room) handleLeave(m leaveMsg) {
 		UserID:    m.userID,
 		ChannelID: r.ID,
 	})
+
+	// Publish voice.peer_left to event bus
+	if r.publisher != nil && guildID != "" {
+		go func(gid, cid, user, sid string) {
+			_ = r.publisher.Publish(context.Background(), bus.Event{
+				Type:    "voice.peer_left",
+				Version: 1,
+				GuildID: gid,
+				Payload: map[string]any{
+					"guild_id":   gid,
+					"channel_id": cid,
+					"user_id":    user,
+					"session_id": sid,
+				},
+			})
+		}(guildID, r.ID, m.userID, sessionID)
+	}
 
 	m.replyTo <- nil
 

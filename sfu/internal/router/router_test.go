@@ -174,7 +174,7 @@ func TestRouter_Lifecycle(t *testing.T) {
 	}
 
 	rtcCfg := webrtc.Configuration{}
-	peer1, err := peer.NewPeer(api, rtcCfg, "user_1", "sess_1", "chan_test")
+	peer1, err := peer.NewPeer(api, rtcCfg, "user_1", "sess_1", "chan_test", "guild_test")
 	if err != nil {
 		t.Fatalf("failed to create peer1: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestRouter_Lifecycle(t *testing.T) {
 		}
 	}()
 
-	peer2, err := peer.NewPeer(api, rtcCfg, "user_2", "sess_2", "chan_test")
+	peer2, err := peer.NewPeer(api, rtcCfg, "user_2", "sess_2", "chan_test", "guild_test")
 	if err != nil {
 		t.Fatalf("failed to create peer2: %v", err)
 	}
@@ -260,7 +260,7 @@ func TestRouter_PostponedRenegotiation(t *testing.T) {
 		t.Fatalf("failed to create api: %v", err)
 	}
 
-	p, err := peer.NewPeer(api, webrtc.Configuration{}, "user_retry", "sess_retry", "chan_retry")
+	p, err := peer.NewPeer(api, webrtc.Configuration{}, "user_retry", "sess_retry", "chan_retry", "guild_retry")
 	if err != nil {
 		t.Fatalf("failed to create peer: %v", err)
 	}
@@ -306,7 +306,7 @@ func TestRouter_PostponedRenegotiation(t *testing.T) {
 	}
 
 	// Now simulate remote answer arriving using a dummy answerer
-	answerer, _ := peer.NewPeer(api, webrtc.Configuration{}, "user_mock", "sess_mock", "chan_retry")
+	answerer, _ := peer.NewPeer(api, webrtc.Configuration{}, "user_mock", "sess_mock", "chan_retry", "guild_retry")
 	defer answerer.Close()
 	go func() {
 		for range answerer.Candidates {

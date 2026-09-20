@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/moadabdou/Kith/sfu/internal/bus"
 	"github.com/moadabdou/Kith/sfu/internal/peer"
 	"github.com/moadabdou/Kith/sfu/internal/room"
 	"github.com/moadabdou/Kith/sfu/internal/signaling"
@@ -44,6 +45,7 @@ func main() {
 
 	port := getEnv("PORT", "5000")
 	jwtSecret := getEnv("JWT_SECRET", "dev-jwt-secret-change-me")
+	natsURL := getEnv("NATS_URL", "nats://127.0.0.1:4222")
 	udpMin := getEnvUint16("UDP_PORT_MIN", 50000)
 	udpMax := getEnvUint16("UDP_PORT_MAX", 50020)
 	natIPsRaw := getEnv("NAT_1TO1_IPS", "")
@@ -66,12 +68,29 @@ func main() {
 
 	slog.Info("Starting Pion SFU service",
 		"port", port,
+		"nats_url", natsURL,
 		"udp_range", fmt.Sprintf("%d-%d", udpMin, udpMax),
 		"stun_server", stunDisplay,
 		"nat_ips", natIPs,
 	)
 
-	// 1. Initialize WebRTC API
+	// 1. Initialize Event Bus Publisher
+	var pub bus.Publisher
+	if natsURL != "" && natsURL != "none" {
+		natsPub, err := bus.NewNatsPublisher(natsURL)
+		if err != nil {
+			slog.Warn("Failed to connect to NATS event bus; falling back to NoopPublisher", "err", err, "nats_url", natsURL)
+			pub = &bus.NoopPublisher{}
+		} else {
+			slog.Info("Connected to NATS JetStream event bus", "nats_url", natsURL)
+			pub = natsPub
+			defer natsPub.Close()
+		}
+	} else {
+		pub = &bus.NoopPublisher{}
+	}
+
+	// 2. Initialize WebRTC API
 	peerCfg := peer.Config{
 		UDPPortMin: udpMin,
 		UDPPortMax: udpMax,
@@ -91,8 +110,8 @@ func main() {
 		}
 	}
 
-	// 2. Initialize Room Manager & Signaling Server
-	roomMgr := room.NewManager()
+	// 3. Initialize Room Manager & Signaling Server
+	roomMgr := room.NewManager(pub)
 	sigServer := signaling.NewServer(roomMgr, api, jwtSecret, rtcConfig)
 
 	// 3. HTTP Server & Routes

@@ -119,7 +119,11 @@ defmodule Gateway.Bus.NatsConsumer do
 
     case Jason.decode(body) do
       {:ok, event} ->
-        guild_id = event["guild_id"] || ""
+        guild_id =
+          event["guild_id"] ||
+            (is_map(event["payload"]) && event["payload"]["guild_id"]) ||
+            ""
+
         type = event["type"] || "UNKNOWN"
 
         # Immediately synchronize permissions & entities in local ETS cache
@@ -127,7 +131,7 @@ defmodule Gateway.Bus.NatsConsumer do
 
         # Route by guild_id -> dispatch to Guild Actor
         if guild_id != "" do
-          Gateway.Guild.Actor.dispatch_event(guild_id, event, bus_received_at)
+          Gateway.Guild.Actor.dispatch_event(to_string(guild_id), event, bus_received_at)
         end
 
         # Discord-correct: GUILD_MEMBER_ADD is always accompanied by a

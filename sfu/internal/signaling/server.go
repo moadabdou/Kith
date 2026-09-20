@@ -130,8 +130,13 @@ func (s *Server) handleSession(ctx context.Context, conn *websocket.Conn) {
 				return
 			}
 
+			guildID := msg.GuildID
+			if guildID == "" {
+				guildID = claims.GuildID
+			}
+
 			sessionID := fmt.Sprintf("sess_%d", time.Now().UnixNano())
-			p, err := peer.NewPeer(s.webrtcAPI, s.rtcConfig, userID, sessionID, channelID)
+			p, err := peer.NewPeer(s.webrtcAPI, s.rtcConfig, userID, sessionID, channelID, guildID)
 			if err != nil {
 				slog.Error("Failed to create peer", "user_id", userID, "err", err)
 				_ = writeJSON(Message{Type: "error", Message: "internal server error"})

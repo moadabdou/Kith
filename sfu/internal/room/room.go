@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/moadabdou/Kith/sfu/internal/bus"
 	"github.com/moadabdou/Kith/sfu/internal/metrics"
@@ -34,16 +35,17 @@ type BroadcastSender func(targetUserID string, event Event)
 
 // Room manages a voice channel room actor.
 type Room struct {
-	ID        string
-	peers     map[string]*peer.Peer
-	senders   map[string]BroadcastSender
-	router    *router.Router
-	publisher bus.Publisher
-	inbox     chan roomMsg
-	ctx       context.Context
-	cancel    context.CancelFunc
-	onEmpty   func(roomID string)
-	closeOnce sync.Once
+	ID               string
+	peers            map[string]*peer.Peer
+	senders          map[string]BroadcastSender
+	router           *router.Router
+	publisher        bus.Publisher
+	inbox            chan roomMsg
+	ctx              context.Context
+	cancel           context.CancelFunc
+	onEmpty          func(roomID string)
+	closeOnce        sync.Once
+	disconnectTimers map[string]*time.Timer
 }
 
 type roomMsg interface {
@@ -60,10 +62,27 @@ func (joinMsg) isRoomMsg() {}
 
 type leaveMsg struct {
 	userID  string
+	peer    *peer.Peer
 	replyTo chan error
 }
 
 func (leaveMsg) isRoomMsg() {}
+
+type disconnectMsg struct {
+	userID      string
+	peer        *peer.Peer
+	gracePeriod time.Duration
+	replyTo     chan error
+}
+
+func (disconnectMsg) isRoomMsg() {}
+
+type expireDisconnectMsg struct {
+	userID string
+	peer   *peer.Peer
+}
+
+func (expireDisconnectMsg) isRoomMsg() {}
 
 type peersMsg struct {
 	replyTo chan []string
@@ -86,15 +105,16 @@ func NewRoom(id string, publisher bus.Publisher, onEmpty func(roomID string)) *R
 	}
 
 	r := &Room{
-		ID:        id,
-		peers:     make(map[string]*peer.Peer),
-		senders:   make(map[string]BroadcastSender),
-		router:    router.NewRouter(id),
-		publisher: publisher,
-		inbox:     make(chan roomMsg, 64),
-		ctx:       ctx,
-		cancel:    cancel,
-		onEmpty:   onEmpty,
+		ID:               id,
+		peers:            make(map[string]*peer.Peer),
+		senders:          make(map[string]BroadcastSender),
+		router:           router.NewRouter(id),
+		publisher:        publisher,
+		inbox:            make(chan roomMsg, 64),
+		ctx:              ctx,
+		cancel:           cancel,
+		onEmpty:          onEmpty,
+		disconnectTimers: make(map[string]*time.Timer),
 	}
 
 	metrics.ActiveRooms.Inc()
@@ -120,6 +140,10 @@ func (r *Room) loop() {
 				r.handleJoin(m)
 			case leaveMsg:
 				r.handleLeave(m)
+			case disconnectMsg:
+				r.handleDisconnect(m)
+			case expireDisconnectMsg:
+				r.handleExpireDisconnect(m)
 			case peersMsg:
 				r.handleGetPeers(m)
 			case broadcastMsg:
@@ -145,9 +169,17 @@ func (r *Room) broadcastExcept(excludeUID string, ev Event) {
 func (r *Room) handleJoin(m joinMsg) {
 	uid := m.p.UserID
 
+	// Cancel any pending disconnect timer for this user
+	if timer, exists := r.disconnectTimers[uid]; exists {
+		timer.Stop()
+		delete(r.disconnectTimers, uid)
+		slog.Info("Peer reconnected within grace period", "user_id", uid, "room_id", r.ID)
+	}
+
 	// If existing peer with same user_id is already in room, cleanly close it first
 	if existing, ok := r.peers[uid]; ok {
 		slog.Warn("Replacing existing peer connection for user", "user_id", uid, "room_id", r.ID)
+		existing.SetOnClose(nil)
 		r.router.RemovePeer(uid)
 		_ = existing.Close()
 		metrics.ConnectedPeers.Dec()
@@ -178,9 +210,10 @@ func (r *Room) handleJoin(m joinMsg) {
 	})
 
 	// Clean up room when peer connection fails or closes asynchronously
+	targetPeer := m.p
 	m.p.SetOnClose(func() {
 		go func() {
-			_ = r.Leave(uid)
+			_ = r.DisconnectPeer(targetPeer, 10*time.Second)
 		}()
 	})
 
@@ -211,16 +244,133 @@ func (r *Room) handleJoin(m joinMsg) {
 	m.replyTo <- nil
 }
 
+func (r *Room) handleDisconnect(m disconnectMsg) {
+	p, ok := r.peers[m.userID]
+	if !ok {
+		if m.replyTo != nil {
+			m.replyTo <- ErrPeerNotFound
+		}
+		return
+	}
+
+	// If a specific peer instance was specified, ensure it is still the active peer
+	if m.peer != nil && m.peer != p {
+		slog.Debug("Ignoring stale disconnect message for already replaced peer", "user_id", m.userID, "room_id", r.ID)
+		if m.replyTo != nil {
+			m.replyTo <- nil
+		}
+		return
+	}
+
+	// If grace period is zero, treat as immediate leave
+	if m.gracePeriod <= 0 {
+		r.handleLeave(leaveMsg{userID: m.userID, peer: m.peer, replyTo: m.replyTo})
+		return
+	}
+
+	// Cancel existing timer if any
+	if timer, exists := r.disconnectTimers[m.userID]; exists {
+		timer.Stop()
+		delete(r.disconnectTimers, m.userID)
+	}
+
+	// Remove from router so dead WebRTC tracks stop receiving/sending media
+	p.SetOnClose(nil)
+	r.router.RemovePeer(m.userID)
+	delete(r.senders, m.userID)
+	_ = p.Close()
+
+	// Keep p in r.peers[m.userID] during grace period, but schedule eviction timer
+	uid := m.userID
+	targetPeer := p
+	r.disconnectTimers[uid] = time.AfterFunc(m.gracePeriod, func() {
+		select {
+		case r.inbox <- expireDisconnectMsg{userID: uid, peer: targetPeer}:
+		case <-r.ctx.Done():
+		}
+	})
+
+	slog.Info("Peer entered disconnect grace period", "user_id", uid, "room_id", r.ID, "duration", m.gracePeriod)
+	if m.replyTo != nil {
+		m.replyTo <- nil
+	}
+}
+
+func (r *Room) handleExpireDisconnect(m expireDisconnectMsg) {
+	p, ok := r.peers[m.userID]
+	if !ok {
+		return
+	}
+
+	// If the peer was replaced by a new connection, ignore expiration
+	if m.peer != nil && m.peer != p {
+		slog.Debug("Ignoring expired disconnect for replaced peer", "user_id", m.userID, "room_id", r.ID)
+		return
+	}
+
+	delete(r.disconnectTimers, m.userID)
+	delete(r.peers, m.userID)
+	delete(r.senders, m.userID)
+	metrics.ConnectedPeers.Dec()
+
+	guildID := p.GuildID
+	sessionID := p.SessionID
+
+	// Notify remaining peers
+	r.broadcastExcept(m.userID, Event{
+		Type:      "peer_left",
+		UserID:    m.userID,
+		ChannelID: r.ID,
+	})
+
+	// Publish voice.peer_left to event bus
+	if r.publisher != nil && guildID != "" {
+		go func(gid, cid, user, sid string) {
+			_ = r.publisher.Publish(context.Background(), bus.Event{
+				Type:    "voice.peer_left",
+				Version: 1,
+				GuildID: gid,
+				Payload: map[string]any{
+					"guild_id":   gid,
+					"channel_id": cid,
+					"user_id":    user,
+					"session_id": sid,
+				},
+			})
+		}(guildID, r.ID, m.userID, sessionID)
+	}
+
+	slog.Info("Peer grace period expired, removed from room", "user_id", m.userID, "room_id", r.ID)
+
+	if len(r.peers) == 0 && r.onEmpty != nil {
+		go r.onEmpty(r.ID)
+	}
+}
+
 func (r *Room) handleLeave(m leaveMsg) {
+	// Cancel any active disconnect timer for this user
+	if timer, exists := r.disconnectTimers[m.userID]; exists {
+		timer.Stop()
+		delete(r.disconnectTimers, m.userID)
+	}
+
 	p, ok := r.peers[m.userID]
 	if !ok {
 		m.replyTo <- ErrPeerNotFound
 		return
 	}
 
+	// If a specific peer instance was specified, ensure it is still the active peer
+	if m.peer != nil && m.peer != p {
+		slog.Debug("Ignoring stale leave message for already replaced peer", "user_id", m.userID, "room_id", r.ID)
+		m.replyTo <- nil
+		return
+	}
+
 	guildID := p.GuildID
 	sessionID := p.SessionID
 
+	p.SetOnClose(nil)
 	r.router.RemovePeer(m.userID)
 	delete(r.peers, m.userID)
 	delete(r.senders, m.userID)
@@ -273,6 +423,11 @@ func (r *Room) handleBroadcast(m broadcastMsg) {
 
 func (r *Room) drainAndClose() {
 	r.router.Close()
+	for _, timer := range r.disconnectTimers {
+		timer.Stop()
+	}
+	r.disconnectTimers = make(map[string]*time.Timer)
+
 	for uid, p := range r.peers {
 		_ = p.Close()
 		metrics.ConnectedPeers.Dec()
@@ -297,13 +452,67 @@ func (r *Room) Join(p *peer.Peer, sender BroadcastSender) error {
 	}
 }
 
-// Leave removes a peer from the room.
+// Leave removes a peer from the room by userID.
 func (r *Room) Leave(userID string) error {
 	reply := make(chan error, 1)
 	select {
 	case <-r.ctx.Done():
 		return ErrRoomClosed
 	case r.inbox <- leaveMsg{userID: userID, replyTo: reply}:
+		select {
+		case err := <-reply:
+			return err
+		case <-r.ctx.Done():
+			return ErrRoomClosed
+		}
+	}
+}
+
+// LeavePeer removes a specific peer connection from the room if it is still active.
+func (r *Room) LeavePeer(p *peer.Peer) error {
+	if p == nil {
+		return nil
+	}
+	reply := make(chan error, 1)
+	select {
+	case <-r.ctx.Done():
+		return ErrRoomClosed
+	case r.inbox <- leaveMsg{userID: p.UserID, peer: p, replyTo: reply}:
+		select {
+		case err := <-reply:
+			return err
+		case <-r.ctx.Done():
+			return ErrRoomClosed
+		}
+	}
+}
+
+// Disconnect initiates a grace period disconnection by userID.
+func (r *Room) Disconnect(userID string, gracePeriod time.Duration) error {
+	reply := make(chan error, 1)
+	select {
+	case <-r.ctx.Done():
+		return ErrRoomClosed
+	case r.inbox <- disconnectMsg{userID: userID, gracePeriod: gracePeriod, replyTo: reply}:
+		select {
+		case err := <-reply:
+			return err
+		case <-r.ctx.Done():
+			return ErrRoomClosed
+		}
+	}
+}
+
+// DisconnectPeer initiates a grace period disconnection for a peer.
+func (r *Room) DisconnectPeer(p *peer.Peer, gracePeriod time.Duration) error {
+	if p == nil {
+		return nil
+	}
+	reply := make(chan error, 1)
+	select {
+	case <-r.ctx.Done():
+		return ErrRoomClosed
+	case r.inbox <- disconnectMsg{userID: p.UserID, peer: p, gracePeriod: gracePeriod, replyTo: reply}:
 		select {
 		case err := <-reply:
 			return err

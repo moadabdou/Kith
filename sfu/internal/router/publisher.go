@@ -36,7 +36,9 @@ func NewPublisherUplink(pubID string, trackRemote *webrtc.TrackRemote, receiver 
 		cancel:      cancel,
 	}
 
-	go p.readingLoop()
+	if trackRemote != nil {
+		go p.readingLoop()
+	}
 	return p
 }
 
@@ -76,7 +78,9 @@ func (p *PublisherUplink) readingLoop() {
 			pkt, _, err := p.TrackRemote.ReadRTP()
 			if err != nil {
 				if err != io.EOF {
-					slog.Debug("Failed to read RTP from publisher", "publisher_id", p.PublisherID, "err", err)
+					slog.Warn("Failed to read RTP from publisher", "publisher_id", p.PublisherID, "err", err)
+				} else {
+					slog.Info("Publisher track reached EOF", "publisher_id", p.PublisherID)
 				}
 				return
 			}

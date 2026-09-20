@@ -251,3 +251,107 @@ func TestRoomEventBusPublishing(t *testing.T) {
 		t.Errorf("expected guild_test_bus, got %s", ev2.GuildID)
 	}
 }
+
+func TestRoomDisconnectGracePeriod_Reconnect(t *testing.T) {
+	mockPub := &mockPublisher{}
+	r := NewRoom("chan_grace_1", mockPub, nil)
+	defer r.Close()
+
+	p := createTestPeer(t, "user_grace_1", "chan_grace_1")
+	p.GuildID = "guild_test_grace"
+
+	if err := r.Join(p, nil); err != nil {
+		t.Fatalf("failed to join: %v", err)
+	}
+
+	time.Sleep(20 * time.Millisecond)
+
+	// Peer disconnects abruptly with 200ms grace period
+	if err := r.DisconnectPeer(p, 200*time.Millisecond); err != nil {
+		t.Fatalf("failed to disconnect peer: %v", err)
+	}
+
+	// Peer should still be in room during grace period
+	peers, err := r.GetPeers()
+	if err != nil || len(peers) != 1 {
+		t.Fatalf("expected peer to still be in room during grace period, got: %v", peers)
+	}
+
+	// Make sure voice.peer_left has NOT been published
+	mockPub.mu.Lock()
+	for _, ev := range mockPub.events {
+		if ev.Type == "voice.peer_left" {
+			t.Fatalf("voice.peer_left should not be published during grace period")
+		}
+	}
+	mockPub.mu.Unlock()
+
+	// Peer reconnects within grace period
+	p2 := createTestPeer(t, "user_grace_1", "chan_grace_1")
+	p2.GuildID = "guild_test_grace"
+	if err := r.Join(p2, nil); err != nil {
+		t.Fatalf("failed to rejoin peer: %v", err)
+	}
+
+	// Wait past the original 200ms grace period
+	time.Sleep(250 * time.Millisecond)
+
+	// Peer should still be in room and no voice.peer_left emitted
+	peers, err = r.GetPeers()
+	if err != nil || len(peers) != 1 {
+		t.Fatalf("expected peer to remain in room, got: %v", peers)
+	}
+
+	mockPub.mu.Lock()
+	for _, ev := range mockPub.events {
+		if ev.Type == "voice.peer_left" {
+			t.Fatalf("voice.peer_left should not have fired because peer reconnected")
+		}
+	}
+	mockPub.mu.Unlock()
+}
+
+func TestRoomDisconnectGracePeriod_Expires(t *testing.T) {
+	mockPub := &mockPublisher{}
+	r := NewRoom("chan_grace_2", mockPub, nil)
+	defer r.Close()
+
+	p := createTestPeer(t, "user_grace_2", "chan_grace_2")
+	p.GuildID = "guild_test_grace_2"
+
+	if err := r.Join(p, nil); err != nil {
+		t.Fatalf("failed to join: %v", err)
+	}
+
+	time.Sleep(20 * time.Millisecond)
+
+	// Peer disconnects abruptly with 100ms grace period
+	if err := r.DisconnectPeer(p, 100*time.Millisecond); err != nil {
+		t.Fatalf("failed to disconnect peer: %v", err)
+	}
+
+	// Wait for grace period to expire
+	time.Sleep(160 * time.Millisecond)
+
+	// Peer should now be evicted
+	peers, err := r.GetPeers()
+	if err != nil || len(peers) != 0 {
+		t.Fatalf("expected room to be empty after grace period expired, got: %v", peers)
+	}
+
+	// voice.peer_left should have been published
+	mockPub.mu.Lock()
+	var leftFound bool
+	for _, ev := range mockPub.events {
+		if ev.Type == "voice.peer_left" {
+			if m, ok := ev.Payload.(map[string]any); ok && m["user_id"] == "user_grace_2" {
+				leftFound = true
+			}
+		}
+	}
+	mockPub.mu.Unlock()
+
+	if !leftFound {
+		t.Errorf("expected voice.peer_left to be published after grace period expired")
+	}
+}

@@ -53,4 +53,15 @@ defmodule Gateway.Voice.VoiceState do
       "self_deaf" => vs.self_deaf
     }
   end
+
+  def to_map(map) when is_map(map) do
+    %{
+      "guild_id" => Map.get(map, :guild_id) || Map.get(map, "guild_id"),
+      "channel_id" => Map.get(map, :channel_id) || Map.get(map, "channel_id"),
+      "user_id" => Map.get(map, :user_id) || Map.get(map, "user_id"),
+      "session_id" => Map.get(map, :session_id) || Map.get(map, "session_id"),
+      "self_mute" => Map.get(map, :self_mute) || Map.get(map, "self_mute", false),
+      "self_deaf" => Map.get(map, :self_deaf) || Map.get(map, "self_deaf", false)
+    }
+  end
 end

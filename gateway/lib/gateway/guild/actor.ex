@@ -307,7 +307,11 @@ defmodule Gateway.Guild.Actor do
 
               new_voice_states = Map.put(state.voice_states, uid, new_vs)
               fan_out_voice_state_update(new_vs, old_cid, state)
-              dispatch_voice_server_update(sid, cid, state)
+
+              if is_nil(old_vs) or is_nil(old_cid) or old_cid != cid or (old_vs && old_vs.session_id != sid) do
+                dispatch_voice_server_update(sid, cid, state)
+              end
+
               {:reply, {:ok, new_vs}, %{state | voice_states: new_voice_states}}
             else
               {:reply, {:error, :missing_permissions}, state}
@@ -338,7 +342,7 @@ defmodule Gateway.Guild.Actor do
           fan_out_voice_state_update(leave_vs, old_cid, state)
           {:reply, {:ok, leave_vs}, %{state | voice_states: new_voice_states}}
         else
-          {:reply, :ok, state}
+          {:reply, {:ok, nil}, state}
         end
     end
   end
@@ -944,15 +948,15 @@ defmodule Gateway.Guild.Actor do
           send(pid, {:dispatch, event, now})
 
         old_cid != nil and can_subscriber_view?(user_id, old_cid, state.guild_id) ->
+          payload =
+            vs
+            |> Gateway.Voice.VoiceState.to_map()
+            |> Map.put("channel_id", nil)
+
           synthetic_disconnect = %{
             "type" => "VOICE_STATE_UPDATE",
             "guild_id" => state.guild_id,
-            "payload" => %{
-              "guild_id" => state.guild_id,
-              "channel_id" => nil,
-              "user_id" => vs.user_id,
-              "session_id" => vs.session_id
-            }
+            "payload" => payload
           }
 
           send(pid, {:dispatch, synthetic_disconnect, now})

@@ -371,6 +371,9 @@ defmodule Gateway.WS.Handler do
           {:ok, _vs} ->
             {:ok, state}
 
+          :ok ->
+            {:ok, state}
+
           {:error, :not_a_voice_channel} ->
             Logger.warning("Gateway.WS.Handler: channel is not a voice channel in guild #{gid}")
             {:ok, state}

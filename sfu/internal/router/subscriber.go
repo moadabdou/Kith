@@ -93,8 +93,9 @@ func (s *SubscriberDownlink) forwardingLoop() {
 			pkt.Header.SequenceNumber = newSeq
 
 			if err := s.TrackLocal.WriteRTP(pkt); err != nil {
-				slog.Debug("Failed to write RTP to subscriber track",
+				slog.Warn("Failed to write RTP to subscriber track",
 					"subscriber_id", s.SubscriberID,
+					"publisher_id", s.PublisherID,
 					"err", err,
 				)
 				continue

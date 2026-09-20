@@ -38,8 +38,20 @@ func getEnvUint16(key string, fallback uint16) uint16 {
 }
 
 func main() {
+	logLevelStr := strings.ToLower(getEnv("LOG_LEVEL", "info"))
+	var logLevel slog.Level
+	switch logLevelStr {
+	case "debug":
+		logLevel = slog.LevelDebug
+	case "warn":
+		logLevel = slog.LevelWarn
+	case "error":
+		logLevel = slog.LevelError
+	default:
+		logLevel = slog.LevelInfo
+	}
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
+		Level: logLevel,
 	}))
 	slog.SetDefault(logger)
 

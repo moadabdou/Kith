@@ -69,6 +69,8 @@ func (r *Router) AddPeer(p *peer.Peer, renegotiate RenegotiateCallback) {
 // RemovePeer unregisters a peer, tearing down any publishing uplinks and subscriber downlinks.
 func (r *Router) RemovePeer(userID string) {
 	r.mu.Lock()
+	var peersToRenegotiate []string
+
 	// 1. If this peer was publishing, tear down publisher uplink
 	if pub, ok := r.publishers[userID]; ok {
 		pub.Close()
@@ -80,6 +82,7 @@ func (r *Router) RemovePeer(userID string) {
 				entry.downlink.Close()
 				if pe, okPeer := r.peers[subID]; okPeer && pe.peer != nil {
 					_ = pe.peer.RemoveTrack(entry.sender)
+					peersToRenegotiate = append(peersToRenegotiate, subID)
 				}
 				delete(subMap, userID)
 			}
@@ -99,6 +102,10 @@ func (r *Router) RemovePeer(userID string) {
 
 	delete(r.peers, userID)
 	r.mu.Unlock()
+
+	for _, subID := range peersToRenegotiate {
+		r.TriggerRenegotiation(subID)
+	}
 }
 
 // AddPublisher sets up a new publisher uplink and creates subscriber downlinks for all other peers.
@@ -111,14 +118,8 @@ func (r *Router) AddPublisher(pubID string, trackRemote *webrtc.TrackRemote, rec
 	uplink := NewPublisherUplink(pubID, trackRemote, receiver)
 	r.publishers[pubID] = uplink
 
-	streamID := trackRemote.StreamID()
-	if streamID == "" {
-		streamID = "kith-stream-" + pubID
-	}
-	trackID := trackRemote.ID()
-	if trackID == "" {
-		trackID = "kith-track-" + pubID
-	}
+	streamID := "kith-stream-" + pubID
+	trackID := "kith-track-" + pubID
 
 	var peersToRenegotiate []string
 	for subID, pe := range r.peers {
@@ -164,6 +165,7 @@ func (r *Router) AddPublisher(pubID string, trackRemote *webrtc.TrackRemote, rec
 // RemovePublisher removes an active publisher and tears down associated downlinks.
 func (r *Router) RemovePublisher(pubID string) {
 	r.mu.Lock()
+	var peersToRenegotiate []string
 	if pub, ok := r.publishers[pubID]; ok {
 		pub.Close()
 		delete(r.publishers, pubID)
@@ -173,12 +175,17 @@ func (r *Router) RemovePublisher(pubID string) {
 				entry.downlink.Close()
 				if pe, okPeer := r.peers[subID]; okPeer && pe.peer != nil {
 					_ = pe.peer.RemoveTrack(entry.sender)
+					peersToRenegotiate = append(peersToRenegotiate, subID)
 				}
 				delete(subMap, pubID)
 			}
 		}
 	}
 	r.mu.Unlock()
+
+	for _, subID := range peersToRenegotiate {
+		r.TriggerRenegotiation(subID)
+	}
 }
 
 // SubscribeToExistingPublishers attaches downlinks for all currently active publishers to the given subscriber.
@@ -202,14 +209,8 @@ func (r *Router) SubscribeToExistingPublishers(userID string) {
 			continue
 		}
 
-		streamID := pub.TrackRemote.StreamID()
-		if streamID == "" {
-			streamID = "kith-stream-" + pubID
-		}
-		trackID := pub.TrackRemote.ID()
-		if trackID == "" {
-			trackID = "kith-track-" + pubID
-		}
+		streamID := "kith-stream-" + pubID
+		trackID := "kith-track-" + pubID
 
 		trackLocal, err := webrtc.NewTrackLocalStaticRTP(
 			pub.TrackRemote.Codec().RTPCodecCapability,
@@ -258,7 +259,7 @@ func (r *Router) TriggerRenegotiation(userID string) {
 	}
 
 	if entry.peer.PC.SignalingState() != webrtc.SignalingStateStable {
-		slog.Debug("Postponing renegotiation: signaling state not stable, queued for retry",
+		slog.Info("Postponing renegotiation: signaling state not stable, queued for retry",
 			"user_id", userID,
 			"state", entry.peer.PC.SignalingState().String(),
 		)
@@ -278,6 +279,7 @@ func (r *Router) TriggerRenegotiation(userID string) {
 		return
 	}
 
+	slog.Info("Sending downstream renegotiation offer to subscriber", "user_id", userID)
 	cb(*offer)
 }
 

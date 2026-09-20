@@ -625,7 +625,11 @@ export class GatewayClient {
     this.lastHeartbeatAck = false
     // d carries the user's last real input time — the gateway refreshes
     // presence activity from it and sweeps to idle when it goes stale.
-    this.ws.send(JSON.stringify({ op: 1, d: { seq: this.lastSeq, last_activity: this.lastActivityAt } }))
+    try {
+      this.ws.send(JSON.stringify({ op: 1, d: { seq: this.lastSeq, last_activity: this.lastActivityAt } }))
+    } catch (err) {
+      console.warn('[Gateway] failed to send heartbeat frame:', err)
+    }
   }
 
   /**

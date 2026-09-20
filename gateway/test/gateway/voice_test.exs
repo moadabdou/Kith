@@ -528,5 +528,16 @@ defmodule Gateway.VoiceTest do
       assert Map.has_key?(states, @voice_user_id)
       assert states[@voice_user_id].channel_id == @public_voice_channel
     end
+
+    test "leaving voice channel when not in voice returns {:ok, nil} cleanly without crash" do
+      {:ok, _pid} = Actor.get_or_spawn(@test_guild_id)
+
+      voice_session = "voice-sess-redundant-leave"
+      leave_params = %{"channel_id" => nil}
+
+      # User is NOT in voice channel: must return {:ok, nil}
+      assert {:ok, nil} =
+               Actor.update_voice_state(@test_guild_id, @voice_user_id, voice_session, leave_params)
+    end
   end
 end

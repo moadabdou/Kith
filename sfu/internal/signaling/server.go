@@ -70,10 +70,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSession(ctx context.Context, conn *websocket.Conn) {
 	var (
-		currentPeer *peer.Peer
-		currentRoom *room.Room
-		userID      string
-		writeMu     sync.Mutex
+		currentPeer     *peer.Peer
+		currentRoom     *room.Room
+		userID          string
+		writeMu         sync.Mutex
+		isExplicitLeave bool
 	)
 
 	writeJSON := func(msg Message) error {
@@ -85,8 +86,18 @@ func (s *Server) handleSession(ctx context.Context, conn *websocket.Conn) {
 	}
 
 	defer func() {
-		if currentRoom != nil && userID != "" {
-			_ = currentRoom.Leave(userID)
+		if currentRoom != nil && currentPeer != nil {
+			if isExplicitLeave {
+				_ = currentRoom.LeavePeer(currentPeer)
+			} else {
+				_ = currentRoom.DisconnectPeer(currentPeer, 10*time.Second)
+			}
+		} else if currentRoom != nil && userID != "" {
+			if isExplicitLeave {
+				_ = currentRoom.Leave(userID)
+			} else {
+				_ = currentRoom.Disconnect(userID, 10*time.Second)
+			}
 		}
 		if currentPeer != nil {
 			_ = currentPeer.Close()
@@ -221,6 +232,7 @@ func (s *Server) handleSession(ctx context.Context, conn *websocket.Conn) {
 				_ = writeJSON(Message{Type: "error", Message: "failed to process answer"})
 				continue
 			}
+			slog.Info("Processed renegotiation answer from user", "user_id", userID)
 
 			// Signaling state has returned to Stable; flush any postponed renegotiation
 			if currentRoom != nil {
@@ -247,6 +259,7 @@ func (s *Server) handleSession(ctx context.Context, conn *websocket.Conn) {
 			}
 
 		case "leave":
+			isExplicitLeave = true
 			return
 
 		default:

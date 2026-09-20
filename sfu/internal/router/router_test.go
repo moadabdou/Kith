@@ -330,3 +330,127 @@ func TestRouter_PostponedRenegotiation(t *testing.T) {
 		t.Fatalf("timed out waiting for postponed renegotiation to fire after returning to Stable")
 	}
 }
+
+func TestRouter_RejoinAndForward(t *testing.T) {
+	api, err := peer.CreateAPI(peer.Config{})
+	if err != nil {
+		t.Fatalf("failed to create api: %v", err)
+	}
+
+	p2, err := peer.NewPeer(api, webrtc.Configuration{}, "user_2", "sess_2", "chan_rj", "guild_rj")
+	if err != nil {
+		t.Fatalf("failed to create p2: %v", err)
+	}
+	defer p2.Close()
+	go func() {
+		for range p2.Candidates {
+		}
+	}()
+
+	r := NewRouter("chan_rj")
+	defer r.Close()
+
+	var renegOffer webrtc.SessionDescription
+	renegChan := make(chan webrtc.SessionDescription, 5)
+	r.AddPeer(p2, func(offer webrtc.SessionDescription) {
+		renegChan <- offer
+	})
+
+	// Initial user_1 joins
+	trackLocal1, _ := webrtc.NewTrackLocalStaticRTP(
+		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus}, "track-1", "stream-1",
+	)
+	uplink1 := NewPublisherUplink("user_1", nil, nil)
+	r.publishers["user_1"] = uplink1
+
+	// Add track to p2 for user_1
+	sender1, err := p2.AddTrack(trackLocal1)
+	if err != nil {
+		t.Fatalf("failed to add track1 to p2: %v", err)
+	}
+	downlink1 := NewSubscriberDownlink("user_2", "user_1", trackLocal1, sender1)
+	uplink1.AddSubscriber(downlink1)
+	r.subscribers["user_2"] = map[string]*subscriberEntry{
+		"user_1": {downlink: downlink1, sender: sender1},
+	}
+
+	// Trigger renegotiation on p2
+	r.TriggerRenegotiation("user_2")
+	select {
+	case renegOffer = <-renegChan:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("timed out waiting for initial renegotiation on p2")
+	}
+
+	// Mock client for user_2 handles offer and creates answer
+	client2, _ := peer.NewPeer(api, webrtc.Configuration{}, "client_2", "sess_c2", "chan_rj", "guild_rj")
+	defer client2.Close()
+	go func() {
+		for range client2.Candidates {
+		}
+	}()
+
+	clientAnswer, err := client2.HandleOffer(renegOffer.SDP)
+	if err != nil {
+		t.Fatalf("client2 failed to handle offer: %v", err)
+	}
+	if err := p2.HandleAnswer(clientAnswer.SDP); err != nil {
+		t.Fatalf("p2 failed to handle answer: %v", err)
+	}
+
+	// Now user_1 leaves
+	r.RemovePeer("user_1")
+
+	// Verify downlink was closed and p2 has track removed
+	if len(r.subscribers["user_2"]) != 0 {
+		t.Errorf("expected subscribers for user_2 to be empty after user_1 left, got %d", len(r.subscribers["user_2"]))
+	}
+
+	// Now user_1 rejoins with a new track
+	trackLocal2, _ := webrtc.NewTrackLocalStaticRTP(
+		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus}, "track-2", "stream-2",
+	)
+	uplink2 := NewPublisherUplink("user_1", nil, nil)
+	r.publishers["user_1"] = uplink2
+
+	sender2, err := p2.AddTrack(trackLocal2)
+	if err != nil {
+		t.Fatalf("failed to add track2 to p2: %v", err)
+	}
+	downlink2 := NewSubscriberDownlink("user_2", "user_1", trackLocal2, sender2)
+	uplink2.AddSubscriber(downlink2)
+	r.subscribers["user_2"]["user_1"] = &subscriberEntry{downlink: downlink2, sender: sender2}
+
+	// Trigger renegotiation on p2 again
+	r.TriggerRenegotiation("user_2")
+	select {
+	case renegOffer = <-renegChan:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("timed out waiting for second renegotiation on p2")
+	}
+
+	// Client 2 handles second offer and creates answer
+	clientAnswer2, err := client2.HandleOffer(renegOffer.SDP)
+	if err != nil {
+		t.Fatalf("client2 failed to handle second offer: %v", err)
+	}
+	if err := p2.HandleAnswer(clientAnswer2.SDP); err != nil {
+		t.Fatalf("p2 failed to handle second answer: %v", err)
+	}
+
+	// Send packet on downlink2
+	pkt := &rtp.Packet{
+		Header: rtp.Header{
+			SequenceNumber: 10,
+			Timestamp:      960,
+		},
+		Payload: []byte{0x01, 0x02, 0x03},
+	}
+	if !downlink2.Enqueue(pkt) {
+		t.Fatalf("failed to enqueue packet to downlink2")
+	}
+
+	// Allow forwarding loop to process
+	time.Sleep(50 * time.Millisecond)
+}
+

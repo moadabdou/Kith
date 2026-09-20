@@ -46,6 +46,16 @@ var (
 		Help: "Total number of RTCP NACK requests received from subscribers.",
 	})
 
+	RTCPPLITotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "sfu_rtcp_pli_total",
+		Help: "Total number of RTCP PLI (Picture Loss Indication) requests received from subscribers.",
+	})
+
+	RTCPFIRTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "sfu_rtcp_fir_total",
+		Help: "Total number of RTCP FIR (Full Intra Request) requests received from subscribers.",
+	})
+
 	FractionLost = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "sfu_fraction_lost",
 		Help: "Latest average fraction of packet loss reported by subscribers via RTCP Receiver Reports.",

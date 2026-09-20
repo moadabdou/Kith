@@ -1,6 +1,7 @@
 package router
 
 import (
+	"fmt"
 	"log/slog"
 	"sync"
 
@@ -47,6 +48,18 @@ func NewRouter(roomID string) *Router {
 	}
 }
 
+// trackKey returns a unique key for an ingress track: pubID:kind:trackID, or pubID if remote is nil.
+func trackKey(pubID string, trackRemote *webrtc.TrackRemote) string {
+	if trackRemote == nil {
+		return pubID
+	}
+	id := trackRemote.ID()
+	if id == "" {
+		id = trackRemote.Kind().String()
+	}
+	return fmt.Sprintf("%s:%s:%s", pubID, trackRemote.Kind().String(), id)
+}
+
 // AddPeer registers a peer and its renegotiation callback with the router.
 func (r *Router) AddPeer(p *peer.Peer, renegotiate RenegotiateCallback) {
 	r.mu.Lock()
@@ -60,6 +73,13 @@ func (r *Router) AddPeer(p *peer.Peer, renegotiate RenegotiateCallback) {
 		r.subscribers[p.UserID] = make(map[string]*subscriberEntry)
 	}
 
+	// If this peer already has publisher uplinks, wire the RTCP writer to its peer connection
+	for _, pub := range r.publishers {
+		if pub.PublisherID == p.UserID {
+			pub.SetRTCPWriter(p.WriteRTCP)
+		}
+	}
+
 	// Whenever the peer connection returns to Stable, automatically flush any postponed renegotiation
 	p.SetOnSignalingStable(func() {
 		r.OnSignalingStateStable(p.UserID)
@@ -70,22 +90,32 @@ func (r *Router) AddPeer(p *peer.Peer, renegotiate RenegotiateCallback) {
 // Returns the list of subscriber IDs that require renegotiation.
 // Caller MUST hold r.mu.
 func (r *Router) removePublisherLocked(pubID string) []string {
-	var peersToRenegotiate []string
-	if pub, ok := r.publishers[pubID]; ok {
-		pub.Close()
-		delete(r.publishers, pubID)
+	peerNeedsReneg := make(map[string]bool)
 
-		// Clean up downlinks in other peers that were receiving from this publisher
-		for subID, subMap := range r.subscribers {
-			if entry, exists := subMap[pubID]; exists {
+	for key, pub := range r.publishers {
+		if pub.PublisherID == pubID || key == pubID {
+			pub.Close()
+			delete(r.publishers, key)
+		}
+	}
+
+	// Clean up downlinks in other peers that were receiving from this publisher
+	for subID, subMap := range r.subscribers {
+		for key, entry := range subMap {
+			if entry.downlink.PublisherID == pubID || key == pubID {
 				entry.downlink.Close()
 				if pe, okPeer := r.peers[subID]; okPeer && pe.peer != nil {
 					_ = pe.peer.RemoveTrack(entry.sender)
-					peersToRenegotiate = append(peersToRenegotiate, subID)
+					peerNeedsReneg[subID] = true
 				}
-				delete(subMap, pubID)
+				delete(subMap, key)
 			}
 		}
+	}
+
+	var peersToRenegotiate []string
+	for subID := range peerNeedsReneg {
+		peersToRenegotiate = append(peersToRenegotiate, subID)
 	}
 	return peersToRenegotiate
 }
@@ -93,14 +123,14 @@ func (r *Router) removePublisherLocked(pubID string) []string {
 // RemovePeer unregisters a peer, tearing down any publishing uplinks and subscriber downlinks.
 func (r *Router) RemovePeer(userID string) {
 	r.mu.Lock()
-	// 1. If this peer was publishing, tear down publisher uplink and notify subscribers
+	// 1. If this peer was publishing, tear down publisher uplinks and notify subscribers
 	peersToRenegotiate := r.removePublisherLocked(userID)
 
 	// 2. Remove all downlinks where this peer is a subscriber
 	if subMap, ok := r.subscribers[userID]; ok {
-		for pubID, entry := range subMap {
+		for pubTrackKey, entry := range subMap {
 			entry.downlink.Close()
-			if pub, okPub := r.publishers[pubID]; okPub {
+			if pub, okPub := r.publishers[pubTrackKey]; okPub {
 				pub.RemoveSubscriber(userID)
 			}
 		}
@@ -115,18 +145,24 @@ func (r *Router) RemovePeer(userID string) {
 	}
 }
 
-// AddPublisher sets up a new publisher uplink and creates subscriber downlinks for all other peers.
+// AddPublisher sets up a new publisher uplink (audio or video) and creates subscriber downlinks for all other peers.
 func (r *Router) AddPublisher(pubID string, trackRemote *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
 	r.mu.Lock()
-	if existing, ok := r.publishers[pubID]; ok {
+	tKey := trackKey(pubID, trackRemote)
+
+	if existing, ok := r.publishers[tKey]; ok {
 		existing.Close()
 	}
 
 	uplink := NewPublisherUplink(pubID, trackRemote, receiver)
-	r.publishers[pubID] = uplink
+	uplink.TrackKey = tKey
+	if pe, ok := r.peers[pubID]; ok && pe.peer != nil {
+		uplink.SetRTCPWriter(pe.peer.WriteRTCP)
+	}
+	r.publishers[tKey] = uplink
 
-	streamID := "kith-stream-" + pubID
-	trackID := "kith-track-" + pubID
+	downlinkTrackID := uplink.DownlinkTrackID(pubID)
+	downlinkStreamID := uplink.DownlinkStreamID(pubID)
 
 	var peersToRenegotiate []string
 	for subID, pe := range r.peers {
@@ -135,18 +171,18 @@ func (r *Router) AddPublisher(pubID string, trackRemote *webrtc.TrackRemote, rec
 		}
 
 		trackLocal, err := webrtc.NewTrackLocalStaticRTP(
-			trackRemote.Codec().RTPCodecCapability,
-			trackID,
-			streamID,
+			uplink.CodecCap,
+			downlinkTrackID,
+			downlinkStreamID,
 		)
 		if err != nil {
-			slog.Error("Failed to create TrackLocalStaticRTP", "sub_id", subID, "pub_id", pubID, "err", err)
+			slog.Error("Failed to create TrackLocalStaticRTP", "sub_id", subID, "pub_id", pubID, "kind", uplink.Kind.String(), "err", err)
 			continue
 		}
 
 		sender, err := pe.peer.AddTrack(trackLocal)
 		if err != nil {
-			slog.Error("Failed to add track to subscriber peer", "sub_id", subID, "pub_id", pubID, "err", err)
+			slog.Error("Failed to add track to subscriber peer", "sub_id", subID, "pub_id", pubID, "kind", uplink.Kind.String(), "err", err)
 			continue
 		}
 
@@ -156,7 +192,7 @@ func (r *Router) AddPublisher(pubID string, trackRemote *webrtc.TrackRemote, rec
 		if r.subscribers[subID] == nil {
 			r.subscribers[subID] = make(map[string]*subscriberEntry)
 		}
-		r.subscribers[subID][pubID] = &subscriberEntry{
+		r.subscribers[subID][tKey] = &subscriberEntry{
 			downlink: downlink,
 			sender:   sender,
 		}
@@ -191,42 +227,39 @@ func (r *Router) SubscribeToExistingPublishers(userID string) {
 	p := pe.peer
 
 	needsRenegotiate := false
-	for pubID, pub := range r.publishers {
-		if pubID == userID {
+	for tKey, pub := range r.publishers {
+		if pub.PublisherID == userID {
 			continue
 		}
 
-		// Check if already subscribed
-		if r.subscribers[userID] != nil && r.subscribers[userID][pubID] != nil {
+		// Check if already subscribed to this specific track
+		if r.subscribers[userID] != nil && r.subscribers[userID][tKey] != nil {
 			continue
 		}
-
-		streamID := "kith-stream-" + pubID
-		trackID := "kith-track-" + pubID
 
 		trackLocal, err := webrtc.NewTrackLocalStaticRTP(
-			pub.TrackRemote.Codec().RTPCodecCapability,
-			trackID,
-			streamID,
+			pub.CodecCap,
+			pub.DownlinkTrackID(pub.PublisherID),
+			pub.DownlinkStreamID(pub.PublisherID),
 		)
 		if err != nil {
-			slog.Error("Failed to create TrackLocalStaticRTP", "sub_id", userID, "pub_id", pubID, "err", err)
+			slog.Error("Failed to create TrackLocalStaticRTP", "sub_id", userID, "pub_id", pub.PublisherID, "kind", pub.Kind.String(), "err", err)
 			continue
 		}
 
 		sender, err := p.AddTrack(trackLocal)
 		if err != nil {
-			slog.Error("Failed to add track to subscriber peer", "sub_id", userID, "pub_id", pubID, "err", err)
+			slog.Error("Failed to add track to subscriber peer", "sub_id", userID, "pub_id", pub.PublisherID, "kind", pub.Kind.String(), "err", err)
 			continue
 		}
 
-		downlink := NewSubscriberDownlink(userID, pubID, trackLocal, sender)
+		downlink := NewSubscriberDownlink(userID, pub.PublisherID, trackLocal, sender)
 		pub.AddSubscriber(downlink)
 
 		if r.subscribers[userID] == nil {
 			r.subscribers[userID] = make(map[string]*subscriberEntry)
 		}
-		r.subscribers[userID][pubID] = &subscriberEntry{
+		r.subscribers[userID][tKey] = &subscriberEntry{
 			downlink: downlink,
 			sender:   sender,
 		}

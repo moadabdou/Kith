@@ -24,6 +24,9 @@ type SubscriberDownlink struct {
 	inbox chan *rtp.Packet
 	seq   uint32 // atomic sequence number counter
 
+	feedbackMu sync.RWMutex
+	onFeedback func([]rtcp.Packet)
+
 	ctx       context.Context
 	cancel    context.CancelFunc
 	closeOnce sync.Once
@@ -129,10 +132,35 @@ func (s *SubscriberDownlink) rtcpLoop() {
 
 				case *rtcp.TransportLayerNack:
 					metrics.RTCPNackTotal.Inc()
+
+				case *rtcp.PictureLossIndication:
+					metrics.RTCPPLITotal.Inc()
+					s.feedbackMu.RLock()
+					cb := s.onFeedback
+					s.feedbackMu.RUnlock()
+					if cb != nil {
+						cb([]rtcp.Packet{report})
+					}
+
+				case *rtcp.FullIntraRequest:
+					metrics.RTCPFIRTotal.Inc()
+					s.feedbackMu.RLock()
+					cb := s.onFeedback
+					s.feedbackMu.RUnlock()
+					if cb != nil {
+						cb([]rtcp.Packet{report})
+					}
 				}
 			}
 		}
 	}
+}
+
+// SetOnFeedback configures the callback for RTCP feedback (e.g., PLI, FIR) to forward to publisher.
+func (s *SubscriberDownlink) SetOnFeedback(cb func([]rtcp.Packet)) {
+	s.feedbackMu.Lock()
+	defer s.feedbackMu.Unlock()
+	s.onFeedback = cb
 }
 
 // Sequence returns the current sequence number counter value safely.
@@ -144,5 +172,6 @@ func (s *SubscriberDownlink) Sequence() uint32 {
 func (s *SubscriberDownlink) Close() {
 	s.closeOnce.Do(func() {
 		s.cancel()
+		s.SetOnFeedback(nil)
 	})
 }

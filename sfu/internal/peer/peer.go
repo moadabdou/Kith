@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/moadabdou/Kith/sfu/internal/metrics"
+	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -216,6 +217,16 @@ func (p *Peer) HandleAnswer(sdp string) error {
 	return p.PC.SetRemoteDescription(answer)
 }
 
+// WriteRTCP sends user-provided RTCP packets to the remote peer.
+func (p *Peer) WriteRTCP(pkts []rtcp.Packet) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed || p.PC == nil {
+		return fmt.Errorf("peer is closed")
+	}
+	return p.PC.WriteRTCP(pkts)
+}
+
 // Close gracefully closes the PeerConnection.
 func (p *Peer) Close() error {
 	p.mu.Lock()
@@ -251,6 +262,17 @@ func CreateAPI(cfg Config) (*webrtc.API, error) {
 	mediaEngine := &webrtc.MediaEngine{}
 	if err := mediaEngine.RegisterDefaultCodecs(); err != nil {
 		return nil, fmt.Errorf("failed to register codecs: %w", err)
+	}
+
+	// Register RTCP feedback mechanisms for video codecs (VP8, H.264)
+	videoFeedbacks := []webrtc.RTCPFeedback{
+		{Type: "nack"},
+		{Type: "nack", Parameter: "pli"},
+		{Type: "goog-remb"},
+		{Type: "ccm", Parameter: "fir"},
+	}
+	for _, fb := range videoFeedbacks {
+		mediaEngine.RegisterFeedback(fb, webrtc.RTPCodecTypeVideo)
 	}
 
 	return webrtc.NewAPI(

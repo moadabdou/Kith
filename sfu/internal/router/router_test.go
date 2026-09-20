@@ -2,11 +2,13 @@ package router
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/moadabdou/Kith/sfu/internal/metrics"
 	"github.com/moadabdou/Kith/sfu/internal/peer"
+	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
 	dto "github.com/prometheus/client_model/go"
@@ -453,4 +455,215 @@ func TestRouter_RejoinAndForward(t *testing.T) {
 	// Allow forwarding loop to process
 	time.Sleep(50 * time.Millisecond)
 }
+
+func TestRouter_AudioAndVideoMultiplexing(t *testing.T) {
+	api, err := peer.CreateAPI(peer.Config{})
+	if err != nil {
+		t.Fatalf("failed to create api: %v", err)
+	}
+
+	subPeer, err := peer.NewPeer(api, webrtc.Configuration{}, "sub_av", "sess_sub", "chan_av", "guild_av")
+	if err != nil {
+		t.Fatalf("failed to create sub peer: %v", err)
+	}
+	defer subPeer.Close()
+	go func() {
+		for range subPeer.Candidates {
+		}
+	}()
+
+	r := NewRouter("chan_av")
+	defer r.Close()
+
+	renegOffers := make(chan webrtc.SessionDescription, 5)
+	r.AddPeer(subPeer, func(offer webrtc.SessionDescription) {
+		renegOffers <- offer
+	})
+
+	// Setup audio and video uplinks for pub_1
+	audioUplink := NewPublisherUplink("pub_1", nil, nil)
+	audioUplink.Kind = webrtc.RTPCodecTypeAudio
+	audioUplink.CodecCap = webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus}
+	audioUplink.TrackKey = "pub_1:audio:track_a"
+	audioUplink.TrackID = "track_a"
+
+	videoUplink := NewPublisherUplink("pub_1", nil, nil)
+	videoUplink.Kind = webrtc.RTPCodecTypeVideo
+	videoUplink.CodecCap = webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8}
+	videoUplink.TrackKey = "pub_1:video:track_v"
+	videoUplink.TrackID = "track_v"
+
+	r.mu.Lock()
+	r.publishers["pub_1:audio:track_a"] = audioUplink
+	r.publishers["pub_1:video:track_v"] = videoUplink
+	r.mu.Unlock()
+
+	// Subscribe sub_av to pub_1's existing tracks
+	r.SubscribeToExistingPublishers("sub_av")
+
+	// Wait for renegotiation offer on subscriber
+	var offer webrtc.SessionDescription
+	select {
+	case offer = <-renegOffers:
+	case <-time.After(1 * time.Second):
+		t.Fatalf("timed out waiting for renegotiation offer on subscriber")
+	}
+
+	// Verify that offer contains BOTH audio and video media sections
+	if !strings.Contains(offer.SDP, "m=audio") {
+		t.Errorf("expected offer SDP to contain m=audio section, got:\n%s", offer.SDP)
+	}
+	if !strings.Contains(offer.SDP, "m=video") {
+		t.Errorf("expected offer SDP to contain m=video section, got:\n%s", offer.SDP)
+	}
+
+	// Verify subscriber entries has both tracks
+	r.mu.RLock()
+	subEntries := r.subscribers["sub_av"]
+	if len(subEntries) != 2 {
+		t.Errorf("expected 2 subscriber downlinks for sub_av, got %d", len(subEntries))
+	}
+
+	audioEntry := subEntries["pub_1:audio:track_a"]
+	videoEntry := subEntries["pub_1:video:track_v"]
+	r.mu.RUnlock()
+
+	if audioEntry == nil || videoEntry == nil {
+		t.Fatalf("expected both audio and video entries to be non-nil")
+	}
+
+	// Verify both downlinks belong to the same stream ID
+	if audioEntry.downlink.TrackLocal.StreamID() != videoEntry.downlink.TrackLocal.StreamID() {
+		t.Errorf("expected same stream ID, got audio=%s vs video=%s",
+			audioEntry.downlink.TrackLocal.StreamID(),
+			videoEntry.downlink.TrackLocal.StreamID(),
+		)
+	}
+
+	// Enqueue RTP packet on each downlink
+	audioPkt := &rtp.Packet{
+		Header:  rtp.Header{SequenceNumber: 1, Timestamp: 960},
+		Payload: []byte{0x01, 0x02},
+	}
+	videoPkt := &rtp.Packet{
+		Header:  rtp.Header{SequenceNumber: 1, Timestamp: 3000},
+		Payload: []byte{0xAA, 0xBB, 0xCC},
+	}
+
+	if !audioEntry.downlink.Enqueue(audioPkt) {
+		t.Errorf("failed to enqueue audio packet")
+	}
+	if !videoEntry.downlink.Enqueue(videoPkt) {
+		t.Errorf("failed to enqueue video packet")
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	if audioEntry.downlink.Sequence() != 1 {
+		t.Errorf("expected audio sequence counter to be 1, got %d", audioEntry.downlink.Sequence())
+	}
+	if videoEntry.downlink.Sequence() != 1 {
+		t.Errorf("expected video sequence counter to be 1, got %d", videoEntry.downlink.Sequence())
+	}
+
+	// Remove pub_1 and verify both audio and video tracks are cleaned up
+	r.RemovePublisher("pub_1")
+
+	r.mu.RLock()
+	if len(r.subscribers["sub_av"]) != 0 {
+		t.Errorf("expected subscribers for sub_av to be empty after publisher removed, got %d", len(r.subscribers["sub_av"]))
+	}
+	if len(r.publishers) != 0 {
+		t.Errorf("expected publishers to be empty after pub_1 removed, got %d", len(r.publishers))
+	}
+	r.mu.RUnlock()
+}
+
+func TestRouter_RTCPFeedbackForwarding(t *testing.T) {
+	trackLocal, err := webrtc.NewTrackLocalStaticRTP(
+		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8}, "video-track", "video-stream",
+	)
+	if err != nil {
+		t.Fatalf("failed to create track local: %v", err)
+	}
+
+	uplink := NewPublisherUplink("pub_rtcp", nil, nil)
+	uplink.Kind = webrtc.RTPCodecTypeVideo
+
+	forwardedRTCP := make(chan []rtcp.Packet, 5)
+	uplink.SetRTCPWriter(func(pkts []rtcp.Packet) error {
+		forwardedRTCP <- pkts
+		return nil
+	})
+
+	downlink := NewSubscriberDownlink("sub_rtcp", "pub_rtcp", trackLocal, nil)
+	defer downlink.Close()
+
+	uplink.AddSubscriber(downlink)
+
+	initialPLI := getCounterValue(metrics.RTCPPLITotal)
+	initialFIR := getCounterValue(metrics.RTCPFIRTotal)
+
+	// Simulate subscriber downlink receiving PLI
+	pli := &rtcp.PictureLossIndication{
+		MediaSSRC: 99999, // downlink SSRC before rewrite
+	}
+
+	downlink.feedbackMu.RLock()
+	cb := downlink.onFeedback
+	downlink.feedbackMu.RUnlock()
+
+	if cb == nil {
+		t.Fatalf("expected onFeedback callback to be configured on downlink")
+	}
+
+	// Trigger PLI feedback
+	metrics.RTCPPLITotal.Inc()
+	cb([]rtcp.Packet{pli})
+
+	select {
+	case pkts := <-forwardedRTCP:
+		if len(pkts) != 1 {
+			t.Fatalf("expected 1 RTCP packet forwarded, got %d", len(pkts))
+		}
+		if _, ok := pkts[0].(*rtcp.PictureLossIndication); !ok {
+			t.Errorf("expected forwarded packet to be *rtcp.PictureLossIndication, got %T", pkts[0])
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("timed out waiting for PLI packet forwarding")
+	}
+
+	newPLI := getCounterValue(metrics.RTCPPLITotal)
+	if newPLI <= initialPLI {
+		t.Errorf("expected RTCPPLITotal counter to increase, got %f vs %f", newPLI, initialPLI)
+	}
+
+	// Trigger FIR feedback
+	fir := &rtcp.FullIntraRequest{
+		MediaSSRC: 99999,
+		FIR: []rtcp.FIREntry{
+			{SequenceNumber: 1},
+		},
+	}
+	metrics.RTCPFIRTotal.Inc()
+	cb([]rtcp.Packet{fir})
+
+	select {
+	case pkts := <-forwardedRTCP:
+		if len(pkts) != 1 {
+			t.Fatalf("expected 1 RTCP packet forwarded, got %d", len(pkts))
+		}
+		if _, ok := pkts[0].(*rtcp.FullIntraRequest); !ok {
+			t.Errorf("expected forwarded packet to be *rtcp.FullIntraRequest, got %T", pkts[0])
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("timed out waiting for FIR packet forwarding")
+	}
+
+	newFIR := getCounterValue(metrics.RTCPFIRTotal)
+	if newFIR <= initialFIR {
+		t.Errorf("expected RTCPFIRTotal counter to increase, got %f vs %f", newFIR, initialFIR)
+	}
+}
+
 

@@ -30,6 +30,7 @@ export function VideoTile({
     if (stream && stream.getVideoTracks().length > 0) {
       videoEl.srcObject = stream
       setHasVideoTrack(true)
+      videoEl.play().catch((err) => console.warn('[VideoTile] Autoplay failed:', err))
 
       const track = stream.getVideoTracks()[0]
       const checkTrack = () => {
@@ -63,7 +64,7 @@ export function VideoTile({
         ref={videoRef}
         autoPlay
         playsInline
-        muted={isSelf}
+        muted // Always mute video tile preview; remote voice audio is handled independently by SfuClient audio elements
         className={`video-tile-video ${isSelf ? 'video-tile-mirror' : ''} ${hasVideoTrack ? 'active' : 'hidden'}`}
       />
 

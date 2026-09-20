@@ -289,6 +289,15 @@ export class SfuClient {
         }
         break
 
+      case 'video':
+        if (msg.user_id && typeof msg.video === 'boolean') {
+          if (!msg.video) {
+            this.remoteVideoStreams.delete(msg.user_id)
+            this.options.onRemoteVideoChange?.(msg.user_id, null)
+          }
+        }
+        break
+
       case 'peer_left':
         if (msg.user_id) {
           this.options.onSpeakingChange?.(msg.user_id, false)
@@ -632,6 +641,7 @@ export class SfuClient {
           }
         }
 
+        this.sendWsMessage({ type: 'video', video: true })
         this.options.onLocalVideoChange?.(this.localVideoStream)
         return this.localVideoStream
       } catch (err: any) {
@@ -658,6 +668,7 @@ export class SfuClient {
         await this.renegotiate()
       }
 
+      this.sendWsMessage({ type: 'video', video: false })
       this.options.onLocalVideoChange?.(null)
       return null
     }

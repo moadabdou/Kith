@@ -29,6 +29,7 @@ type Message struct {
 	Peers      []string                 `json:"peers,omitempty"`
 	UserID     string                   `json:"user_id,omitempty"`
 	Speaking   *bool                    `json:"speaking,omitempty"`
+	Video      *bool                    `json:"video,omitempty"`
 	ListenOnly *bool                    `json:"listen_only,omitempty"`
 	Message    string                   `json:"message,omitempty"`
 }
@@ -169,6 +170,7 @@ func (s *Server) handleSession(ctx context.Context, conn *websocket.Conn) {
 					UserID:    ev.UserID,
 					ChannelID: ev.ChannelID,
 					Speaking:  ev.Speaking,
+					Video:     ev.Video,
 					Peers:     ev.Peers,
 					SDP:       ev.SDP,
 				})
@@ -249,6 +251,19 @@ func (s *Server) handleSession(ctx context.Context, conn *websocket.Conn) {
 					UserID:    userID,
 					ChannelID: currentRoom.ID,
 					Speaking:  msg.Speaking,
+				})
+			}
+
+		case "video":
+			if currentRoom != nil && userID != "" && msg.Video != nil {
+				if !*msg.Video {
+					currentRoom.Router().RemovePublisherKind(userID, webrtc.RTPCodecTypeVideo)
+				}
+				currentRoom.Broadcast(userID, room.Event{
+					Type:      "video",
+					UserID:    userID,
+					ChannelID: currentRoom.ID,
+					Video:     msg.Video,
 				})
 			}
 

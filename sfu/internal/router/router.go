@@ -3,6 +3,7 @@ package router
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 
 	"github.com/moadabdou/Kith/sfu/internal/peer"
@@ -209,6 +210,45 @@ func (r *Router) AddPublisher(pubID string, trackRemote *webrtc.TrackRemote, rec
 func (r *Router) RemovePublisher(pubID string) {
 	r.mu.Lock()
 	peersToRenegotiate := r.removePublisherLocked(pubID)
+	r.mu.Unlock()
+
+	for _, subID := range peersToRenegotiate {
+		r.TriggerRenegotiation(subID)
+	}
+}
+
+// RemovePublisherKind removes publisher uplinks and subscriber downlinks of a specific kind (e.g. Video) for a peer.
+func (r *Router) RemovePublisherKind(pubID string, kind webrtc.RTPCodecType) {
+	r.mu.Lock()
+	peerNeedsReneg := make(map[string]bool)
+
+	for key, pub := range r.publishers {
+		if pub.PublisherID == pubID && pub.Kind == kind {
+			pub.Close()
+			delete(r.publishers, key)
+		}
+	}
+
+	for subID, subMap := range r.subscribers {
+		for key, entry := range subMap {
+			if entry.downlink.PublisherID == pubID {
+				if (kind == webrtc.RTPCodecTypeVideo && strings.Contains(key, ":video:")) ||
+					(kind == webrtc.RTPCodecTypeAudio && strings.Contains(key, ":audio:")) {
+					entry.downlink.Close()
+					if pe, okPeer := r.peers[subID]; okPeer && pe.peer != nil {
+						_ = pe.peer.RemoveTrack(entry.sender)
+						peerNeedsReneg[subID] = true
+					}
+					delete(subMap, key)
+				}
+			}
+		}
+	}
+
+	var peersToRenegotiate []string
+	for subID := range peerNeedsReneg {
+		peersToRenegotiate = append(peersToRenegotiate, subID)
+	}
 	r.mu.Unlock()
 
 	for _, subID := range peersToRenegotiate {

@@ -25,6 +25,7 @@ type Event struct {
 	UserID    string   `json:"user_id,omitempty"`
 	ChannelID string   `json:"channel_id,omitempty"`
 	Speaking  *bool    `json:"speaking,omitempty"`
+	Video     *bool    `json:"video,omitempty"`
 	Peers     []string `json:"peers,omitempty"`
 	SDP       string   `json:"sdp,omitempty"`
 }

@@ -46,14 +46,6 @@ func (m *Manager) GetOrCreate(channelID string) *Room {
 	return r
 }
 
-// Get returns the room actor for channelID if present.
-func (m *Manager) Get(channelID string) (*Room, bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	r, ok := m.rooms[channelID]
-	return r, ok
-}
-
 // HasRoom checks if a room is currently active.
 func (m *Manager) HasRoom(channelID string) bool {
 	m.mu.RLock()
@@ -73,16 +65,6 @@ func (m *Manager) Broadcast(channelID, sourceUserID string, event Event) bool {
 	}
 	r.Broadcast(sourceUserID, event)
 	return true
-}
-
-// BroadcastAll sends an event across all active rooms.
-func (m *Manager) BroadcastAll(sourceUserID string, event Event) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	for _, r := range m.rooms {
-		r.Broadcast(sourceUserID, event)
-	}
 }
 
 // GetPeers queries the list of connected user IDs in a channel.

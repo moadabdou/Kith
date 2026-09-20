@@ -66,28 +66,35 @@ func (r *Router) AddPeer(p *peer.Peer, renegotiate RenegotiateCallback) {
 	})
 }
 
-// RemovePeer unregisters a peer, tearing down any publishing uplinks and subscriber downlinks.
-func (r *Router) RemovePeer(userID string) {
-	r.mu.Lock()
+// removePublisherLocked removes an active publisher and cleans up all downlinks receiving from it.
+// Returns the list of subscriber IDs that require renegotiation.
+// Caller MUST hold r.mu.
+func (r *Router) removePublisherLocked(pubID string) []string {
 	var peersToRenegotiate []string
-
-	// 1. If this peer was publishing, tear down publisher uplink
-	if pub, ok := r.publishers[userID]; ok {
+	if pub, ok := r.publishers[pubID]; ok {
 		pub.Close()
-		delete(r.publishers, userID)
+		delete(r.publishers, pubID)
 
 		// Clean up downlinks in other peers that were receiving from this publisher
 		for subID, subMap := range r.subscribers {
-			if entry, exists := subMap[userID]; exists {
+			if entry, exists := subMap[pubID]; exists {
 				entry.downlink.Close()
 				if pe, okPeer := r.peers[subID]; okPeer && pe.peer != nil {
 					_ = pe.peer.RemoveTrack(entry.sender)
 					peersToRenegotiate = append(peersToRenegotiate, subID)
 				}
-				delete(subMap, userID)
+				delete(subMap, pubID)
 			}
 		}
 	}
+	return peersToRenegotiate
+}
+
+// RemovePeer unregisters a peer, tearing down any publishing uplinks and subscriber downlinks.
+func (r *Router) RemovePeer(userID string) {
+	r.mu.Lock()
+	// 1. If this peer was publishing, tear down publisher uplink and notify subscribers
+	peersToRenegotiate := r.removePublisherLocked(userID)
 
 	// 2. Remove all downlinks where this peer is a subscriber
 	if subMap, ok := r.subscribers[userID]; ok {
@@ -165,22 +172,7 @@ func (r *Router) AddPublisher(pubID string, trackRemote *webrtc.TrackRemote, rec
 // RemovePublisher removes an active publisher and tears down associated downlinks.
 func (r *Router) RemovePublisher(pubID string) {
 	r.mu.Lock()
-	var peersToRenegotiate []string
-	if pub, ok := r.publishers[pubID]; ok {
-		pub.Close()
-		delete(r.publishers, pubID)
-
-		for subID, subMap := range r.subscribers {
-			if entry, exists := subMap[pubID]; exists {
-				entry.downlink.Close()
-				if pe, okPeer := r.peers[subID]; okPeer && pe.peer != nil {
-					_ = pe.peer.RemoveTrack(entry.sender)
-					peersToRenegotiate = append(peersToRenegotiate, subID)
-				}
-				delete(subMap, pubID)
-			}
-		}
-	}
+	peersToRenegotiate := r.removePublisherLocked(pubID)
 	r.mu.Unlock()
 
 	for _, subID := range peersToRenegotiate {

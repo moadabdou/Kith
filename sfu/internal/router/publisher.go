@@ -82,6 +82,7 @@ func (p *PublisherUplink) readingLoop() {
 				} else {
 					slog.Info("Publisher track reached EOF", "publisher_id", p.PublisherID)
 				}
+				p.Close()
 				return
 			}
 

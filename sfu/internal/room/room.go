@@ -27,7 +27,6 @@ type Event struct {
 	Speaking  *bool    `json:"speaking,omitempty"`
 	Peers     []string `json:"peers,omitempty"`
 	SDP       string   `json:"sdp,omitempty"`
-	Data      any      `json:"data,omitempty"`
 }
 
 // BroadcastSender is a function that delivers a typed Event to a specific peer.
@@ -227,7 +226,7 @@ func (r *Room) handleJoin(m joinMsg) {
 	// Publish voice.peer_joined to event bus
 	if r.publisher != nil && m.p.GuildID != "" {
 		go func(gid, cid, user, sid string) {
-			_ = r.publisher.Publish(context.Background(), bus.Event{
+			err := r.publisher.Publish(context.Background(), bus.Event{
 				Type:    "voice.peer_joined",
 				Version: 1,
 				GuildID: gid,
@@ -238,6 +237,9 @@ func (r *Room) handleJoin(m joinMsg) {
 					"session_id": sid,
 				},
 			})
+			if err != nil {
+				slog.Warn("Failed to publish voice.peer_joined to event bus", "guild_id", gid, "user_id", user, "err", err)
+			}
 		}(m.p.GuildID, r.ID, uid, m.p.SessionID)
 	}
 
@@ -309,42 +311,8 @@ func (r *Room) handleExpireDisconnect(m expireDisconnectMsg) {
 	}
 
 	delete(r.disconnectTimers, m.userID)
-	delete(r.peers, m.userID)
-	delete(r.senders, m.userID)
-	metrics.ConnectedPeers.Dec()
-
-	guildID := p.GuildID
-	sessionID := p.SessionID
-
-	// Notify remaining peers
-	r.broadcastExcept(m.userID, Event{
-		Type:      "peer_left",
-		UserID:    m.userID,
-		ChannelID: r.ID,
-	})
-
-	// Publish voice.peer_left to event bus
-	if r.publisher != nil && guildID != "" {
-		go func(gid, cid, user, sid string) {
-			_ = r.publisher.Publish(context.Background(), bus.Event{
-				Type:    "voice.peer_left",
-				Version: 1,
-				GuildID: gid,
-				Payload: map[string]any{
-					"guild_id":   gid,
-					"channel_id": cid,
-					"user_id":    user,
-					"session_id": sid,
-				},
-			})
-		}(guildID, r.ID, m.userID, sessionID)
-	}
-
+	r.finalizePeerEviction(m.userID, p)
 	slog.Info("Peer grace period expired, removed from room", "user_id", m.userID, "room_id", r.ID)
-
-	if len(r.peers) == 0 && r.onEmpty != nil {
-		go r.onEmpty(r.ID)
-	}
 }
 
 func (r *Room) handleLeave(m leaveMsg) {
@@ -367,27 +335,35 @@ func (r *Room) handleLeave(m leaveMsg) {
 		return
 	}
 
+	p.SetOnClose(nil)
+	r.router.RemovePeer(m.userID)
+	_ = p.Close()
+
+	r.finalizePeerEviction(m.userID, p)
+	m.replyTo <- nil
+}
+
+// finalizePeerEviction cleans up peer maps, decrements metrics, broadcasts peer_left,
+// publishes voice.peer_left to NATS, and notifies the manager if the room became empty.
+func (r *Room) finalizePeerEviction(userID string, p *peer.Peer) {
+	delete(r.peers, userID)
+	delete(r.senders, userID)
+	metrics.ConnectedPeers.Dec()
+
 	guildID := p.GuildID
 	sessionID := p.SessionID
 
-	p.SetOnClose(nil)
-	r.router.RemovePeer(m.userID)
-	delete(r.peers, m.userID)
-	delete(r.senders, m.userID)
-	_ = p.Close()
-	metrics.ConnectedPeers.Dec()
-
 	// Notify remaining peers
-	r.broadcastExcept(m.userID, Event{
+	r.broadcastExcept(userID, Event{
 		Type:      "peer_left",
-		UserID:    m.userID,
+		UserID:    userID,
 		ChannelID: r.ID,
 	})
 
 	// Publish voice.peer_left to event bus
 	if r.publisher != nil && guildID != "" {
 		go func(gid, cid, user, sid string) {
-			_ = r.publisher.Publish(context.Background(), bus.Event{
+			err := r.publisher.Publish(context.Background(), bus.Event{
 				Type:    "voice.peer_left",
 				Version: 1,
 				GuildID: gid,
@@ -398,10 +374,11 @@ func (r *Room) handleLeave(m leaveMsg) {
 					"session_id": sid,
 				},
 			})
-		}(guildID, r.ID, m.userID, sessionID)
+			if err != nil {
+				slog.Warn("Failed to publish voice.peer_left to event bus", "guild_id", gid, "user_id", user, "err", err)
+			}
+		}(guildID, r.ID, userID, sessionID)
 	}
-
-	m.replyTo <- nil
 
 	// If room is now empty, notify manager asynchronously
 	if len(r.peers) == 0 && r.onEmpty != nil {

@@ -92,12 +92,6 @@ func (s *Server) handleSession(ctx context.Context, conn *websocket.Conn) {
 			} else {
 				_ = currentRoom.DisconnectPeer(currentPeer, 10*time.Second)
 			}
-		} else if currentRoom != nil && userID != "" {
-			if isExplicitLeave {
-				_ = currentRoom.Leave(userID)
-			} else {
-				_ = currentRoom.Disconnect(userID, 10*time.Second)
-			}
 		}
 		if currentPeer != nil {
 			_ = currentPeer.Close()

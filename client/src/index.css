@@ -2198,3 +2198,245 @@ body {
 }
 
 
+/* ========================================
+   Screenshare Dock Button
+   ======================================== */
+
+.voice-dock-btn.active-screen {
+  background: #5865f2;
+  color: white;
+}
+
+.voice-dock-btn.active-screen:hover {
+  background: #4752c4;
+}
+
+/* ========================================
+   Screenshare Presentation Mode
+   ======================================== */
+
+.screenshare-presentation-mode {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  background: #111214;
+  border-radius: 12px;
+  overflow: hidden;
+  position: relative;
+}
+
+.screenshare-spotlight {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0a0a0b;
+  overflow: hidden;
+}
+
+.screenshare-video-element {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+  border-radius: 0;
+}
+
+/* Top floating overlay with glassmorphism effect */
+.screenshare-top-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0.72) 0%,
+    rgba(0, 0, 0, 0.35) 60%,
+    transparent 100%
+  );
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  z-index: 5;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+
+.screenshare-spotlight:hover .screenshare-top-overlay {
+  opacity: 1;
+}
+
+.screenshare-top-overlay > * {
+  pointer-events: auto;
+}
+
+.screenshare-presenter-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 6px 14px;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.screenshare-badge-icon {
+  color: #5865f2;
+  flex-shrink: 0;
+}
+
+.screenshare-presenter-name {
+  color: #f2f3f5;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.screenshare-quality-tag {
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  padding-left: 8px;
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.screenshare-actions-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.screenshare-stop-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: none;
+  border-radius: 6px;
+  background: #ed4245;
+  color: white;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.18s ease, transform 0.12s ease;
+}
+
+.screenshare-stop-btn:hover {
+  background: #d83c3f;
+  transform: scale(1.03);
+}
+
+.screenshare-stop-btn:active {
+  transform: scale(0.97);
+}
+
+.screenshare-fullscreen-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #dbdee1;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.screenshare-fullscreen-btn:hover {
+  background: rgba(255, 255, 255, 0.18);
+  color: #f2f3f5;
+}
+
+/* Participant Filmstrip */
+.screenshare-filmstrip-wrapper {
+  flex-shrink: 0;
+  width: 100%;
+  padding: 8px 12px;
+  background: rgba(30, 31, 34, 0.95);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.screenshare-filmstrip-wrapper::-webkit-scrollbar {
+  height: 4px;
+}
+
+.screenshare-filmstrip-wrapper::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.screenshare-filmstrip-wrapper::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+}
+
+.screenshare-filmstrip {
+  display: flex;
+  gap: 8px;
+  min-width: min-content;
+}
+
+.screenshare-filmstrip-item {
+  flex-shrink: 0;
+  width: 160px;
+  height: 100px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 2px solid transparent;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.screenshare-filmstrip-item:hover {
+  border-color: rgba(88, 101, 242, 0.4);
+}
+
+.screenshare-filmstrip-item .video-tile {
+  width: 100%;
+  height: 100%;
+  border-radius: 6px;
+  min-height: unset;
+}
+
+.screenshare-filmstrip-item .video-tile-video {
+  object-fit: cover;
+}
+
+.screenshare-filmstrip-item .video-tile-overlay {
+  padding: 4px 6px;
+}
+
+.screenshare-filmstrip-item .video-tile-name {
+  font-size: 11px;
+}
+
+/* Fullscreen tweaks */
+.screenshare-presentation-mode:fullscreen {
+  border-radius: 0;
+}
+
+.screenshare-presentation-mode:fullscreen .screenshare-spotlight {
+  border-radius: 0;
+}
+
+.screenshare-presentation-mode:fullscreen .screenshare-filmstrip-wrapper {
+  padding: 10px 16px;
+}
+
+.screenshare-presentation-mode:fullscreen .screenshare-filmstrip-item {
+  width: 200px;
+  height: 125px;
+}

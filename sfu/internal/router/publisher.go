@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 
 	"github.com/pion/rtcp"
@@ -22,6 +23,7 @@ type PublisherUplink struct {
 	Kind     webrtc.RTPCodecType
 	TrackID  string
 	StreamID string
+	IsScreen bool
 	CodecCap webrtc.RTPCodecCapability
 
 	mu          sync.RWMutex
@@ -40,6 +42,7 @@ func NewPublisherUplink(pubID string, trackRemote *webrtc.TrackRemote, receiver 
 	kind := webrtc.RTPCodecTypeAudio
 	trackID := "kith-track-" + pubID
 	streamID := "kith-stream-" + pubID
+	isScreen := false
 	codecCap := webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus}
 
 	if trackRemote != nil {
@@ -47,6 +50,9 @@ func NewPublisherUplink(pubID string, trackRemote *webrtc.TrackRemote, receiver 
 		trackID = trackRemote.ID()
 		streamID = trackRemote.StreamID()
 		codecCap = trackRemote.Codec().RTPCodecCapability
+		if strings.HasPrefix(streamID, "kith-screen-") || strings.Contains(trackID, "-screen") {
+			isScreen = true
+		}
 	}
 
 	p := &PublisherUplink{
@@ -56,6 +62,7 @@ func NewPublisherUplink(pubID string, trackRemote *webrtc.TrackRemote, receiver 
 		Kind:        kind,
 		TrackID:     trackID,
 		StreamID:    streamID,
+		IsScreen:    isScreen,
 		CodecCap:    codecCap,
 		subscribers: make(map[string]*SubscriberDownlink),
 		ctx:         ctx,
@@ -104,6 +111,9 @@ func (p *PublisherUplink) SendRTCP(pkts []rtcp.Packet) error {
 
 // DownlinkTrackID returns the unique track ID for downstream subscribers.
 func (p *PublisherUplink) DownlinkTrackID(pubID string) string {
+	if p.IsScreen || strings.HasPrefix(p.StreamID, "kith-screen-") || strings.Contains(p.TrackID, "-screen") {
+		return fmt.Sprintf("kith-track-%s-screen", pubID)
+	}
 	if p.TrackRemote != nil && p.TrackRemote.ID() != "" {
 		return fmt.Sprintf("kith-track-%s-%s", pubID, p.TrackRemote.ID())
 	}
@@ -115,6 +125,9 @@ func (p *PublisherUplink) DownlinkTrackID(pubID string) string {
 
 // DownlinkStreamID returns the shared stream ID for all tracks of this publisher.
 func (p *PublisherUplink) DownlinkStreamID(pubID string) string {
+	if p.IsScreen || strings.HasPrefix(p.StreamID, "kith-screen-") {
+		return fmt.Sprintf("kith-screen-%s", pubID)
+	}
 	return fmt.Sprintf("kith-stream-%s", pubID)
 }
 
@@ -179,7 +192,9 @@ func (p *PublisherUplink) readingLoop() {
 // Close gracefully closes the publisher reading loop and all attached subscribers.
 func (p *PublisherUplink) Close() {
 	p.closeOnce.Do(func() {
-		p.cancel()
+		if p.cancel != nil {
+			p.cancel()
+		}
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		for id, sub := range p.subscribers {

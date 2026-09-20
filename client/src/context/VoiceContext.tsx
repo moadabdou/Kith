@@ -61,12 +61,16 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([])
   const [localVideoStream, setLocalVideoStream] = useState<MediaStream | null>(null)
   const [remoteVideoStreams, setRemoteVideoStreams] = useState<Map<string, MediaStream>>(new Map())
+  const [isScreenSharing, setIsScreenSharing] = useState(false)
+  const [localScreenStream, setLocalScreenStream] = useState<MediaStream | null>(null)
+  const [remoteScreenStreams, setRemoteScreenStreams] = useState<Map<string, MediaStream>>(new Map())
 
-  // Ref to track selfMute and selfDeaf in callbacks without stale closures
+  // Ref to track state in callbacks without stale closures
   const selfMuteRef = useRef(selfMute)
   const selfDeafRef = useRef(selfDeaf)
   const isCameraOnRef = useRef(isCameraOn)
   const selectedCameraIdRef = useRef(selectedCameraId)
+  const isScreenSharingRef = useRef(isScreenSharing)
   const activeVoiceRef = useRef(activeVoice)
   const connectionStatusRef = useRef(connectionStatus)
   const sfuClientRef = useRef<SfuClient | null>(null)
@@ -76,9 +80,10 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     selfDeafRef.current = selfDeaf
     isCameraOnRef.current = isCameraOn
     selectedCameraIdRef.current = selectedCameraId
+    isScreenSharingRef.current = isScreenSharing
     activeVoiceRef.current = activeVoice
     connectionStatusRef.current = connectionStatus
-  }, [selfMute, selfDeaf, isCameraOn, selectedCameraId, activeVoice, connectionStatus])
+  }, [selfMute, selfDeaf, isCameraOn, selectedCameraId, isScreenSharing, activeVoice, connectionStatus])
 
   // Video devices enumeration and devicechange listener
   useEffect(() => {
@@ -270,12 +275,28 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
             setIsSpeaking(speaking)
           }
         },
+        userId: user?.id,
         onLocalVideoChange: (stream) => {
           setLocalVideoStream(stream)
           setIsCameraOn(!!stream)
         },
         onRemoteVideoChange: (userId, stream) => {
           setRemoteVideoStreams((prev) => {
+            const next = new Map(prev)
+            if (stream) {
+              next.set(userId, stream)
+            } else {
+              next.delete(userId)
+            }
+            return next
+          })
+        },
+        onLocalScreenChange: (stream) => {
+          setLocalScreenStream(stream)
+          setIsScreenSharing(!!stream)
+        },
+        onRemoteScreenShareChange: (userId, stream) => {
+          setRemoteScreenStreams((prev) => {
             const next = new Map(prev)
             if (stream) {
               next.set(userId, stream)
@@ -320,6 +341,9 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       setIsCameraOn(false)
       setLocalVideoStream(null)
       setRemoteVideoStreams(new Map())
+      setIsScreenSharing(false)
+      setLocalScreenStream(null)
+      setRemoteScreenStreams(new Map())
     })
   }, [onSessionReset])
 
@@ -372,6 +396,9 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     setIsCameraOn(false)
     setLocalVideoStream(null)
     setRemoteVideoStreams(new Map())
+    setIsScreenSharing(false)
+    setLocalScreenStream(null)
+    setRemoteScreenStreams(new Map())
     if (user) {
       setSpeakingUsers((prev) => {
         const next = new Set(prev)
@@ -448,6 +475,28 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  const toggleScreenShare = useCallback(async () => {
+    if (!sfuClientRef.current) return
+    const next = !isScreenSharingRef.current
+    try {
+      if (next) {
+        const stream = await sfuClientRef.current.startScreenShare()
+        setIsScreenSharing(true)
+        setLocalScreenStream(stream)
+      } else {
+        await sfuClientRef.current.stopScreenShare()
+        setIsScreenSharing(false)
+        setLocalScreenStream(null)
+      }
+    } catch (err: any) {
+      if (err?.name !== 'NotAllowedError') {
+        console.error('[VoiceContext] Failed to toggle screen share:', err)
+      }
+      setIsScreenSharing(false)
+      setLocalScreenStream(null)
+    }
+  }, [])
+
   const getChannelVoiceStatesCb = useCallback(
     (guildId: string, channelId: string) => {
       return getUsersInVoiceChannel(voiceStates, guildId, channelId)
@@ -470,12 +519,16 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         videoDevices,
         localVideoStream,
         remoteVideoStreams,
+        isScreenSharing,
+        localScreenStream,
+        remoteScreenStreams,
         joinVoice,
         leaveVoice,
         toggleMute,
         toggleDeaf,
         toggleCamera,
         setSelectedCameraId,
+        toggleScreenShare,
         getChannelVoiceStates: getChannelVoiceStatesCb,
       }}
     >

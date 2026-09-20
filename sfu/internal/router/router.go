@@ -217,6 +217,94 @@ func (r *Router) RemovePublisher(pubID string) {
 	}
 }
 
+// RemovePublisherCamera removes webcam video publisher uplinks and associated downlinks for a peer.
+func (r *Router) RemovePublisherCamera(pubID string) {
+	r.mu.Lock()
+	peerNeedsReneg := make(map[string]bool)
+
+	isCamera := func(key string, pub *PublisherUplink) bool {
+		if pub != nil {
+			return pub.PublisherID == pubID && pub.Kind == webrtc.RTPCodecTypeVideo && !pub.IsScreen &&
+				!strings.HasPrefix(pub.StreamID, "kith-screen-") && !strings.Contains(pub.TrackID, "-screen")
+		}
+		return strings.HasPrefix(key, pubID+":video:") && !strings.Contains(key, "-screen")
+	}
+
+	for key, pub := range r.publishers {
+		if isCamera(key, pub) {
+			pub.Close()
+			delete(r.publishers, key)
+		}
+	}
+
+	for subID, subMap := range r.subscribers {
+		for key, entry := range subMap {
+			if entry.downlink.PublisherID == pubID && isCamera(key, nil) {
+				entry.downlink.Close()
+				if pe, okPeer := r.peers[subID]; okPeer && pe.peer != nil {
+					_ = pe.peer.RemoveTrack(entry.sender)
+					peerNeedsReneg[subID] = true
+				}
+				delete(subMap, key)
+			}
+		}
+	}
+
+	var peersToRenegotiate []string
+	for subID := range peerNeedsReneg {
+		peersToRenegotiate = append(peersToRenegotiate, subID)
+	}
+	r.mu.Unlock()
+
+	for _, subID := range peersToRenegotiate {
+		r.TriggerRenegotiation(subID)
+	}
+}
+
+// RemovePublisherScreen removes screenshare publisher uplinks and associated downlinks for a peer.
+func (r *Router) RemovePublisherScreen(pubID string) {
+	r.mu.Lock()
+	peerNeedsReneg := make(map[string]bool)
+
+	isScreen := func(key string, pub *PublisherUplink) bool {
+		if pub != nil {
+			return pub.PublisherID == pubID && (pub.IsScreen ||
+				strings.HasPrefix(pub.StreamID, "kith-screen-") || strings.Contains(pub.TrackID, "-screen"))
+		}
+		return strings.HasPrefix(key, pubID+":") && strings.Contains(key, "-screen")
+	}
+
+	for key, pub := range r.publishers {
+		if isScreen(key, pub) {
+			pub.Close()
+			delete(r.publishers, key)
+		}
+	}
+
+	for subID, subMap := range r.subscribers {
+		for key, entry := range subMap {
+			if entry.downlink.PublisherID == pubID && (isScreen(key, nil) || strings.HasPrefix(entry.downlink.TrackLocal.StreamID(), "kith-screen-")) {
+				entry.downlink.Close()
+				if pe, okPeer := r.peers[subID]; okPeer && pe.peer != nil {
+					_ = pe.peer.RemoveTrack(entry.sender)
+					peerNeedsReneg[subID] = true
+				}
+				delete(subMap, key)
+			}
+		}
+	}
+
+	var peersToRenegotiate []string
+	for subID := range peerNeedsReneg {
+		peersToRenegotiate = append(peersToRenegotiate, subID)
+	}
+	r.mu.Unlock()
+
+	for _, subID := range peersToRenegotiate {
+		r.TriggerRenegotiation(subID)
+	}
+}
+
 // RemovePublisherKind removes publisher uplinks and subscriber downlinks of a specific kind (e.g. Video) for a peer.
 func (r *Router) RemovePublisherKind(pubID string, kind webrtc.RTPCodecType) {
 	r.mu.Lock()

@@ -13,6 +13,9 @@ export interface SfuClientOptions {
   onRemoteTrack?: (track: MediaStreamTrack, stream: MediaStream) => void
   onRemoteVideoChange?: (userId: string, stream: MediaStream | null) => void
   onLocalVideoChange?: (stream: MediaStream | null) => void
+  onRemoteScreenShareChange?: (userId: string, stream: MediaStream | null) => void
+  onLocalScreenChange?: (stream: MediaStream | null) => void
+  userId?: string
   onError?: (error: Error) => void
 }
 
@@ -57,6 +60,12 @@ export class SfuClient {
   private isCameraOn = false
   private selectedVideoDeviceId: string | null = null
   private remoteVideoStreams: Map<string, MediaStream> = new Map()
+
+  private localScreenStream: MediaStream | null = null
+  private localScreenTrack: MediaStreamTrack | null = null
+  private screenSender: RTCRtpSender | null = null
+  private isScreenSharingOn = false
+  private remoteScreenStreams: Map<string, MediaStream> = new Map()
 
   private audioElements: Map<string, HTMLAudioElement> = new Map()
   private userToTrackMap: Map<string, string> = new Map()
@@ -298,6 +307,15 @@ export class SfuClient {
         }
         break
 
+      case 'screen':
+        if (msg.user_id && typeof msg.screen === 'boolean') {
+          if (!msg.screen) {
+            this.remoteScreenStreams.delete(msg.user_id)
+            this.options.onRemoteScreenShareChange?.(msg.user_id, null)
+          }
+        }
+        break
+
       case 'peer_left':
         if (msg.user_id) {
           this.options.onSpeakingChange?.(msg.user_id, false)
@@ -305,6 +323,10 @@ export class SfuClient {
           if (this.remoteVideoStreams.has(msg.user_id)) {
             this.remoteVideoStreams.delete(msg.user_id)
             this.options.onRemoteVideoChange?.(msg.user_id, null)
+          }
+          if (this.remoteScreenStreams.has(msg.user_id)) {
+            this.remoteScreenStreams.delete(msg.user_id)
+            this.options.onRemoteScreenShareChange?.(msg.user_id, null)
           }
         }
         break
@@ -379,13 +401,33 @@ export class SfuClient {
 
     const streamId = stream?.id || ''
     const trackId = track?.id || ''
-    const publisherUid = streamId.startsWith('kith-stream-')
+    const isScreen = streamId.startsWith('kith-screen-') || trackId.includes('-screen')
+
+    const publisherUid = isScreen
+      ? streamId.startsWith('kith-screen-')
+        ? streamId.replace('kith-screen-', '')
+        : trackId.replace('kith-track-', '').replace('-screen', '')
+      : streamId.startsWith('kith-stream-')
       ? streamId.replace('kith-stream-', '')
       : trackId.startsWith('kith-track-')
       ? trackId.replace('kith-track-', '').replace('-video', '').replace('-audio', '')
       : ''
 
     if (track.kind === 'video') {
+      if (isScreen) {
+        const screenKey = publisherUid || track.id
+        this.remoteScreenStreams.set(screenKey, stream)
+        this.options.onRemoteScreenShareChange?.(screenKey, stream)
+
+        track.onended = () => {
+          if (this.remoteScreenStreams.get(screenKey) === stream) {
+            this.remoteScreenStreams.delete(screenKey)
+            this.options.onRemoteScreenShareChange?.(screenKey, null)
+          }
+        }
+        return
+      }
+
       const videoKey = publisherUid || track.id
       this.remoteVideoStreams.set(videoKey, stream)
       this.options.onRemoteVideoChange?.(videoKey, stream)
@@ -681,6 +723,109 @@ export class SfuClient {
     }
   }
 
+  public isScreenSharing(): boolean {
+    return this.isScreenSharingOn
+  }
+
+  public getLocalScreenStream(): MediaStream | null {
+    return this.localScreenStream
+  }
+
+  public getRemoteScreenStreams(): Map<string, MediaStream> {
+    return new Map(this.remoteScreenStreams)
+  }
+
+  public async startScreenShare(): Promise<MediaStream | null> {
+    if (this.isClosed) return null
+    if (this.isScreenSharingOn && this.localScreenStream) {
+      return this.localScreenStream
+    }
+
+    try {
+      if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getDisplayMedia) {
+        throw new Error('Screen sharing not supported in this environment')
+      }
+
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { frameRate: 30 },
+        audio: false,
+      })
+
+      const track = stream.getVideoTracks()[0]
+      if (!track) {
+        throw new Error('No video track found in screen capture')
+      }
+
+      // Instruct WebRTC encoder to prioritize resolution & text sharpness over frame rate
+      if ('contentHint' in track) {
+        track.contentHint = 'detail'
+      }
+
+      // Handle user clicking the native browser "Stop sharing" button
+      track.onended = () => {
+        this.stopScreenShare().catch((err) => {
+          console.warn('[SfuClient] Error stopping screen share on track end:', err)
+        })
+      }
+
+      if (this.localScreenTrack) {
+        this.localScreenTrack.stop()
+      }
+
+      this.localScreenTrack = track
+      this.localScreenStream = stream
+      this.isScreenSharingOn = true
+
+      if (this.pc) {
+        if (this.screenSender) {
+          await this.screenSender.replaceTrack(track)
+        } else {
+          this.screenSender = this.pc.addTrack(track, stream)
+          await this.renegotiate()
+        }
+      }
+
+      this.sendWsMessage({ type: 'screen', screen: true })
+      this.options.onLocalScreenChange?.(this.localScreenStream)
+      return this.localScreenStream
+    } catch (err: any) {
+      if (err.name === 'NotAllowedError') {
+        console.log('[SfuClient] Screen share permission was denied or dismissed by user')
+      } else {
+        console.error('[SfuClient] Failed to start screen share:', err)
+        this.options.onError?.(err instanceof Error ? err : new Error(String(err)))
+      }
+      this.isScreenSharingOn = false
+      throw err
+    }
+  }
+
+  public async stopScreenShare(): Promise<void> {
+    if (!this.isScreenSharingOn && !this.localScreenStream && !this.localScreenTrack) {
+      return
+    }
+
+    if (this.localScreenTrack) {
+      this.localScreenTrack.stop()
+      this.localScreenTrack = null
+    }
+    this.localScreenStream = null
+    this.isScreenSharingOn = false
+
+    if (this.pc && this.screenSender) {
+      try {
+        this.pc.removeTrack(this.screenSender)
+      } catch (err) {
+        console.warn('[SfuClient] Failed to remove screen sender:', err)
+      }
+      this.screenSender = null
+      await this.renegotiate()
+    }
+
+    this.sendWsMessage({ type: 'screen', screen: false })
+    this.options.onLocalScreenChange?.(null)
+  }
+
   private async renegotiate(): Promise<void> {
     if (!this.pc || this.isClosed || !this.ws || this.ws.readyState !== WebSocket.OPEN) return
 
@@ -700,9 +845,17 @@ export class SfuClient {
     const offer = await this.pc.createOffer()
     await this.pc.setLocalDescription(offer)
 
+    let sdp = offer.sdp || ''
+    if (this.localScreenTrack) {
+      const trackId = this.localScreenTrack.id
+      const uid = this.options.userId || 'self'
+      const regex = new RegExp(`a=msid:\\S+\\s+(${trackId})`, 'g')
+      sdp = sdp.replace(regex, `a=msid:kith-screen-${uid} kith-track-${uid}-screen`)
+    }
+
     this.sendWsMessage({
       type: 'offer',
-      sdp: offer.sdp,
+      sdp: sdp,
     })
   }
 
@@ -745,6 +898,15 @@ export class SfuClient {
     this.videoSender = null
     this.isCameraOn = false
     this.remoteVideoStreams.clear()
+
+    if (this.localScreenTrack) {
+      this.localScreenTrack.stop()
+      this.localScreenTrack = null
+    }
+    this.localScreenStream = null
+    this.screenSender = null
+    this.isScreenSharingOn = false
+    this.remoteScreenStreams.clear()
 
     for (const audioEl of this.audioElements.values()) {
       audioEl.srcObject = null

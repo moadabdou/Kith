@@ -22,12 +22,16 @@ export interface VoiceContextValue {
   videoDevices: MediaDeviceInfo[]
   localVideoStream: MediaStream | null
   remoteVideoStreams: Map<string, MediaStream>
+  isScreenSharing: boolean
+  localScreenStream: MediaStream | null
+  remoteScreenStreams: Map<string, MediaStream>
   joinVoice: (guildId: string, channelId: string) => void
   leaveVoice: () => void
   toggleMute: () => void
   toggleDeaf: () => void
   toggleCamera: () => Promise<void>
   setSelectedCameraId: (deviceId: string) => Promise<void>
+  toggleScreenShare: () => Promise<void>
   getChannelVoiceStates: (guildId: string, channelId: string) => VoiceState[]
 }
 

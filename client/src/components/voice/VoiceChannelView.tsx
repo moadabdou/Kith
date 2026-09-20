@@ -4,6 +4,8 @@ import {
   Headphones,
   Mic,
   MicOff,
+  Monitor,
+  MonitorOff,
   PhoneOff,
   Radio,
   Users,
@@ -16,6 +18,7 @@ import { useAuth } from '../../context/useAuth'
 import { useVoice } from '../../context/useVoice'
 import type { Channel, Guild, Member } from '../../types'
 import { VideoGrid } from './VideoGrid'
+import { ScreenShareView } from './ScreenShareView'
 
 interface VoiceChannelViewProps {
   currentGuild: Guild | null
@@ -42,6 +45,10 @@ export function VoiceChannelView({ currentGuild, channel }: VoiceChannelViewProp
     remoteVideoStreams,
     toggleCamera,
     setSelectedCameraId,
+    isScreenSharing,
+    localScreenStream,
+    remoteScreenStreams,
+    toggleScreenShare,
   } = useVoice()
 
   const [members, setMembers] = useState<Map<string, Member>>(new Map())
@@ -117,6 +124,33 @@ export function VoiceChannelView({ currentGuild, channel }: VoiceChannelViewProp
     }
   })
 
+  // Determine if there's an active screenshare to display
+  const activeScreenShareUserId = isScreenSharing
+    ? user?.id || null
+    : remoteScreenStreams.size > 0
+    ? Array.from(remoteScreenStreams.keys())[0]
+    : null
+
+  const activeScreenShareStream = activeScreenShareUserId
+    ? isScreenSharing && user?.id === activeScreenShareUserId
+      ? localScreenStream
+      : remoteScreenStreams.get(activeScreenShareUserId) || null
+    : null
+
+  const screenPresenter = activeScreenShareUserId && activeScreenShareStream
+    ? {
+        userId: activeScreenShareUserId,
+        displayName:
+          user?.id === activeScreenShareUserId
+            ? members.get(activeScreenShareUserId)?.nick || user?.username || 'You'
+            : members.get(activeScreenShareUserId)?.nick ||
+              members.get(activeScreenShareUserId)?.user?.username ||
+              `User #${activeScreenShareUserId.slice(-4)}`,
+        isSelf: user?.id === activeScreenShareUserId,
+        stream: activeScreenShareStream,
+      }
+    : null
+
   return (
     <div className="voice-channel-view">
       {/* Top Header */}
@@ -151,7 +185,7 @@ export function VoiceChannelView({ currentGuild, channel }: VoiceChannelViewProp
         </div>
       </div>
 
-      {/* Main Stage Grid or Empty Stage */}
+      {/* Main Stage: Presentation Mode or Grid */}
       <div className="voice-stage-body">
         {channelMembers.length === 0 ? (
           <div className="voice-empty-stage">
@@ -173,6 +207,12 @@ export function VoiceChannelView({ currentGuild, channel }: VoiceChannelViewProp
               </button>
             )}
           </div>
+        ) : screenPresenter ? (
+          <ScreenShareView
+            presenter={screenPresenter}
+            participants={participants}
+            onStopScreenShare={screenPresenter.isSelf ? toggleScreenShare : undefined}
+          />
         ) : (
           <VideoGrid participants={participants} />
         )}
@@ -251,6 +291,16 @@ export function VoiceChannelView({ currentGuild, channel }: VoiceChannelViewProp
                 </div>
               )}
             </div>
+
+            {/* Screenshare Toggle */}
+            <button
+              type="button"
+              onClick={toggleScreenShare}
+              className={`voice-dock-btn ${isScreenSharing ? 'active-screen' : ''}`}
+              title={isScreenSharing ? 'Stop Sharing Screen' : 'Share Screen'}
+            >
+              {isScreenSharing ? <MonitorOff size={20} /> : <Monitor size={20} />}
+            </button>
 
             <button
               type="button"

@@ -666,4 +666,73 @@ func TestRouter_RTCPFeedbackForwarding(t *testing.T) {
 	}
 }
 
+func TestRouter_ScreenshareRoutingAndIndependentTeardown(t *testing.T) {
+	r := NewRouter("chan_screenshare")
+	defer r.Close()
+
+	camCtx, camCancel := context.WithCancel(context.Background())
+	defer camCancel()
+	screenCtx, screenCancel := context.WithCancel(context.Background())
+	defer screenCancel()
+
+	// Uplink 1: Camera
+	cameraUplink := &PublisherUplink{
+		PublisherID: "user_presenter",
+		Kind:        webrtc.RTPCodecTypeVideo,
+		TrackID:     "kith-track-user_presenter-video",
+		StreamID:    "kith-stream-user_presenter",
+		TrackKey:    "user_presenter:video:camera1",
+		IsScreen:    false,
+		subscribers: make(map[string]*SubscriberDownlink),
+		ctx:         camCtx,
+		cancel:      camCancel,
+	}
+	r.publishers[cameraUplink.TrackKey] = cameraUplink
+
+	// Uplink 2: Screenshare
+	screenUplink := &PublisherUplink{
+		PublisherID: "user_presenter",
+		Kind:        webrtc.RTPCodecTypeVideo,
+		TrackID:     "kith-track-user_presenter-screen",
+		StreamID:    "kith-screen-user_presenter",
+		TrackKey:    "user_presenter:video:screen1",
+		IsScreen:    true,
+		subscribers: make(map[string]*SubscriberDownlink),
+		ctx:         screenCtx,
+		cancel:      screenCancel,
+	}
+	r.publishers[screenUplink.TrackKey] = screenUplink
+
+	if !screenUplink.IsScreen {
+		t.Errorf("expected screenUplink.IsScreen to be true")
+	}
+	if screenUplink.DownlinkStreamID("user_presenter") != "kith-screen-user_presenter" {
+		t.Errorf("expected DownlinkStreamID to be kith-screen-user_presenter, got %s", screenUplink.DownlinkStreamID("user_presenter"))
+	}
+	if screenUplink.DownlinkTrackID("user_presenter") != "kith-track-user_presenter-screen" {
+		t.Errorf("expected DownlinkTrackID to be kith-track-user_presenter-screen, got %s", screenUplink.DownlinkTrackID("user_presenter"))
+	}
+
+	// Remove camera only
+	r.RemovePublisherCamera("user_presenter")
+
+	r.mu.RLock()
+	if _, ok := r.publishers[cameraUplink.TrackKey]; ok {
+		t.Errorf("expected camera uplink to be removed")
+	}
+	if _, ok := r.publishers[screenUplink.TrackKey]; !ok {
+		t.Errorf("expected screen uplink to remain active after camera removal")
+	}
+	r.mu.RUnlock()
+
+	// Remove screenshare
+	r.RemovePublisherScreen("user_presenter")
+
+	r.mu.RLock()
+	if _, ok := r.publishers[screenUplink.TrackKey]; ok {
+		t.Errorf("expected screen uplink to be removed")
+	}
+	r.mu.RUnlock()
+}
+
 

@@ -498,18 +498,39 @@ func TestRouter_AudioAndVideoMultiplexing(t *testing.T) {
 	r.publishers["pub_1:video:track_v"] = videoUplink
 	r.mu.Unlock()
 
-	// Subscribe sub_av to pub_1's existing tracks
+	// Declare the video kind (as the client's video:true signal would):
+	// dormant video uplinks are never fanned out.
+	r.SetVideoKind("pub_1", VideoKindCamera)
+
+	// Subscribe sub_av to pub_1's existing tracks. The kind declaration
+	// above already emitted one offer (video); the audio downlink follows in
+	// a second offer once signaling returns to stable — complete both with
+	// a far-end peer.
+	clientSub, err := peer.NewPeer(api, webrtc.Configuration{}, "client_sub", "sess_client_sub", "chan_av", "guild_av")
+	if err != nil {
+		t.Fatalf("failed to create client sub peer: %v", err)
+	}
+	defer clientSub.Close()
+	go func() {
+		for range clientSub.Candidates {
+		}
+	}()
+
+	// Subscribe sub_av to pub_1's existing tracks (audio joins the
+	// already-declared video downlink).
 	r.SubscribeToExistingPublishers("sub_av")
 
-	// Wait for renegotiation offer on subscriber
 	var offer webrtc.SessionDescription
-	select {
-	case offer = <-renegOffers:
-	case <-time.After(1 * time.Second):
-		t.Fatalf("timed out waiting for renegotiation offer on subscriber")
+	for i := 0; i < 2; i++ {
+		select {
+		case offer = <-renegOffers:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for renegotiation offer %d on subscriber", i+1)
+		}
+		completeOffer(t, subPeer, clientSub, offer)
 	}
 
-	// Verify that offer contains BOTH audio and video media sections
+	// Verify that the latest offer contains BOTH audio and video sections.
 	if !strings.Contains(offer.SDP, "m=audio") {
 		t.Errorf("expected offer SDP to contain m=audio section, got:\n%s", offer.SDP)
 	}
@@ -735,4 +756,230 @@ func TestRouter_ScreenshareRoutingAndIndependentTeardown(t *testing.T) {
 	r.mu.RUnlock()
 }
 
+// IsScreen-labeled uplink (S3/R7): a screen uplink with browser-random IDs
+// (no SDP marker anywhere, labeled purely by declaration) must survive
+// RemovePublisherCamera, on both the publisher map and subscriber downlinks.
+func TestRouter_Phase0_RewriteMissScreenSurvivesCameraRemoval(t *testing.T) {
+	r := NewRouter("chan_phase0_rewritemiss")
+	defer r.Close()
 
+	camCtx, camCancel := context.WithCancel(context.Background())
+	defer camCancel()
+	screenCtx, screenCancel := context.WithCancel(context.Background())
+	defer screenCancel()
+
+	cameraUplink := &PublisherUplink{
+		PublisherID: "alice",
+		Kind:        webrtc.RTPCodecTypeVideo,
+		TrackID:     "random-cam-track-id",
+		StreamID:    "random-cam-stream-id",
+		TrackKey:    "alice:video:random-cam-track-id",
+		IsScreen:    false,
+		subscribers: make(map[string]*SubscriberDownlink),
+		ctx:         camCtx,
+		cancel:      camCancel,
+	}
+	r.publishers[cameraUplink.TrackKey] = cameraUplink
+
+	// Rewrite missed: key has no "-screen" marker anywhere, but struct says
+	// screen (simulates SFU learning screen-ness via explicit screen:true
+	// signal even though the msid rewrite did not survive on the key).
+	screenUplink := &PublisherUplink{
+		PublisherID: "alice",
+		Kind:        webrtc.RTPCodecTypeVideo,
+		TrackID:     "xyz123",
+		StreamID:    "xyz-stream",
+		TrackKey:    "alice:video:xyz123",
+		IsScreen:    true,
+		subscribers: make(map[string]*SubscriberDownlink),
+		ctx:         screenCtx,
+		cancel:      screenCancel,
+	}
+	r.publishers[screenUplink.TrackKey] = screenUplink
+
+	camTrack, _ := webrtc.NewTrackLocalStaticRTP(
+		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8}, "cam-downlink", "cam-stream",
+	)
+	screenTrack, _ := webrtc.NewTrackLocalStaticRTP(
+		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8}, "screen-downlink", "screen-stream",
+	)
+	r.subscribers["bob"] = map[string]*subscriberEntry{
+		cameraUplink.TrackKey: {downlink: NewSubscriberDownlink("bob", "alice", camTrack, nil), sender: nil},
+		screenUplink.TrackKey: {downlink: NewSubscriberDownlink("bob", "alice", screenTrack, nil), sender: nil},
+	}
+
+	r.RemovePublisherCamera("alice")
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if _, ok := r.publishers[screenUplink.TrackKey]; !ok {
+		t.Errorf("expected rewrite-miss screen uplink to survive RemovePublisherCamera")
+	}
+	if _, ok := r.subscribers["bob"][screenUplink.TrackKey]; !ok {
+		t.Errorf("expected rewrite-miss screen downlink for bob to survive RemovePublisherCamera")
+	}
+	if _, ok := r.publishers[cameraUplink.TrackKey]; ok {
+		t.Errorf("expected camera uplink to be removed")
+	}
+}
+
+// Phase0: dead uplink fan-out (S5/R5, TDD — must FAIL before the fix).
+// A closed (dead) uplink must never be fanned out by
+// SubscribeToExistingPublishers.
+func TestRouter_Phase0_DeadUplinkNeverFannedOut(t *testing.T) {
+	api, err := peer.CreateAPI(peer.Config{})
+	if err != nil {
+		t.Fatalf("failed to create api: %v", err)
+	}
+	subPeer, err := peer.NewPeer(api, webrtc.Configuration{}, "bob", "sess_bob", "chan_phase0_corpse", "guild")
+	if err != nil {
+		t.Fatalf("failed to create sub peer: %v", err)
+	}
+	defer subPeer.Close()
+	go func() {
+		for range subPeer.Candidates {
+		}
+	}()
+
+	r := NewRouter("chan_phase0_corpse")
+	defer r.Close()
+	r.AddPeer(subPeer, func(offer webrtc.SessionDescription) {})
+
+	dead := NewPublisherUplink("alice", nil, nil)
+	dead.Kind = webrtc.RTPCodecTypeVideo
+	dead.CodecCap = webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8}
+	dead.TrackKey = "alice:video:dead"
+	dead.Close() // simulate readingLoop death
+	r.publishers[dead.TrackKey] = dead
+
+	r.SubscribeToExistingPublishers("bob")
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if _, ok := r.subscribers["bob"][dead.TrackKey]; ok {
+		t.Errorf("expected dead uplink to never be fanned out to subscribers")
+	}
+}
+
+// Negotiate-once kind flag: a single uplink with browser-random IDs is
+// labeled purely by the declared kind (last-writer-wins). SetVideoKind
+// relabels the live uplink and rebuilds downlinks under kind-correct IDs
+// without touching the uplink object (same RTP stream, new pixels);
+// kind none tears down downlinks but retains the uplink for stream reuse.
+func TestRouter_SetVideoKindRelabelsSingleUplink(t *testing.T) {
+	api, err := peer.CreateAPI(peer.Config{})
+	if err != nil {
+		t.Fatalf("failed to create api: %v", err)
+	}
+	bobPeer, err := peer.NewPeer(api, webrtc.Configuration{}, "bob", "sess_bob_kind", "chan_kind", "guild")
+	if err != nil {
+		t.Fatalf("failed to create bob peer: %v", err)
+	}
+	defer bobPeer.Close()
+	go func() {
+		for range bobPeer.Candidates {
+		}
+	}()
+
+	r := NewRouter("chan_kind")
+	defer r.Close()
+	reneg := make(chan webrtc.SessionDescription, 8)
+	r.AddPeer(bobPeer, func(offer webrtc.SessionDescription) { reneg <- offer })
+
+	// Single uplink, browser-random IDs (negotiate-once shape): no msid
+	// carries kind information anymore.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	uplink := &PublisherUplink{
+		PublisherID: "alice",
+		Kind:        webrtc.RTPCodecTypeVideo,
+		TrackID:     "a1b2c3d4-e5f6-4789-abcd-ef0123456789",
+		StreamID:    "f7a2b3c4-d5e6-4f78-9012-345678abcdef",
+		TrackKey:    "alice:video:a1b2c3d4-e5f6-4789-abcd-ef0123456789",
+		CodecCap:    webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8},
+		IsScreen:    false,
+		subscribers: make(map[string]*SubscriberDownlink),
+		ctx:         ctx,
+		cancel:      cancel,
+	}
+	r.publishers[uplink.TrackKey] = uplink
+
+	drainReneg := func() {
+		for {
+			select {
+			case <-reneg:
+			case <-time.After(200 * time.Millisecond):
+				return
+			}
+		}
+	}
+	downlinkIDs := func() []string {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
+		var ids []string
+		for _, entry := range r.subscribers["bob"] {
+			if entry.downlink.TrackLocal != nil {
+				ids = append(ids, entry.downlink.TrackLocal.ID())
+			}
+		}
+		return ids
+	}
+
+	// Declare camera: cam downlink appears under the stable cam ID.
+	r.SetVideoKind("alice", VideoKindCamera)
+	if got := r.VideoKindOf("alice"); got != VideoKindCamera {
+		t.Fatalf("VideoKindOf = %v, want camera", got)
+	}
+	if uplink.IsScreen {
+		t.Fatalf("uplink labeled screen after camera declaration")
+	}
+	if uplink.DownlinkTrackID("alice") != "kith-track-alice-video" {
+		t.Fatalf("cam downlink id = %q", uplink.DownlinkTrackID("alice"))
+	}
+	ids := downlinkIDs()
+	if len(ids) != 1 || ids[0] != "kith-track-alice-video" {
+		t.Fatalf("bob cam downlinks = %v, want [kith-track-alice-video]", ids)
+	}
+
+	// Switch to screen: same uplink object relabeled, cam downlink torn
+	// down, screen downlink built.
+	r.SetVideoKind("alice", VideoKindScreen)
+	if !uplink.IsScreen {
+		t.Fatalf("uplink not relabeled screen after screen declaration")
+	}
+	if _, ok := r.publishers[uplink.TrackKey]; !ok {
+		t.Fatalf("uplink object dropped on relabel (stream reuse broken)")
+	}
+	ids = downlinkIDs()
+	if len(ids) != 1 || ids[0] != "kith-track-alice-screen" {
+		t.Fatalf("bob screen downlinks = %v, want [kith-track-alice-screen]", ids)
+	}
+
+	// Duplicate declaration is a no-op (no churn).
+	drainReneg()
+	r.SetVideoKind("alice", VideoKindScreen)
+	select {
+	case <-reneg:
+		t.Fatalf("duplicate kind declaration triggered renegotiation")
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	// Kind none: downlinks torn down, uplink retained for reuse.
+	r.SetVideoKind("alice", VideoKindNone)
+	if _, ok := r.publishers[uplink.TrackKey]; !ok {
+		t.Fatalf("uplink object dropped on kind none (stream reuse broken)")
+	}
+	if ids := downlinkIDs(); len(ids) != 0 {
+		t.Fatalf("bob downlinks after none = %v, want []", ids)
+	}
+
+	// Re-declare camera: downlinks rebuilt on the retained uplink.
+	r.SetVideoKind("alice", VideoKindCamera)
+	if uplink.IsScreen {
+		t.Fatalf("uplink still labeled screen after camera re-declaration")
+	}
+	ids = downlinkIDs()
+	if len(ids) != 1 || ids[0] != "kith-track-alice-video" {
+		t.Fatalf("bob cam downlinks after re-declare = %v", ids)
+	}
+}

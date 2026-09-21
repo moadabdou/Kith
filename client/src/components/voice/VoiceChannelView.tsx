@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ChevronUp,
   Headphones,
@@ -18,7 +18,12 @@ import { useAuth } from '../../context/useAuth'
 import { useVoice } from '../../context/useVoice'
 import type { Channel, Guild, Member } from '../../types'
 import { VideoGrid } from './VideoGrid'
-import { ScreenShareView } from './ScreenShareView'
+import { SpotlightView } from './SpotlightView'
+import {
+  isSpotlightTargetValid,
+  resolveSpotlightStream,
+  spotlightStorageKey,
+} from '../../lib/spotlight'
 
 interface VoiceChannelViewProps {
   currentGuild: Guild | null
@@ -89,9 +94,10 @@ export function VoiceChannelView({ currentGuild, channel }: VoiceChannelViewProp
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [showDeviceMenu])
 
-  const channelMembers = currentGuild
-    ? getChannelVoiceStates(currentGuild.id, channel.id)
-    : []
+  const channelMembers = useMemo(
+    () => (currentGuild ? getChannelVoiceStates(currentGuild.id, channel.id) : []),
+    [currentGuild, channel.id, getChannelVoiceStates]
+  )
 
   const isConnectedToThisChannel =
     Boolean(currentGuild) &&
@@ -104,6 +110,41 @@ export function VoiceChannelView({ currentGuild, channel }: VoiceChannelViewProp
     }
   }
 
+  // Manual spotlight: explicit per-channel viewer choice, persisted.
+  // Nothing here activates automatically — not on share start, not for the
+  // sharer, not for viewers.
+  const spotlightKey = currentGuild ? spotlightStorageKey(currentGuild.id, channel.id) : null
+  const [spotlightUserId, setSpotlightUserId] = useState<string | null>(() => {
+    try {
+      return spotlightKey ? localStorage.getItem(spotlightKey) : null
+    } catch {
+      return null
+    }
+  })
+
+  // Reload the stored choice when switching channels.
+  useEffect(() => {
+    try {
+      setSpotlightUserId(spotlightKey ? localStorage.getItem(spotlightKey) : null)
+    } catch {
+      setSpotlightUserId(null)
+    }
+  }, [spotlightKey])
+
+  const selectSpotlight = useCallback(
+    (targetUserId: string | null) => {
+      setSpotlightUserId(targetUserId)
+      try {
+        if (!spotlightKey) return
+        if (targetUserId) localStorage.setItem(spotlightKey, targetUserId)
+        else localStorage.removeItem(spotlightKey)
+      } catch {
+        // Storage unavailable (private mode) — session-only spotlight.
+      }
+    },
+    [spotlightKey]
+  )
+
   const participants = channelMembers.map((vs) => {
     const isSelf = user?.id === vs.user_id
     const member = members.get(vs.user_id)
@@ -111,7 +152,13 @@ export function VoiceChannelView({ currentGuild, channel }: VoiceChannelViewProp
       ? member?.nick || user?.username || 'You'
       : member?.nick || member?.user?.username || `User #${vs.user_id.slice(-4)}`
     const speaking = speakingUsers.has(vs.user_id)
-    const stream = isSelf ? localVideoStream : (remoteVideoStreams.get(vs.user_id) || null)
+    const sharingScreen = isSelf ? isScreenSharing : remoteScreenStreams.has(vs.user_id)
+    // Grid tiles show whatever video source is live — screen preferred, cam
+    // fallback (single slot guarantees at most one). Screen content must not
+    // be mirrored.
+    const screenStream = isSelf ? localScreenStream : remoteScreenStreams.get(vs.user_id) || null
+    const camStream = isSelf ? localVideoStream : remoteVideoStreams.get(vs.user_id) || null
+    const stream = screenStream ?? camStream
 
     return {
       userId: vs.user_id,
@@ -121,34 +168,43 @@ export function VoiceChannelView({ currentGuild, channel }: VoiceChannelViewProp
       speaking,
       selfMute: vs.self_mute,
       selfDeaf: vs.self_deaf,
+      isSharingScreen: sharingScreen,
+      isScreenContent: !!screenStream,
+      onSpotlight: () => selectSpotlight(vs.user_id),
     }
   })
 
-  // Determine if there's an active screenshare to display
-  const activeScreenShareUserId = isScreenSharing
-    ? user?.id || null
-    : remoteScreenStreams.size > 0
-    ? Array.from(remoteScreenStreams.keys())[0]
-    : null
+  // A persisted target is valid only while that user is in the channel.
+  useEffect(() => {
+    if (
+      spotlightUserId &&
+      !isSpotlightTargetValid(spotlightUserId, new Set(channelMembers.map((vs) => vs.user_id)))
+    ) {
+      selectSpotlight(null)
+    }
+  }, [channelMembers, spotlightUserId, selectSpotlight])
 
-  const activeScreenShareStream = activeScreenShareUserId
-    ? isScreenSharing && user?.id === activeScreenShareUserId
-      ? localScreenStream
-      : remoteScreenStreams.get(activeScreenShareUserId) || null
-    : null
-
-  const screenPresenter = activeScreenShareUserId && activeScreenShareStream
-    ? {
-        userId: activeScreenShareUserId,
-        displayName:
-          user?.id === activeScreenShareUserId
-            ? members.get(activeScreenShareUserId)?.nick || user?.username || 'You'
-            : members.get(activeScreenShareUserId)?.nick ||
-              members.get(activeScreenShareUserId)?.user?.username ||
-              `User #${activeScreenShareUserId.slice(-4)}`,
-        isSelf: user?.id === activeScreenShareUserId,
-        stream: activeScreenShareStream,
-      }
+  // Resolve the spotlighted user to a live stream every render (screen
+  // preferred, cam fallback, null → avatar). Never snapshot the stream.
+  const spotlightBase = spotlightUserId ? (participants.find((p) => p.userId === spotlightUserId) ?? null) : null
+  const spotlight = spotlightBase
+    ? (() => {
+        const resolved = resolveSpotlightStream({
+          isSelf: spotlightBase.isSelf,
+          userId: spotlightBase.userId,
+          localVideoStream,
+          localScreenStream,
+          remoteVideoStreams,
+          remoteScreenStreams,
+        })
+        return {
+          userId: spotlightBase.userId,
+          displayName: spotlightBase.displayName,
+          isSelf: spotlightBase.isSelf,
+          stream: resolved.stream,
+          kind: resolved.kind,
+        }
+      })()
     : null
 
   return (
@@ -207,11 +263,14 @@ export function VoiceChannelView({ currentGuild, channel }: VoiceChannelViewProp
               </button>
             )}
           </div>
-        ) : screenPresenter ? (
-          <ScreenShareView
-            presenter={screenPresenter}
+        ) : spotlight ? (
+          <SpotlightView
+            spotlight={spotlight}
             participants={participants}
-            onStopScreenShare={screenPresenter.isSelf ? toggleScreenShare : undefined}
+            onBackToGrid={() => selectSpotlight(null)}
+            onStopScreenShare={
+              spotlight.isSelf && spotlight.kind === 'screen' ? toggleScreenShare : undefined
+            }
           />
         ) : (
           <VideoGrid participants={participants} />

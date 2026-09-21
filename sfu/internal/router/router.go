@@ -37,7 +37,25 @@ type Router struct {
 
 	// Downlinks per subscriber: subUserID -> map[pubUserID]*subscriberEntry
 	subscribers map[string]map[string]*subscriberEntry
+
+	// videoKind: pubID -> declared kind of the user's single video uplink.
+	// Negotiate-once contract: the client toggles cam/screen via
+	// video/screen signals instead of renegotiating, so the SFU trusts the
+	// last-writer-wins signal here — never SDP msids — for labeling.
+	videoKind map[string]VideoKind
 }
+
+// VideoKind is the declared kind of a user's single video uplink.
+type VideoKind int
+
+const (
+	// VideoKindNone means no video is currently published (or unknown).
+	VideoKindNone VideoKind = iota
+	// VideoKindCamera means the uplink carries webcam video.
+	VideoKindCamera
+	// VideoKindScreen means the uplink carries a screen share.
+	VideoKindScreen
+)
 
 // NewRouter creates a new audio track router for a room.
 func NewRouter(roomID string) *Router {
@@ -46,7 +64,24 @@ func NewRouter(roomID string) *Router {
 		publishers:  make(map[string]*PublisherUplink),
 		peers:       make(map[string]*peerEntry),
 		subscribers: make(map[string]map[string]*subscriberEntry),
+		videoKind:   make(map[string]VideoKind),
 	}
+}
+
+// HasPeer reports whether userID is currently registered in the room.
+func (r *Router) HasPeer(userID string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	_, ok := r.peers[userID]
+	return ok
+}
+
+// VideoKindOf returns the currently declared video kind for a publisher.
+// Test/debug helper; unknown users report VideoKindNone.
+func (r *Router) VideoKindOf(pubID string) VideoKind {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.videoKind[pubID]
 }
 
 // trackKey returns a unique key for an ingress track: pubID:kind:trackID, or pubID if remote is nil.
@@ -147,6 +182,9 @@ func (r *Router) RemovePeer(userID string) {
 }
 
 // AddPublisher sets up a new publisher uplink (audio or video) and creates subscriber downlinks for all other peers.
+// Video uplinks are labeled from the declared per-user kind flag (see
+// SetVideoKind) — never from SDP msids, which are browser-random under the
+// negotiate-once contract.
 func (r *Router) AddPublisher(pubID string, trackRemote *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
 	r.mu.Lock()
 	tKey := trackKey(pubID, trackRemote)
@@ -157,17 +195,103 @@ func (r *Router) AddPublisher(pubID string, trackRemote *webrtc.TrackRemote, rec
 
 	uplink := NewPublisherUplink(pubID, trackRemote, receiver)
 	uplink.TrackKey = tKey
+	if uplink.Kind == webrtc.RTPCodecTypeVideo {
+		uplink.IsScreen = r.videoKind[pubID] == VideoKindScreen
+	}
+	uplink.SetOnDeath(r.onUplinkDeath)
+
 	if pe, ok := r.peers[pubID]; ok && pe.peer != nil {
 		uplink.SetRTCPWriter(pe.peer.WriteRTCP)
 	}
 	r.publishers[tKey] = uplink
 
+	// A dormant video uplink (kind none: signal hasn't arrived yet, or the
+	// user stopped sharing) gets no downlinks; SetVideoKind builds them when
+	// the kind is declared.
+	if uplink.Kind == webrtc.RTPCodecTypeVideo && r.videoKind[pubID] == VideoKindNone {
+		r.mu.Unlock()
+		return
+	}
+
+	peerNeedsReneg := make(map[string]bool)
+	r.subscribeUplinkLocked(uplink, tKey, peerNeedsReneg)
+	var peersToRenegotiate []string
+	for subID := range peerNeedsReneg {
+		peersToRenegotiate = append(peersToRenegotiate, subID)
+	}
+	r.mu.Unlock()
+
+	for _, subID := range peersToRenegotiate {
+		r.TriggerRenegotiation(subID)
+	}
+}
+
+// SetVideoKind declares the kind of pubID's single video uplink
+// (last-writer-wins) and converges forwarding to match:
+//   - kind none: tear down video downlinks, keep the uplink object — the
+//     same RTP stream may carry the next source after a switch (no OnTrack
+//     refires on replaceTrack).
+//   - kind camera/screen: relabel the existing uplink if needed and
+//     (re)build downlinks under the kind-correct IDs; a not-yet-arrived
+//     uplink is labeled when OnTrack delivers it.
+//
+// Caller must NOT hold r.mu (triggers renegotiation after unlock).
+func (r *Router) SetVideoKind(pubID string, kind VideoKind) {
+	r.mu.Lock()
+	if r.videoKind == nil {
+		r.videoKind = make(map[string]VideoKind)
+	}
+	prev := r.videoKind[pubID]
+	r.videoKind[pubID] = kind
+	if prev == kind {
+		r.mu.Unlock()
+		return
+	}
+
+	peerNeedsReneg := make(map[string]bool)
+	for key, pub := range r.publishers {
+		if pub == nil || pub.PublisherID != pubID || pub.Kind != webrtc.RTPCodecTypeVideo {
+			continue
+		}
+		if kind == VideoKindNone {
+			r.removeDownlinksLocked(key, peerNeedsReneg)
+			continue
+		}
+		wantScreen := kind == VideoKindScreen
+		if pub.IsScreen == wantScreen {
+			if r.hasDownlinksLocked(key) {
+				continue
+			}
+		} else {
+			pub.IsScreen = wantScreen
+			slog.Info("Relabeled video uplink kind", "pub_id", pubID, "screen", wantScreen, "key", key)
+			r.removeDownlinksLocked(key, peerNeedsReneg)
+		}
+		r.subscribeUplinkLocked(pub, key, peerNeedsReneg)
+	}
+	var peersToRenegotiate []string
+	for subID := range peerNeedsReneg {
+		peersToRenegotiate = append(peersToRenegotiate, subID)
+	}
+	r.mu.Unlock()
+
+	for _, subID := range peersToRenegotiate {
+		r.TriggerRenegotiation(subID)
+	}
+}
+
+// subscribeUplinkLocked fans an uplink out to every other registered peer.
+// Caller MUST hold r.mu; renegotiation is triggered by the caller after unlock.
+func (r *Router) subscribeUplinkLocked(uplink *PublisherUplink, tKey string, peerNeedsReneg map[string]bool) {
+	pubID := uplink.PublisherID
 	downlinkTrackID := uplink.DownlinkTrackID(pubID)
 	downlinkStreamID := uplink.DownlinkStreamID(pubID)
 
-	var peersToRenegotiate []string
 	for subID, pe := range r.peers {
 		if subID == pubID || pe.peer == nil {
+			continue
+		}
+		if r.subscribers[subID] != nil && r.subscribers[subID][tKey] != nil {
 			continue
 		}
 
@@ -188,6 +312,7 @@ func (r *Router) AddPublisher(pubID string, trackRemote *webrtc.TrackRemote, rec
 		}
 
 		downlink := NewSubscriberDownlink(subID, pubID, trackLocal, sender)
+		downlink.SetScreen(uplink.IsScreen)
 		uplink.AddSubscriber(downlink)
 
 		if r.subscribers[subID] == nil {
@@ -197,13 +322,36 @@ func (r *Router) AddPublisher(pubID string, trackRemote *webrtc.TrackRemote, rec
 			downlink: downlink,
 			sender:   sender,
 		}
-		peersToRenegotiate = append(peersToRenegotiate, subID)
+		peerNeedsReneg[subID] = true
 	}
-	r.mu.Unlock()
+}
 
-	for _, subID := range peersToRenegotiate {
-		r.TriggerRenegotiation(subID)
+// removeDownlinksLocked closes every subscriber downlink filed under tKey and
+// removes the sender tracks. Caller MUST hold r.mu.
+func (r *Router) removeDownlinksLocked(tKey string, peerNeedsReneg map[string]bool) {
+	for subID, subMap := range r.subscribers {
+		entry, ok := subMap[tKey]
+		if !ok {
+			continue
+		}
+		entry.downlink.Close()
+		if pe, okPeer := r.peers[subID]; okPeer && pe.peer != nil {
+			_ = pe.peer.RemoveTrack(entry.sender)
+			peerNeedsReneg[subID] = true
+		}
+		delete(subMap, tKey)
 	}
+}
+
+// hasDownlinksLocked reports whether any subscriber downlink exists for tKey.
+// Caller MUST hold r.mu.
+func (r *Router) hasDownlinksLocked(tKey string) bool {
+	for _, subMap := range r.subscribers {
+		if _, ok := subMap[tKey]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // RemovePublisher removes an active publisher and tears down associated downlinks.
@@ -218,36 +366,22 @@ func (r *Router) RemovePublisher(pubID string) {
 }
 
 // RemovePublisherCamera removes webcam video publisher uplinks and associated downlinks for a peer.
+// Identity is the IsScreen flag only — screen uplinks/downlinks always
+// survive, audio is never touched (exact uplink-key matching). Note: the
+// signaling path no longer calls this on video:false (that only clears the
+// kind flag via SetVideoKind and keeps the uplink object for stream reuse);
+// this remains the explicit teardown API.
 func (r *Router) RemovePublisherCamera(pubID string) {
 	r.mu.Lock()
 	peerNeedsReneg := make(map[string]bool)
 
-	isCamera := func(key string, pub *PublisherUplink) bool {
-		if pub != nil {
-			return pub.PublisherID == pubID && pub.Kind == webrtc.RTPCodecTypeVideo && !pub.IsScreen &&
-				!strings.HasPrefix(pub.StreamID, "kith-screen-") && !strings.Contains(pub.TrackID, "-screen")
-		}
-		return strings.HasPrefix(key, pubID+":video:") && !strings.Contains(key, "-screen")
-	}
-
 	for key, pub := range r.publishers {
-		if isCamera(key, pub) {
-			pub.Close()
-			delete(r.publishers, key)
+		if pub == nil || pub.PublisherID != pubID || pub.Kind != webrtc.RTPCodecTypeVideo || pub.IsScreen {
+			continue
 		}
-	}
-
-	for subID, subMap := range r.subscribers {
-		for key, entry := range subMap {
-			if entry.downlink.PublisherID == pubID && isCamera(key, nil) {
-				entry.downlink.Close()
-				if pe, okPeer := r.peers[subID]; okPeer && pe.peer != nil {
-					_ = pe.peer.RemoveTrack(entry.sender)
-					peerNeedsReneg[subID] = true
-				}
-				delete(subMap, key)
-			}
-		}
+		pub.Close()
+		delete(r.publishers, key)
+		r.removeDownlinksLocked(key, peerNeedsReneg)
 	}
 
 	var peersToRenegotiate []string
@@ -262,36 +396,19 @@ func (r *Router) RemovePublisherCamera(pubID string) {
 }
 
 // RemovePublisherScreen removes screenshare publisher uplinks and associated downlinks for a peer.
+// Identity is the IsScreen flag only. The signaling path no longer calls
+// this on screen:false (see RemovePublisherCamera).
 func (r *Router) RemovePublisherScreen(pubID string) {
 	r.mu.Lock()
 	peerNeedsReneg := make(map[string]bool)
 
-	isScreen := func(key string, pub *PublisherUplink) bool {
-		if pub != nil {
-			return pub.PublisherID == pubID && (pub.IsScreen ||
-				strings.HasPrefix(pub.StreamID, "kith-screen-") || strings.Contains(pub.TrackID, "-screen"))
-		}
-		return strings.HasPrefix(key, pubID+":") && strings.Contains(key, "-screen")
-	}
-
 	for key, pub := range r.publishers {
-		if isScreen(key, pub) {
-			pub.Close()
-			delete(r.publishers, key)
+		if pub == nil || pub.PublisherID != pubID || pub.Kind != webrtc.RTPCodecTypeVideo || !pub.IsScreen {
+			continue
 		}
-	}
-
-	for subID, subMap := range r.subscribers {
-		for key, entry := range subMap {
-			if entry.downlink.PublisherID == pubID && (isScreen(key, nil) || strings.HasPrefix(entry.downlink.TrackLocal.StreamID(), "kith-screen-")) {
-				entry.downlink.Close()
-				if pe, okPeer := r.peers[subID]; okPeer && pe.peer != nil {
-					_ = pe.peer.RemoveTrack(entry.sender)
-					peerNeedsReneg[subID] = true
-				}
-				delete(subMap, key)
-			}
-		}
+		pub.Close()
+		delete(r.publishers, key)
+		r.removeDownlinksLocked(key, peerNeedsReneg)
 	}
 
 	var peersToRenegotiate []string
@@ -344,6 +461,43 @@ func (r *Router) RemovePublisherKind(pubID string, kind webrtc.RTPCodecType) {
 	}
 }
 
+// onUplinkDeath evicts a single dead uplink (readingLoop EOF/error) and its
+// downlinks, then renegotiates affected subscribers. It runs in its own
+// goroutine (fired from PublisherUplink.Close) so it locks r.mu itself and
+// must never be called inline while holding the lock. Explicit removals
+// delete the map entry first, so a trailing death callback is a no-op (R5).
+func (r *Router) onUplinkDeath(tKey string) {
+	r.mu.Lock()
+	peerNeedsReneg := make(map[string]bool)
+
+	if _, ok := r.publishers[tKey]; !ok {
+		r.mu.Unlock()
+		return
+	}
+	delete(r.publishers, tKey)
+
+	for subID, subMap := range r.subscribers {
+		if entry, ok := subMap[tKey]; ok {
+			entry.downlink.Close()
+			if pe, okPeer := r.peers[subID]; okPeer && pe.peer != nil {
+				_ = pe.peer.RemoveTrack(entry.sender)
+				peerNeedsReneg[subID] = true
+			}
+			delete(subMap, tKey)
+		}
+	}
+
+	var peersToRenegotiate []string
+	for subID := range peerNeedsReneg {
+		peersToRenegotiate = append(peersToRenegotiate, subID)
+	}
+	r.mu.Unlock()
+
+	for _, subID := range peersToRenegotiate {
+		r.TriggerRenegotiation(subID)
+	}
+}
+
 // SubscribeToExistingPublishers attaches downlinks for all currently active publishers to the given subscriber.
 func (r *Router) SubscribeToExistingPublishers(userID string) {
 	r.mu.Lock()
@@ -357,6 +511,19 @@ func (r *Router) SubscribeToExistingPublishers(userID string) {
 	needsRenegotiate := false
 	for tKey, pub := range r.publishers {
 		if pub.PublisherID == userID {
+			continue
+		}
+
+		// Never fan out corpses: dead uplinks are evicted via onDeath, but
+		// skip them here too if eviction hasn't run yet (R5).
+		if pub.IsClosed() {
+			continue
+		}
+
+		// Never fan out dormant video: the uplink object survives kind:false
+		// (same RTP stream may be reused), but with no declared kind there
+		// is nothing to forward yet. SetVideoKind subscribes on declaration.
+		if pub.Kind == webrtc.RTPCodecTypeVideo && r.videoKind[pub.PublisherID] == VideoKindNone {
 			continue
 		}
 
@@ -382,6 +549,7 @@ func (r *Router) SubscribeToExistingPublishers(userID string) {
 		}
 
 		downlink := NewSubscriberDownlink(userID, pub.PublisherID, trackLocal, sender)
+		downlink.SetScreen(pub.IsScreen)
 		pub.AddSubscriber(downlink)
 
 		if r.subscribers[userID] == nil {

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Headphones, MicOff } from 'lucide-react'
+import { Headphones, Maximize2, MicOff, Monitor } from 'lucide-react'
 
 export interface VideoTileProps {
   userId: string
@@ -9,6 +9,12 @@ export interface VideoTileProps {
   speaking: boolean
   selfMute?: boolean
   selfDeaf?: boolean
+  /** True when this user currently shares their screen (badge only). */
+  isSharingScreen?: boolean
+  /** True when `stream` is screen content: disables the self-mirror. */
+  isScreenContent?: boolean
+  /** Explicit manual spotlight entry. Rendered only when provided. */
+  onSpotlight?: () => void
 }
 
 export function VideoTile({
@@ -19,6 +25,9 @@ export function VideoTile({
   speaking,
   selfMute,
   selfDeaf,
+  isSharingScreen,
+  isScreenContent,
+  onSpotlight,
 }: VideoTileProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const [hasVideoTrack, setHasVideoTrack] = useState(false)
@@ -65,7 +74,7 @@ export function VideoTile({
         autoPlay
         playsInline
         muted // Always mute video tile preview; remote voice audio is handled independently by SfuClient audio elements
-        className={`video-tile-video ${isSelf ? 'video-tile-mirror' : ''} ${hasVideoTrack ? 'active' : 'hidden'}`}
+        className={`video-tile-video ${isSelf && !isScreenContent ? 'video-tile-mirror' : ''} ${hasVideoTrack ? 'active' : 'hidden'}`}
       />
 
       {!hasVideoTrack && (
@@ -83,6 +92,11 @@ export function VideoTile({
         </div>
 
         <div className="video-tile-badges">
+          {isSharingScreen && (
+            <span className="voice-badge sharing" title="Sharing screen">
+              <Monitor size={14} />
+            </span>
+          )}
           {selfDeaf && (
             <span className="voice-badge deafened" title="Deafened">
               <Headphones size={14} />
@@ -92,6 +106,19 @@ export function VideoTile({
             <span className="voice-badge muted" title="Muted">
               <MicOff size={14} />
             </span>
+          )}
+          {onSpotlight && (
+            <button
+              type="button"
+              className="voice-badge spotlight-btn"
+              title="Spotlight"
+              onClick={(e) => {
+                e.stopPropagation()
+                onSpotlight()
+              }}
+            >
+              <Maximize2 size={14} />
+            </button>
           )}
         </div>
       </div>

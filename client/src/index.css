@@ -325,6 +325,26 @@ body {
   color: #da373c;
 }
 
+.voice-badge.sharing {
+  color: #23a55a;
+}
+
+.voice-badge.spotlight-btn {
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+  color: inherit;
+  opacity: 0.7;
+  /* The tile overlay disables pointer events (badges are display-only);
+  the spotlight button must opt back in or it can never be clicked. */
+  pointer-events: auto;
+}
+
+.voice-badge.spotlight-btn:hover {
+  opacity: 1;
+}
+
 /* Voice Connection Status Bar */
 .voice-status-bar {
   background-color: rgba(0, 0, 0, 0.25);

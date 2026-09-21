@@ -21,8 +21,16 @@ type SubscriberDownlink struct {
 	TrackLocal   *webrtc.TrackLocalStaticRTP
 	RTPSender    *webrtc.RTPSender
 
+	// isScreen mirrors the publisher uplink's label at creation: screen vs
+	// camera downlinks carry different stable IDs and are torn down per kind.
+	isScreen bool
+
 	inbox chan *rtp.Packet
 	seq   uint32 // atomic sequence number counter
+
+	// seqTr maps rewritten downlink seqs back to uplink seqs for NACK
+	// translation (lock-free; see seq_translator.go).
+	seqTr seqTranslator
 
 	feedbackMu sync.RWMutex
 	onFeedback func([]rtcp.Packet)
@@ -91,8 +99,11 @@ func (s *SubscriberDownlink) forwardingLoop() {
 				return
 			}
 
-			// Rewrite monotonic sequence number per subscriber downlink to ensure smooth jitter buffer
+			// Rewrite monotonic sequence number per subscriber downlink to ensure smooth jitter buffer.
+			// Record the mapping first (pkt still carries the uplink seq here)
+			// so viewer NACKs can be translated back for the publisher.
 			newSeq := uint16(atomic.AddUint32(&s.seq, 1))
+			s.seqTr.note(newSeq, pkt.Header.SequenceNumber)
 			pkt.Header.SequenceNumber = newSeq
 
 			if err := s.TrackLocal.WriteRTP(pkt); err != nil {
@@ -132,6 +143,7 @@ func (s *SubscriberDownlink) rtcpLoop() {
 
 				case *rtcp.TransportLayerNack:
 					metrics.RTCPNackTotal.Inc()
+					s.forwardNack(report)
 
 				case *rtcp.PictureLossIndication:
 					metrics.RTCPPLITotal.Inc()
@@ -153,6 +165,43 @@ func (s *SubscriberDownlink) rtcpLoop() {
 				}
 			}
 		}
+	}
+}
+
+// SetScreen records whether this downlink carries a screen share (mirrors
+// the uplink label; used for per-kind teardown).
+func (s *SubscriberDownlink) SetScreen(screen bool) {
+	s.isScreen = screen
+}
+
+// IsScreen reports whether this downlink carries a screen share.
+func (s *SubscriberDownlink) IsScreen() bool {
+	return s.isScreen
+}
+
+// forwardNack translates a viewer NACK from downlink to uplink sequence
+// space and forwards it to the publisher for retransmission (~50ms repair
+// instead of a keyframe wait). Untranslatable entries (aged out / dropped
+// pre-forward) are skipped; a fully untranslatable NACK is dropped.
+func (s *SubscriberDownlink) forwardNack(nack *rtcp.TransportLayerNack) {
+	if nack == nil {
+		return
+	}
+	translated := translateNackPairs(nack.Nacks, s.seqTr.lookup)
+	if len(translated) == 0 {
+		return
+	}
+	metrics.RTCPNackForwarded.Inc()
+	fwd := &rtcp.TransportLayerNack{
+		SenderSSRC: nack.SenderSSRC,
+		MediaSSRC:  nack.MediaSSRC, // rewritten to uplink SSRC by SendRTCP
+		Nacks:      translated,
+	}
+	s.feedbackMu.RLock()
+	cb := s.onFeedback
+	s.feedbackMu.RUnlock()
+	if cb != nil {
+		cb([]rtcp.Packet{fwd})
 	}
 }
 

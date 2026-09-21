@@ -57,6 +57,48 @@ describe('VideoTile Component', () => {
     expect(html).toContain('deafened')
     expect(html).toContain('muted')
   })
+
+  it('does not mirror self screen content, but mirrors self camera', () => {
+    const cam = renderToString(
+      <VideoTile userId="me" displayName="Me" isSelf={true} stream={null} speaking={false} />
+    )
+    expect(cam).toContain('video-tile-mirror')
+
+    const screen = renderToString(
+      <VideoTile
+        userId="me"
+        displayName="Me"
+        isSelf={true}
+        stream={null}
+        speaking={false}
+        isSharingScreen={true}
+        isScreenContent={true}
+      />
+    )
+    expect(screen).not.toContain('video-tile-mirror')
+  })
+
+  it('renders sharing badge and expand button only when provided', () => {
+    const withAll = renderToString(
+      <VideoTile
+        userId="u1"
+        displayName="Sharer"
+        isSelf={false}
+        stream={null}
+        speaking={false}
+        isSharingScreen={true}
+        onSpotlight={() => {}}
+      />
+    )
+    expect(withAll).toContain('sharing')
+    expect(withAll).toContain('Spotlight')
+
+    const plain = renderToString(
+      <VideoTile userId="u2" displayName="Viewer" isSelf={false} stream={null} speaking={false} />
+    )
+    expect(plain).not.toContain('sharing')
+    expect(plain).not.toContain('Spotlight')
+  })
 })
 
 describe('VideoGrid Component', () => {

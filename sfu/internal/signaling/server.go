@@ -15,6 +15,7 @@ import (
 	"github.com/moadabdou/Kith/sfu/internal/metrics"
 	"github.com/moadabdou/Kith/sfu/internal/peer"
 	"github.com/moadabdou/Kith/sfu/internal/room"
+	"github.com/moadabdou/Kith/sfu/internal/router"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -31,6 +32,7 @@ type Message struct {
 	Speaking   *bool                    `json:"speaking,omitempty"`
 	Video      *bool                    `json:"video,omitempty"`
 	Screen     *bool                    `json:"screen,omitempty"`
+	TrackID    string                   `json:"trackId,omitempty"`
 	ListenOnly *bool                    `json:"listen_only,omitempty"`
 	Message    string                   `json:"message,omitempty"`
 }
@@ -258,8 +260,17 @@ func (s *Server) handleSession(ctx context.Context, conn *websocket.Conn) {
 
 		case "video":
 			if currentRoom != nil && userID != "" && msg.Video != nil {
-				if !*msg.Video {
-					currentRoom.Router().RemovePublisherCamera(userID)
+				// Negotiate-once contract: the signal IS the kind declaration
+				// (last-writer-wins). Unknown users are ignored so a pre-join
+				// signal can never fan out ghost state.
+				if !currentRoom.Router().HasPeer(userID) {
+					slog.Debug("Ignoring video signal from unknown user", "user_id", userID)
+					continue
+				}
+				if *msg.Video {
+					currentRoom.Router().SetVideoKind(userID, router.VideoKindCamera)
+				} else {
+					currentRoom.Router().SetVideoKind(userID, router.VideoKindNone)
 				}
 				currentRoom.Broadcast(userID, room.Event{
 					Type:      "video",
@@ -271,8 +282,14 @@ func (s *Server) handleSession(ctx context.Context, conn *websocket.Conn) {
 
 		case "screen":
 			if currentRoom != nil && userID != "" && msg.Screen != nil {
-				if !*msg.Screen {
-					currentRoom.Router().RemovePublisherScreen(userID)
+				if !currentRoom.Router().HasPeer(userID) {
+					slog.Debug("Ignoring screen signal from unknown user", "user_id", userID)
+					continue
+				}
+				if *msg.Screen {
+					currentRoom.Router().SetVideoKind(userID, router.VideoKindScreen)
+				} else {
+					currentRoom.Router().SetVideoKind(userID, router.VideoKindNone)
 				}
 				currentRoom.Broadcast(userID, room.Event{
 					Type:      "screen",

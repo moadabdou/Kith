@@ -17,6 +17,10 @@ export interface SfuClientOptions {
   onLocalScreenChange?: (stream: MediaStream | null) => void
   userId?: string
   onError?: (error: Error) => void
+  /** How long a transient `disconnected` is tolerated before recovery starts. Default 3000. */
+  reconnectGraceMs?: number
+  /** How long to wait for `connected` after an ICE restart before giving up. Default 5000. */
+  reconnectTimeoutMs?: number
 }
 
 export function resolveSfuWsUrl(endpoint: string): string {
@@ -50,27 +54,130 @@ export function resolveSfuWsUrl(endpoint: string): string {
   return `${protocol}//${host}:${port}/ws`
 }
 
+export type VideoSource = 'off' | 'camera' | 'screen'
+
+export interface SetVideoSourceOptions {
+  deviceId?: string
+}
+
+export interface MidIndexEntry {
+  uid: string
+  kind: 'screen' | 'video' | 'audio'
+}
+
+/**
+ * Parse an SDP offer from the SFU and return mid -> {uid, kind} for every
+ * m-section carrying a Kith msid:
+ *   screen: a=msid:kith-screen-<uid> kith-track-<uid>-screen
+ *   cam:    a=msid:kith-stream-<uid> kith-track-<uid>-video  (stable, R9)
+ *   audio:  a=msid:kith-stream-<uid> kith-track-<uid>
+ * Sections without a Kith msid are skipped. UID comes from the stream id
+ * (stable); kind comes from the stream prefix + m= kind, never from the
+ * random browser track id.
+ */
+export function parseMidIndexFromSdp(sdp: string): Map<string, MidIndexEntry> {
+  const result = new Map<string, MidIndexEntry>()
+  // Split on CRLF or lone LF (stacks differ; Pion emits CRLF, be liberal).
+  const sections = sdp.split(/\r?\nm=/)
+  for (let i = 0; i < sections.length; i++) {
+    const section = i === 0 ? sections[i] : 'm=' + sections[i]
+    const mediaMatch = section.match(/^m=(audio|video)\b/m)
+    if (!mediaMatch) continue
+    const midMatch = section.match(/^a=mid:(.+)$/m)
+    const msidMatch = section.match(/^a=msid:(\S+)\s+(\S+)/m)
+    if (!midMatch || !msidMatch) continue
+    const streamId = msidMatch[1]
+    const mid = midMatch[1].trim()
+    let uid = ''
+    let kind: MidIndexEntry['kind'] = 'video'
+    if (streamId.startsWith('kith-screen-')) {
+      uid = streamId.replace('kith-screen-', '')
+      kind = 'screen'
+    } else if (streamId.startsWith('kith-stream-')) {
+      uid = streamId.replace('kith-stream-', '')
+      kind = mediaMatch[1] === 'audio' ? 'audio' : 'video'
+    } else {
+      continue
+    }
+    if (!uid) continue
+    result.set(mid, { uid, kind })
+  }
+  return result
+}
+
+/**
+ * Parse an SDP offer from the SFU and return mid -> screenshare publisher uid
+ * for every m-section whose msid signals a screenshare downlink.
+ * Kept for compatibility; new code uses parseMidIndexFromSdp.
+ */
+export function parseScreenMidsFromSdp(sdp: string): Map<string, string> {
+  const result = new Map<string, string>()
+  for (const [mid, entry] of parseMidIndexFromSdp(sdp)) {
+    if (entry.kind === 'screen') result.set(mid, entry.uid)
+  }
+  return result
+}
+
 export class SfuClient {
   private ws: WebSocket | null = null
   private pc: RTCPeerConnection | null = null
   private localStream: MediaStream | null = null
+  // Single video slot (Step 1): at most ONE live video uplink. The active
+  // track/stream/sender below holds whichever source is live; switching
+  // sources stops the old device track first (bandwidth goal).
   private localVideoStream: MediaStream | null = null
   private localVideoTrack: MediaStreamTrack | null = null
   private videoSender: RTCRtpSender | null = null
-  private isCameraOn = false
+  private videoSource: VideoSource = 'off'
   private selectedVideoDeviceId: string | null = null
   private remoteVideoStreams: Map<string, MediaStream> = new Map()
 
-  private localScreenStream: MediaStream | null = null
-  private localScreenTrack: MediaStreamTrack | null = null
-  private screenSender: RTCRtpSender | null = null
-  private isScreenSharingOn = false
   private remoteScreenStreams: Map<string, MediaStream> = new Map()
 
   private audioElements: Map<string, HTMLAudioElement> = new Map()
   private userToTrackMap: Map<string, string> = new Map()
+  // MID (from SFU offer SDP) -> {uid, kind} for every Kith m-section.
+  // Authoritative source for track classification; survives synthetic
+  // MediaStreams. Replaces the old screen-only index (R9).
+  private midIndex: Map<string, MidIndexEntry> = new Map()
+  // UIDs whose screen share ended (screen:false seen). Stale in-flight offers
+  // for these uids must not re-index a mapping (ghost-screen tombstone, R3).
+  // Cleared on screen:true (re-share) or peer_left.
+  private screenRevoked: Set<string> = new Set()
+  // Latest downstream offer SDP, stored regardless of tombstone skips. On
+  // screen:true the tombstone lifts after the reshare's offer was already
+  // consumed (server sends offer-before-signal), so the screen MID must be
+  // re-indexed from here — otherwise the track orphans until the next offer.
+  private lastDownstreamSdp: string | null = null
+  // Latest downstream offer that couldn't be applied yet (PC mid-renegotiation).
+  // Retried when signaling returns to stable; SFU offers are full-state so
+  // latest wins (R2).
+  private pendingOffer: string | null = null
+  private pendingOfferAttempts = 0
+  private static readonly MAX_OFFER_ATTEMPTS = 5
+  // Bounded safety-net retries for a rejected join offer (glare). Toggles
+  // never offer, so this counter should stay at 0 in practice.
+  private offerRetryAttempts = 0
+  private static readonly MAX_OFFER_RETRIES = 3
+  // ICE/connection recovery (R10, S6). A transient `disconnected` is debounced
+  // through a grace window; only a sustained outage triggers an ICE restart
+  // with re-offer of the live tracks. Attempts are bounded; exhaustion
+  // surfaces `failed` so the user can rejoin manually.
+  private hasConnected = false
+  // Server acknowledged our join ('joined' received). Publisher offers sent
+  // before this are rejected by the SFU ("must join before sending offer").
+  private joinAcked = false
+  private restartAttempts = 0
+  private recoveryInFlight = false
+  private recoveryWaiter: { resolve: (ok: boolean) => void } | null = null
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private static readonly MAX_RESTARTS = 2
+  // Receiver track.id -> {uid, kind}. Prevents double-registration of the
+  // same track in both video and screen maps (ontrack + attachTransceiverTracks).
+  private remoteTrackKind: Map<string, { uid: string; kind: 'screen' | 'video' }> = new Map()
   private vadCleanup: (() => void) | null = null
   private unlockAudioCleanup: (() => void) | null = null
+  private visibilityCleanup: (() => void) | null = null
 
   private options: SfuClientOptions
   private isMuted = false
@@ -170,6 +277,13 @@ export class SfuClient {
 
     this.pc = new RTCPeerConnection(this.options.rtcConfig)
 
+    // Retry stashed downstream offers once our own renegotiation settles (R2).
+    this.pc.addEventListener('signalingstatechange', () => {
+      if (!this.isClosed && this.pc?.signalingState === 'stable') {
+        this.flushPendingOffer()
+      }
+    })
+
     this.pc.onicecandidate = (event) => {
       if (event.candidate && this.ws && this.ws.readyState === WebSocket.OPEN) {
         this.sendWsMessage({
@@ -180,17 +294,79 @@ export class SfuClient {
     }
 
     this.pc.onconnectionstatechange = () => {
-      if (!this.pc) return
+      if (!this.pc || this.isClosed) return
       const state = this.pc.connectionState
       if (state === 'connected') {
+        this.hasConnected = true
+        if (this.recoveryWaiter) {
+          // A restart was awaiting this outcome — the recovery path emits.
+          const waiter = this.recoveryWaiter
+          this.recoveryWaiter = null
+          if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer)
+            this.reconnectTimer = null
+          }
+          waiter.resolve(true)
+          return
+        }
+        this.clearRecoveryTimers()
+        this.restartAttempts = 0
         this.options.onConnectionStateChange?.('connected')
-      } else if (state === 'failed' || state === 'disconnected') {
-        this.options.onConnectionStateChange?.(state)
+      } else if (state === 'disconnected') {
+        // Pre-connect blips keep legacy behavior (no recovery basis yet).
+        if (!this.hasConnected) {
+          this.options.onConnectionStateChange?.('disconnected')
+          return
+        }
+        if (this.recoveryWaiter) return // restart already awaiting an outcome
+        if (!this.reconnectTimer) {
+          // Debounce: brief ICE blips (common under renegotiation bursts)
+          // self-heal without surfacing a channel leave (S6).
+          this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null
+            void this.attemptRecovery()
+          }, this.options.reconnectGraceMs ?? 3000)
+        }
+      } else if (state === 'failed') {
+        if (!this.hasConnected) {
+          this.options.onConnectionStateChange?.('failed')
+          return
+        }
+        if (this.recoveryWaiter) {
+          const waiter = this.recoveryWaiter
+          this.recoveryWaiter = null
+          if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer)
+            this.reconnectTimer = null
+          }
+          waiter.resolve(false)
+          return
+        }
+        void this.attemptRecovery()
       }
     }
 
     this.pc.ontrack = (event) => {
-      this.handleRemoteTrack(event.track, event.streams[0] || null)
+      const mid = (event as RTCTrackEvent & { transceiver?: { mid?: string | null } }).transceiver?.mid ?? null
+      this.handleRemoteTrack(event.track, event.streams[0] || null, mid)
+    }
+
+    this.setupVisibilityKeyframe()
+
+    // Negotiate-once video slot: a sendonly video m-section rides the join
+    // offer even with no track yet. All later cam/screen toggles only
+    // replaceTrack on this sender — never re-offer (glare-proof). If setup
+    // fails, the publish path falls back to addTrack + one renegotiation.
+    try {
+      if (typeof this.pc.addTransceiver === 'function') {
+        const tx = this.pc.addTransceiver('video', { direction: 'sendonly' })
+        if (tx && tx.sender) {
+          this.videoSender = tx.sender
+        }
+      }
+    } catch (err) {
+      console.warn('[SfuClient] Video transceiver pre-negotiation failed, will renegotiate on first enable:', err)
+      this.videoSender = null
     }
 
     // Try to acquire mic stream unless explicitly in listen-only mode
@@ -235,10 +411,13 @@ export class SfuClient {
   private async handleWsMessage(msg: Record<string, any>): Promise<void> {
     switch (msg.type) {
       case 'joined':
+        this.joinAcked = true
+        this.offerRetryAttempts = 0
         this.options.onConnectionStateChange?.('connected')
         break
 
       case 'answer':
+        this.offerRetryAttempts = 0
         if (this.pc && msg.sdp) {
           await this.pc.setRemoteDescription({
             type: 'answer',
@@ -251,34 +430,25 @@ export class SfuClient {
       case 'offer':
         // Downstream renegotiation offer from SFU
         if (this.pc && msg.sdp) {
-          if (this.pc.signalingState && this.pc.signalingState !== 'stable') {
-            await new Promise<void>((resolve) => {
-              const check = () => {
-                if (!this.pc || this.pc.signalingState === 'stable') {
-                  this.pc?.removeEventListener('signalingstatechange', check)
-                  resolve()
-                }
-              }
-              this.pc?.addEventListener('signalingstatechange', check)
-              setTimeout(check, 1000)
-            })
+          // Remember the latest SDP even when tombstones skip entries: a
+          // reshare's offer arrives before its screen:true (server order),
+          // so the screen MID is skipped first and must be re-indexed when
+          // the tombstone lifts below.
+          this.lastDownstreamSdp = msg.sdp
+          // Index every Kith m-section by MID before tracks arrive so
+          // ontrack / attachTransceiverTracks can classify authoritatively.
+          // Screen mappings for revoked uids (screen:false seen, no re-share
+          // since) are skipped so stale offers can't resurrect ghosts (R3).
+          for (const [mid, entry] of parseMidIndexFromSdp(msg.sdp)) {
+            if (entry.kind === 'screen' && this.screenRevoked.has(entry.uid)) continue
+            this.midIndex.set(mid, entry)
           }
-
-          await this.pc.setRemoteDescription({
-            type: 'offer',
-            sdp: msg.sdp,
-          })
-          await this.drainPendingCandidates()
-
-          const answer = await this.pc.createAnswer()
-          await this.pc.setLocalDescription(answer)
-
-          this.sendWsMessage({
-            type: 'answer',
-            sdp: answer.sdp,
-          })
-
-          this.attachTransceiverTracks()
+          try {
+            await this.applyDownstreamOffer(msg.sdp)
+          } catch (err) {
+            console.error('[SfuClient] Failed to apply downstream offer:', err)
+            this.options.onError?.(err instanceof Error ? err : new Error(String(err)))
+          }
         }
         break
 
@@ -303,15 +473,43 @@ export class SfuClient {
           if (!msg.video) {
             this.remoteVideoStreams.delete(msg.user_id)
             this.options.onRemoteVideoChange?.(msg.user_id, null)
+            // Drop cam/audio MID entries for this uid — but never screen
+            // entries (S3: stopping cam must not touch the screen index).
+            for (const [mid, entry] of this.midIndex) {
+              if (entry.uid === msg.user_id && entry.kind !== 'screen') this.midIndex.delete(mid)
+            }
           }
         }
         break
 
       case 'screen':
         if (msg.user_id && typeof msg.screen === 'boolean') {
-          if (!msg.screen) {
+          if (msg.screen) {
+            // Re-share: lift the tombstone so fresh offers index again.
+            this.screenRevoked.delete(msg.user_id)
+            // Heal the tombstone race: the reshare's offer was consumed
+            // while tombstoned (offer-before-signal server order), so its
+            // screen MID was skipped. Re-index this user's screen entries
+            // from the latest downstream SDP, then classify any receiver
+            // tracks that already arrived. No signaling involved.
+            if (this.lastDownstreamSdp) {
+              for (const [mid, entry] of parseMidIndexFromSdp(this.lastDownstreamSdp)) {
+                if (entry.uid !== msg.user_id || entry.kind !== 'screen') continue
+                if (this.screenRevoked.has(entry.uid)) continue
+                this.midIndex.set(mid, entry)
+              }
+            }
+            this.attachTransceiverTracks()
+          } else {
             this.remoteScreenStreams.delete(msg.user_id)
             this.options.onRemoteScreenShareChange?.(msg.user_id, null)
+            for (const [mid, entry] of this.midIndex) {
+              if (entry.uid === msg.user_id && entry.kind === 'screen') this.midIndex.delete(mid)
+            }
+            this.screenRevoked.add(msg.user_id)
+            for (const [trackId, info] of this.remoteTrackKind) {
+              if (info.uid === msg.user_id && info.kind === 'screen') this.remoteTrackKind.delete(trackId)
+            }
           }
         }
         break
@@ -328,12 +526,40 @@ export class SfuClient {
             this.remoteScreenStreams.delete(msg.user_id)
             this.options.onRemoteScreenShareChange?.(msg.user_id, null)
           }
+          for (const [mid, entry] of this.midIndex) {
+            if (entry.uid === msg.user_id) this.midIndex.delete(mid)
+          }
+          this.screenRevoked.delete(msg.user_id)
+          for (const [trackId, info] of this.remoteTrackKind) {
+            if (info.uid === msg.user_id) this.remoteTrackKind.delete(trackId)
+          }
         }
         break
 
       case 'error':
         console.error('[SfuClient] SFU error:', msg.message)
         this.options.onError?.(new Error(msg.message || 'SFU error'))
+        // The SFU rejected our offer (glare: it was mid downstream offer
+        // when ours arrived — only possible for the join offer now, since
+        // toggles never offer). Bounded retry with backoff, only while our
+        // PC is stable: an unbounded immediate retry is how offer ping-pongs
+        // wedge a session permanently. If the counter ever fires in logs,
+        // something regressed back to offering post-join.
+        if (!this.isClosed && typeof msg.message === 'string' && msg.message.includes('failed to process offer')) {
+          if (this.offerRetryAttempts < SfuClient.MAX_OFFER_RETRIES && this.pc?.signalingState === 'stable') {
+            this.offerRetryAttempts += 1
+            const attempt = this.offerRetryAttempts
+            setTimeout(() => {
+              if (!this.isClosed) {
+                this.renegotiate().catch((err) => {
+                  console.warn(`[SfuClient] Retry ${attempt} after rejected offer failed:`, err)
+                })
+              }
+            }, 500 * attempt)
+          } else {
+            console.warn('[SfuClient] Giving up re-offer after rejected offer (retries exhausted or PC unstable)')
+          }
+        }
         break
 
       default:
@@ -385,37 +611,153 @@ export class SfuClient {
     }
   }
 
+  // Applies an SFU downstream offer. Never forces setRemoteDescription while
+  // unstable: on glare the latest offer is stashed and retried when signaling
+  // returns to stable (mirrors the SFU postpone pattern). Nothing is ever
+  // silently dropped — the old 1s force-through wedged the PC here (R2).
+  private async applyDownstreamOffer(sdp: string): Promise<void> {
+    if (!this.pc || this.isClosed) return
+
+    if (this.pc.signalingState && this.pc.signalingState !== 'stable') {
+      this.stashDownstreamOffer(sdp)
+      return
+    }
+
+    try {
+      await this.pc.setRemoteDescription({
+        type: 'offer',
+        sdp,
+      })
+    } catch (err: any) {
+      if (err?.name === 'InvalidStateError') {
+        console.warn('[SfuClient] Downstream offer hit non-stable PC, queued for retry on stable')
+        this.stashDownstreamOffer(sdp)
+        return
+      }
+      throw err
+    }
+    await this.drainPendingCandidates()
+
+    const answer = await this.pc.createAnswer()
+    await this.pc.setLocalDescription(answer)
+
+    this.sendWsMessage({
+      type: 'answer',
+      sdp: answer.sdp,
+    })
+
+    this.attachTransceiverTracks()
+    this.pendingOfferAttempts = 0
+  }
+
+  private stashDownstreamOffer(sdp: string): void {
+    this.pendingOffer = sdp
+    this.pendingOfferAttempts += 1
+    if (this.pendingOfferAttempts > SfuClient.MAX_OFFER_ATTEMPTS) {
+      this.pendingOffer = null
+      this.pendingOfferAttempts = 0
+      this.options.onError?.(
+        new Error('[SfuClient] Dropping downstream offer: PC never returned to stable'),
+      )
+    }
+  }
+
+  private flushPendingOffer(): void {
+    if (
+      !this.pendingOffer ||
+      this.isClosed ||
+      !this.pc ||
+      !this.ws ||
+      this.ws.readyState !== WebSocket.OPEN
+    ) {
+      return
+    }
+    if (this.pc.signalingState && this.pc.signalingState !== 'stable') return
+    const sdp = this.pendingOffer
+    this.pendingOffer = null
+    this.enqueue(() => this.applyDownstreamOffer(sdp)).catch((err) => {
+      console.error('[SfuClient] Failed to apply queued downstream offer:', err)
+      this.options.onError?.(err instanceof Error ? err : new Error(String(err)))
+    })
+  }
+
   private attachTransceiverTracks(): void {
     if (!this.pc || typeof document === 'undefined') return
     for (const transceiver of this.pc.getTransceivers()) {
       const track = transceiver.receiver?.track
       if (track && track.readyState === 'live') {
-        this.handleRemoteTrack(track, null)
+        // Skip tracks already classified via ontrack (dedupe).
+        if (this.remoteTrackKind.has(track.id)) continue
+        this.handleRemoteTrack(track, null, transceiver.mid ?? null)
       }
     }
   }
 
-  private handleRemoteTrack(track: MediaStreamTrack, initialStream: MediaStream | null): void {
+  private handleRemoteTrack(track: MediaStreamTrack, initialStream: MediaStream | null, mid: string | null = null): void {
     const stream = initialStream || new MediaStream([track])
     this.options.onRemoteTrack?.(track, stream)
 
     const streamId = stream?.id || ''
     const trackId = track?.id || ''
-    const isScreen = streamId.startsWith('kith-screen-') || trackId.includes('-screen')
 
-    const publisherUid = isScreen
-      ? streamId.startsWith('kith-screen-')
-        ? streamId.replace('kith-screen-', '')
-        : trackId.replace('kith-track-', '').replace('-screen', '')
-      : streamId.startsWith('kith-stream-')
-      ? streamId.replace('kith-stream-', '')
-      : trackId.startsWith('kith-track-')
-      ? trackId.replace('kith-track-', '').replace('-video', '').replace('-audio', '')
-      : ''
+    // 1. Authoritative: full MID index from the SFU offer SDP msid lines.
+    // 2. Heuristic fallback: signaled stream/track ids (stable SFU ids).
+    // 3. Stable: a receiver track.id keeps its first classification so a
+    //    re-announced transceiver can't flip screen <-> camera.
+    const midEntry = mid ? this.midIndex.get(mid) : undefined
+    const seen = this.remoteTrackKind.get(trackId)
+
+    let publisherUid: string
+    let isScreen: boolean
+    if (midEntry !== undefined) {
+      // MID wins outright: it identifies both uid and kind (R9).
+      publisherUid = midEntry.uid
+      isScreen = track.kind === 'video' && midEntry.kind === 'screen'
+    } else {
+      isScreen =
+        streamId.startsWith('kith-screen-') ||
+        trackId.includes('-screen') ||
+        seen?.kind === 'screen'
+
+      if (isScreen) {
+        publisherUid = streamId.startsWith('kith-screen-')
+          ? streamId.replace('kith-screen-', '')
+          : trackId.replace('kith-track-', '').replace('-screen', '')
+        // Tombstoned screen (stale offer/track after screen:false): drop the
+        // ghost instead of rendering a frozen frame (R3).
+        if (publisherUid && this.screenRevoked.has(publisherUid)) return
+      } else {
+        publisherUid = streamId.startsWith('kith-stream-')
+          ? streamId.replace('kith-stream-', '')
+          : trackId.startsWith('kith-track-')
+          ? trackId.replace('kith-track-', '').replace('-video', '').replace('-audio', '')
+          : ''
+      }
+    }
 
     if (track.kind === 'video') {
       if (isScreen) {
         const screenKey = publisherUid || track.id
+        // Same physical track previously misfiled as camera → move it to the
+        // screen map. A DIFFERENT live track under the same uid is a
+        // legitimate camera (cam+screen coexistence) → keep both.
+        const misfiled = this.remoteVideoStreams.get(screenKey)
+        if (
+          misfiled &&
+          (misfiled.getVideoTracks?.() ?? misfiled.getTracks?.() ?? []).some(
+            (t: MediaStreamTrack) => t.id === trackId,
+          )
+        ) {
+          this.remoteVideoStreams.delete(screenKey)
+          this.options.onRemoteVideoChange?.(screenKey, null)
+        }
+        // Same receiver track re-announced: keep the original stream object
+        // so attached <video> elements don't flicker.
+        const existing = this.remoteScreenStreams.get(screenKey)
+        if (existing && seen && (existing.getVideoTracks?.() ?? existing.getTracks?.() ?? []).some((t: MediaStreamTrack) => t.id === trackId)) {
+          return
+        }
+        this.remoteTrackKind.set(trackId, { uid: screenKey, kind: 'screen' })
         this.remoteScreenStreams.set(screenKey, stream)
         this.options.onRemoteScreenShareChange?.(screenKey, stream)
 
@@ -424,11 +766,29 @@ export class SfuClient {
             this.remoteScreenStreams.delete(screenKey)
             this.options.onRemoteScreenShareChange?.(screenKey, null)
           }
+          this.remoteTrackKind.delete(trackId)
         }
         return
       }
 
       const videoKey = publisherUid || track.id
+      const knownScreen = this.remoteScreenStreams.get(videoKey)
+      if (
+        knownScreen &&
+        (knownScreen.getVideoTracks?.() ?? knownScreen.getTracks?.() ?? []).some(
+          (t: MediaStreamTrack) => t.id === trackId,
+        )
+      ) {
+        // Same physical track already shown as screen: don't mirror it into
+        // the camera map. A different track under the same uid is a
+        // legitimate camera alongside the screen → keep both.
+        return
+      }
+      const existing = this.remoteVideoStreams.get(videoKey)
+      if (existing && seen && (existing.getVideoTracks?.() ?? existing.getTracks?.() ?? []).some((t: MediaStreamTrack) => t.id === trackId)) {
+        return
+      }
+      this.remoteTrackKind.set(trackId, { uid: videoKey, kind: 'video' })
       this.remoteVideoStreams.set(videoKey, stream)
       this.options.onRemoteVideoChange?.(videoKey, stream)
 
@@ -437,6 +797,7 @@ export class SfuClient {
           this.remoteVideoStreams.delete(videoKey)
           this.options.onRemoteVideoChange?.(videoKey, null)
         }
+        this.remoteTrackKind.delete(trackId)
       }
       return
     }
@@ -625,237 +986,500 @@ export class SfuClient {
     return this.ws !== null && this.ws.readyState === WebSocket.OPEN && !this.isClosed
   }
 
+  public getVideoSource(): VideoSource {
+    return this.videoSource
+  }
+
+  // Ask the encoder for a keyframe on the live video uplink (best-effort).
+  // Used when returning from a backgrounded tab while screen sharing:
+  // static screen content emits keyframes rarely, so a decoder that lost
+  // sync during the stall would otherwise wait indefinitely. Returns true
+  // when a request was issued.
+  public requestKeyframe(): boolean {
+    if (this.isClosed || !this.pc || !this.videoSender) return false
+    try {
+      const keyframer = this.videoSender as unknown as {
+        generateKeyFrame?: () => Promise<void>
+      }
+      const p = keyframer.generateKeyFrame?.()
+      if (!p) return false
+      p.catch(() => {})
+      return true
+    } catch {
+      return false
+    }
+  }
+
   public isCameraActive(): boolean {
-    return this.isCameraOn
+    return this.videoSource === 'camera'
   }
 
   public getLocalVideoStream(): MediaStream | null {
-    return this.localVideoStream
+    return this.videoSource === 'camera' ? this.localVideoStream : null
   }
 
   public getRemoteVideoStreams(): Map<string, MediaStream> {
     return new Map(this.remoteVideoStreams)
   }
 
-  public async setCameraEnabled(enabled: boolean, deviceId?: string): Promise<MediaStream | null> {
+  // Serializes all local camera/screen publish operations (R1). Concurrent
+  // toggles queue instead of overlapping getUserMedia/addTrack/createOffer,
+  // so rapid cam->screen sequences can't spawn duplicate senders or clobber
+  // each other's offers. The chain never breaks on failure; the task promise
+  // itself still rejects so callers can roll back (R6).
+  private mediaOpChain: Promise<unknown> = Promise.resolve()
+
+  private runMediaOp<T>(op: () => Promise<T>): Promise<T> {
+    const task = this.mediaOpChain.then(() => op())
+    this.mediaOpChain = task.then(
+      () => undefined,
+      () => undefined,
+    )
+    return task
+  }
+
+  // Single video slot (Step 1): exactly one of 'camera' | 'screen' | 'off'
+  // is ever live. Switching sources stops the old device track first, so the
+  // uplink stays at 1 video stream max (bandwidth goal). Serialized through
+  // mediaOpChain (R1); failures roll back to the previous live state (R6).
+  public setVideoSource(source: VideoSource, opts?: SetVideoSourceOptions): Promise<MediaStream | null> {
+    return this.runMediaOp(() => this.doSetVideoSource(source, opts))
+  }
+
+  private async doSetVideoSource(source: VideoSource, opts?: SetVideoSourceOptions): Promise<MediaStream | null> {
     if (this.isClosed) return null
 
-    if (deviceId) {
-      this.selectedVideoDeviceId = deviceId
+    if (opts?.deviceId) {
+      this.selectedVideoDeviceId = opts.deviceId
     }
 
-    if (enabled) {
-      try {
-        if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
-          throw new Error('Camera access not supported in this environment')
+    // Idempotent fast paths: plain re-enable reuses the live track, 'off'
+    // when already off is a no-op (no phantom video:false / screen:false).
+    if (source === this.videoSource) {
+      if (source === 'off') return null
+      if (this.localVideoStream && this.localVideoTrack) {
+        if (source === 'camera' && opts?.deviceId) {
+          // Explicit device switch: fall through to re-acquire.
+        } else {
+          return this.localVideoStream
         }
+      }
+    }
 
-        const constraints: MediaStreamConstraints = {
-          video: {
-            deviceId: this.selectedVideoDeviceId ? { exact: this.selectedVideoDeviceId } : undefined,
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-            frameRate: { ideal: 30 },
-          },
-          audio: false,
+    if (source === 'off') {
+      return this.teardownVideoSlot()
+    }
+
+    // 1. Acquire the new device track FIRST — acquisition failure leaves the
+    // currently-live source untouched (R6).
+    const stream = source === 'camera' ? await this.acquireCameraTrack() : await this.acquireScreenTrack()
+
+    const track = stream.getVideoTracks()[0]
+    if (!track) {
+      stream.getTracks().forEach((t) => {
+        try {
+          t.stop()
+        } catch {}
+      })
+      const err = new Error(
+        source === 'camera' ? 'No video track found in acquired media stream' : 'No video track found in screen capture',
+      )
+      this.options.onError?.(err)
+      throw err
+    }
+
+    // Hint the encoder: faces favor framerate, screens favor sharpness.
+    try {
+      ;(track as MediaStreamTrack & { contentHint?: string }).contentHint = source === 'screen' ? 'detail' : 'face'
+    } catch {}
+
+    // Snapshot for rollback (R6). The old track stays live until the new one
+    // is successfully published.
+    const prevTrack = this.localVideoTrack
+    const prevStream = this.localVideoStream
+    const prevSource = this.videoSource
+
+    try {
+      if (prevTrack) (prevTrack as MediaStreamTrack & { onended?: unknown }).onended = null
+    } catch {}
+    // Native browser "Stop sharing" / device unplug ends the track
+    // out-of-band → drop the whole slot.
+    track.onended = () => {
+      if (this.localVideoTrack === track) {
+        this.setVideoSource('off').catch((err) => {
+          console.warn('[SfuClient] Error stopping video on track end:', err)
+        })
+      }
+    }
+
+    this.localVideoTrack = track
+    this.localVideoStream = stream
+    this.videoSource = source
+
+    // Negotiate-once publish: the video m-section already exists from the
+    // join offer, so every enable/switch is a replaceTrack on the
+    // pre-negotiated sender — never an offer (glare-proof). Only when the
+    // pre-negotiated sender is missing do we fall back to addTrack + one
+    // renegotiation.
+    let didAdd = false
+    try {
+      if (this.pc) {
+        if (this.videoSender) {
+          await this.videoSender.replaceTrack(track)
+        } else {
+          this.videoSender = this.pc.addTrack(track, stream)
+          didAdd = true
+          await this.renegotiate()
         }
+      }
 
-        const stream = await navigator.mediaDevices.getUserMedia(constraints)
-        const track = stream.getVideoTracks()[0]
-        if (!track) {
-          throw new Error('No video track found in acquired media stream')
+      // Clear the old kind BEFORE announcing the new one so viewers never
+      // observe both live for this user.
+      if (prevSource !== 'off' && prevSource !== source) {
+        if (prevSource === 'camera') {
+          this.sendWsMessage({ type: 'video', video: false })
+          this.options.onLocalVideoChange?.(null)
+        } else {
+          this.sendWsMessage({ type: 'screen', screen: false })
+          this.options.onLocalScreenChange?.(null)
         }
+      }
 
-        if (this.localVideoTrack) {
-          this.localVideoTrack.stop()
-        }
-
-        this.localVideoTrack = track
-        this.localVideoStream = stream
-        this.isCameraOn = true
-
-        if (this.pc) {
-          if (this.videoSender) {
-            await this.videoSender.replaceTrack(track)
-          } else {
-            this.videoSender = this.pc.addTrack(track, stream)
-            await this.renegotiate()
-          }
-        }
-
+      if (source === 'camera') {
         this.sendWsMessage({ type: 'video', video: true })
         this.options.onLocalVideoChange?.(this.localVideoStream)
-        return this.localVideoStream
-      } catch (err: any) {
-        console.error('[SfuClient] Failed to enable camera:', err)
-        this.isCameraOn = false
-        this.options.onError?.(err instanceof Error ? err : new Error(String(err)))
-        throw err
+      } else {
+        // Kind identity is signaled, never renegotiated: the SFU labels the
+        // publisher from this message (last-writer-wins per user). trackId
+        // is carried for observability only.
+        this.sendWsMessage({ type: 'screen', screen: true, trackId: track.id })
+        this.options.onLocalScreenChange?.(this.localVideoStream)
       }
-    } else {
-      if (this.localVideoTrack) {
-        this.localVideoTrack.stop()
-        this.localVideoTrack = null
-      }
-      this.localVideoStream = null
-      this.isCameraOn = false
 
-      if (this.pc && this.videoSender) {
+      if (prevTrack && prevTrack !== track) {
         try {
-          this.pc.removeTrack(this.videoSender)
-        } catch (err) {
-          console.warn('[SfuClient] Failed to remove video sender:', err)
+          prevTrack.stop()
+        } catch {}
+      }
+      return this.localVideoStream
+    } catch (err: any) {
+      // Publish failed (R6). Two cases:
+      // - Fallback addTrack path (previous source was off): detach the
+      //   half-built sender and clear to off; nothing was live before.
+      // - replaceTrack on the pre-negotiated sender: the old device is
+      //   still held, so put it back and keep the previous source live.
+      try {
+        track.onended = null
+      } catch {}
+      try {
+        track.stop()
+      } catch {}
+      if (didAdd) {
+        if (this.pc && this.videoSender) {
+          try {
+            this.pc.removeTrack(this.videoSender)
+          } catch {}
         }
         this.videoSender = null
-        await this.renegotiate()
+        this.localVideoTrack = null
+        this.localVideoStream = null
+        this.videoSource = 'off'
+        this.emitLocalVideoState()
+      } else {
+        let restored = false
+        if (this.pc && this.videoSender && prevTrack && prevTrack !== track) {
+          try {
+            await this.videoSender.replaceTrack(prevTrack)
+            restored = true
+          } catch {}
+        }
+        if (restored) {
+          this.localVideoTrack = prevTrack
+          this.localVideoStream = prevStream
+          this.videoSource = prevSource
+          this.emitLocalVideoState()
+        } else {
+          if (prevTrack && prevTrack !== track) {
+            try {
+              ;(prevTrack as MediaStreamTrack & { onended?: unknown }).onended = null
+            } catch {}
+            try {
+              prevTrack.stop()
+            } catch {}
+          }
+          this.localVideoTrack = null
+          this.localVideoStream = null
+          this.videoSource = 'off'
+          if (prevSource !== 'off') {
+            this.sendWsMessage(
+              prevSource === 'camera' ? { type: 'video', video: false } : { type: 'screen', screen: false },
+            )
+          }
+          // The pre-negotiated sender survives (m-section intact) for retry.
+          this.emitLocalVideoState()
+        }
       }
+      if (source === 'screen' && err?.name !== 'NotAllowedError') {
+        this.options.onError?.(err instanceof Error ? err : new Error(String(err)))
+      }
+      throw err
+    }
+  }
 
+  // Best-effort, idempotent slot teardown. Local cleanup always runs and the
+  // matching kind:false is always sent when anything was live (R4). The
+  // pre-negotiated sender is retained with a null track — no renegotiation,
+  // so teardown can never wedge signaling.
+  private async teardownVideoSlot(): Promise<null> {
+    const hadVideo =
+      this.videoSource !== 'off' ||
+      this.localVideoTrack !== null ||
+      this.localVideoStream !== null ||
+      this.videoSender !== null
+    if (!hadVideo) return null
+
+    const prevSource = this.videoSource
+
+    if (this.localVideoTrack) {
+      try {
+        this.localVideoTrack.onended = null
+      } catch {}
+      try {
+        this.localVideoTrack.stop()
+      } catch {}
+      this.localVideoTrack = null
+    }
+    this.localVideoStream = null
+    this.videoSource = 'off'
+
+    if (this.pc && this.videoSender) {
+      // Detach the track but keep the sender/m-section: re-enable is a
+      // plain replaceTrack with no offer. Best-effort; kind:false below is
+      // what the SFU acts on regardless (R4).
+      try {
+        await this.videoSender.replaceTrack(null)
+      } catch (err) {
+        console.warn('[SfuClient] Failed to detach video track:', err)
+      }
+    }
+
+    if (prevSource === 'screen') {
+      this.sendWsMessage({ type: 'screen', screen: false })
+      this.options.onLocalScreenChange?.(null)
+    } else if (prevSource === 'camera') {
       this.sendWsMessage({ type: 'video', video: false })
       this.options.onLocalVideoChange?.(null)
-      return null
+    } else {
+      // Unknown prior kind (e.g. recovered state) — clear both so no ghost
+      // publisher survives server-side.
+      this.sendWsMessage({ type: 'video', video: false })
+      this.sendWsMessage({ type: 'screen', screen: false })
+      this.options.onLocalVideoChange?.(null)
+      this.options.onLocalScreenChange?.(null)
     }
+    return null
+  }
+
+  private emitLocalVideoState(): void {
+    if (this.videoSource === 'camera') {
+      this.options.onLocalVideoChange?.(this.localVideoStream)
+    } else if (this.videoSource === 'screen') {
+      this.options.onLocalScreenChange?.(this.localVideoStream)
+    } else {
+      this.options.onLocalVideoChange?.(null)
+      this.options.onLocalScreenChange?.(null)
+    }
+  }
+
+  // Background tabs stall the (expensive) screen encoder; on return, open
+  // with a keyframe so viewers resync immediately instead of waiting out
+  // the sparse static-content keyframe cadence. Camera needs nothing: its
+  // constant motion self-heals via frequent keyframes.
+  private setupVisibilityKeyframe(): void {
+    if (typeof document === 'undefined' || typeof document.addEventListener !== 'function') return
+    if (this.visibilityCleanup) return
+    const handler = () => {
+      if (typeof document === 'undefined') return
+      if (document.visibilityState !== 'visible') return
+      if (this.videoSource !== 'screen') return
+      this.requestKeyframe()
+    }
+    document.addEventListener('visibilitychange', handler)
+    this.visibilityCleanup = () => {
+      document.removeEventListener('visibilitychange', handler)
+      this.visibilityCleanup = null
+    }
+  }
+
+  private async acquireCameraTrack(): Promise<MediaStream> {
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+      throw new Error('Camera access not supported in this environment')
+    }
+
+    const constraints: MediaStreamConstraints = {
+      video: {
+        deviceId: this.selectedVideoDeviceId ? { exact: this.selectedVideoDeviceId } : undefined,
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+        frameRate: { ideal: 30 },
+      },
+      audio: false,
+    }
+
+    try {
+      return await navigator.mediaDevices.getUserMedia(constraints)
+    } catch (err: any) {
+      // Acquisition failed: live state untouched (R6) — a failed device
+      // switch must not kill the running source.
+      console.error('[SfuClient] Failed to enable camera:', err)
+      this.options.onError?.(err instanceof Error ? err : new Error(String(err)))
+      throw err
+    }
+  }
+
+  private async acquireScreenTrack(): Promise<MediaStream> {
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getDisplayMedia) {
+      throw new Error('Screen sharing not supported in this environment')
+    }
+
+    try {
+      return await navigator.mediaDevices.getDisplayMedia({
+        video: { frameRate: 30 },
+        audio: false,
+      })
+    } catch (err: any) {
+      if (err?.name === 'NotAllowedError') {
+        console.log('[SfuClient] Screen share permission was denied or dismissed by user')
+      } else {
+        console.error('[SfuClient] Failed to start screen share:', err)
+        this.options.onError?.(err instanceof Error ? err : new Error(String(err)))
+      }
+      throw err
+    }
+  }
+
+  // Legacy camera toggle — now routed through the single video slot, so
+  // enabling the camera while sharing stops the screen first (and vice
+  // versa via startScreenShare). Disabling only clears the camera kind: a
+  // live screen share is left untouched.
+  public setCameraEnabled(enabled: boolean, deviceId?: string): Promise<MediaStream | null> {
+    if (!enabled) {
+      if (this.videoSource !== 'camera') return Promise.resolve(null)
+      return this.setVideoSource('off')
+    }
+    return this.setVideoSource('camera', deviceId ? { deviceId } : undefined)
   }
 
   public async setCameraDevice(deviceId: string): Promise<void> {
     this.selectedVideoDeviceId = deviceId
-    if (this.isCameraOn) {
-      await this.setCameraEnabled(true, deviceId)
+    if (this.videoSource === 'camera') {
+      await this.setVideoSource('camera', { deviceId })
     }
   }
 
   public isScreenSharing(): boolean {
-    return this.isScreenSharingOn
+    return this.videoSource === 'screen'
   }
 
   public getLocalScreenStream(): MediaStream | null {
-    return this.localScreenStream
+    return this.videoSource === 'screen' ? this.localVideoStream : null
   }
 
   public getRemoteScreenStreams(): Map<string, MediaStream> {
     return new Map(this.remoteScreenStreams)
   }
 
-  public async startScreenShare(): Promise<MediaStream | null> {
-    if (this.isClosed) return null
-    if (this.isScreenSharingOn && this.localScreenStream) {
-      return this.localScreenStream
+  // Screen share now routes through the single video slot: starting a share
+  // while the camera is live stops the camera first (1 uplink max).
+  // Stopping only clears the screen kind: a live camera is left untouched.
+  public startScreenShare(): Promise<MediaStream | null> {
+    return this.setVideoSource('screen')
+  }
+
+  public stopScreenShare(): Promise<void> {
+    return this.runMediaOp(async () => {
+      if (this.videoSource !== 'screen') return
+      await this.teardownVideoSlot()
+    })
+  }
+
+  // Serialized renegotiation (R1). Every addTrack/removeTrack path funnels
+  // through this chain so exactly one createOffer→setLocalDescription is in
+  // flight at a time. The chain survives failures; each task still settles
+  // for its own caller so enable paths can roll back (R6).
+  private renegotiateChain: Promise<void> = Promise.resolve()
+
+  private renegotiate(): Promise<void> {
+    const task = this.renegotiateChain.then(() => this.doRenegotiate())
+    this.renegotiateChain = task.then(
+      () => undefined,
+      () => undefined,
+    )
+    return task
+  }
+
+  private async doRenegotiate(): Promise<void> {
+    if (!this.pc || this.isClosed || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      throw new Error('[SfuClient] renegotiate: peer connection or signaling not ready')
     }
 
-    try {
-      if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getDisplayMedia) {
-        throw new Error('Screen sharing not supported in this environment')
-      }
-
-      const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: 30 },
-        audio: false,
+    if (!this.joinAcked) {
+      await new Promise<void>((resolve, reject) => {
+        const deadline = setTimeout(() => {
+          clearInterval(timer)
+          reject(new Error('[SfuClient] renegotiate: timed out waiting for join acknowledgement'))
+        }, 5000)
+        const timer = setInterval(() => {
+          if (this.isClosed || !this.pc) {
+            clearInterval(timer)
+            clearTimeout(deadline)
+            reject(new Error('[SfuClient] renegotiate: closed while waiting for join acknowledgement'))
+          } else if (this.joinAcked) {
+            clearInterval(timer)
+            clearTimeout(deadline)
+            resolve()
+          }
+        }, 50)
       })
-
-      const track = stream.getVideoTracks()[0]
-      if (!track) {
-        throw new Error('No video track found in screen capture')
-      }
-
-      // Instruct WebRTC encoder to prioritize resolution & text sharpness over frame rate
-      if ('contentHint' in track) {
-        track.contentHint = 'detail'
-      }
-
-      // Handle user clicking the native browser "Stop sharing" button
-      track.onended = () => {
-        this.stopScreenShare().catch((err) => {
-          console.warn('[SfuClient] Error stopping screen share on track end:', err)
-        })
-      }
-
-      if (this.localScreenTrack) {
-        this.localScreenTrack.stop()
-      }
-
-      this.localScreenTrack = track
-      this.localScreenStream = stream
-      this.isScreenSharingOn = true
-
-      if (this.pc) {
-        if (this.screenSender) {
-          await this.screenSender.replaceTrack(track)
-        } else {
-          this.screenSender = this.pc.addTrack(track, stream)
-          await this.renegotiate()
-        }
-      }
-
-      this.sendWsMessage({ type: 'screen', screen: true })
-      this.options.onLocalScreenChange?.(this.localScreenStream)
-      return this.localScreenStream
-    } catch (err: any) {
-      if (err.name === 'NotAllowedError') {
-        console.log('[SfuClient] Screen share permission was denied or dismissed by user')
-      } else {
-        console.error('[SfuClient] Failed to start screen share:', err)
-        this.options.onError?.(err instanceof Error ? err : new Error(String(err)))
-      }
-      this.isScreenSharingOn = false
-      throw err
-    }
-  }
-
-  public async stopScreenShare(): Promise<void> {
-    if (!this.isScreenSharingOn && !this.localScreenStream && !this.localScreenTrack) {
-      return
     }
 
-    if (this.localScreenTrack) {
-      this.localScreenTrack.stop()
-      this.localScreenTrack = null
-    }
-    this.localScreenStream = null
-    this.isScreenSharingOn = false
-
-    if (this.pc && this.screenSender) {
-      try {
-        this.pc.removeTrack(this.screenSender)
-      } catch (err) {
-        console.warn('[SfuClient] Failed to remove screen sender:', err)
-      }
-      this.screenSender = null
-      await this.renegotiate()
-    }
-
-    this.sendWsMessage({ type: 'screen', screen: false })
-    this.options.onLocalScreenChange?.(null)
-  }
-
-  private async renegotiate(): Promise<void> {
-    if (!this.pc || this.isClosed || !this.ws || this.ws.readyState !== WebSocket.OPEN) return
-
-    if (this.pc.signalingState && this.pc.signalingState !== 'stable') {
-      await new Promise<void>((resolve) => {
-        const check = () => {
-          if (!this.pc || this.pc.signalingState === 'stable') {
-            this.pc?.removeEventListener('signalingstatechange', check)
+    const pc = this.pc
+    if (pc.signalingState && pc.signalingState !== 'stable') {
+      // Bounded wait for the in-flight exchange to settle. On timeout fail
+      // CLEANLY (caller rolls back) — never createOffer in a non-stable
+      // state and corrupt the session. This explicitly INCLUDES
+      // have-remote-offer: answering is applyDownstreamOffer's independent
+      // job (message queue, not this chain), so it settles on its own and
+      // unblocks us. Refusing here stranded toggles and killed recoverable
+      // sessions instead.
+      await new Promise<void>((resolve, reject) => {
+        const onStable = () => {
+          if (!this.pc || pc.signalingState === 'stable') {
+            clearTimeout(timer)
+            pc.removeEventListener('signalingstatechange', onStable)
             resolve()
           }
         }
-        this.pc?.addEventListener('signalingstatechange', check)
-        setTimeout(check, 1000)
+        const timer = setTimeout(() => {
+          pc.removeEventListener('signalingstatechange', onStable)
+          reject(
+            new Error(`[SfuClient] renegotiate timed out waiting for stable state (still ${pc.signalingState})`),
+          )
+        }, 3000)
+        pc.addEventListener('signalingstatechange', onStable)
+        onStable()
       })
     }
 
-    const offer = await this.pc.createOffer()
-    await this.pc.setLocalDescription(offer)
+    const offer = await pc.createOffer()
+    await pc.setLocalDescription(offer)
 
-    let sdp = offer.sdp || ''
-    if (this.localScreenTrack) {
-      const trackId = this.localScreenTrack.id
-      const uid = this.options.userId || 'self'
-      const regex = new RegExp(`a=msid:\\S+\\s+(${trackId})`, 'g')
-      sdp = sdp.replace(regex, `a=msid:kith-screen-${uid} kith-track-${uid}-screen`)
-    }
-
+    // No SDP rewriting: offers now only ever carry the pre-negotiated
+    // m-sections (join offer, ICE-restart re-offers). Publisher kind is
+    // signaled out-of-band via video/screen messages, never via msid.
     this.sendWsMessage({
       type: 'offer',
-      sdp: sdp,
+      sdp: offer.sdp,
     })
   }
 
@@ -875,6 +1499,17 @@ export class SfuClient {
 
   private cleanup(): void {
     this.queue = []
+    this.clearRecoveryTimers()
+    if (this.recoveryWaiter) {
+      const waiter = this.recoveryWaiter
+      this.recoveryWaiter = null
+      waiter.resolve(false)
+    }
+    this.recoveryInFlight = false
+    this.restartAttempts = 0
+    this.hasConnected = false
+    this.joinAcked = false
+    this.offerRetryAttempts = 0
     if (this.vadCleanup) {
       this.vadCleanup()
       this.vadCleanup = null
@@ -882,6 +1517,9 @@ export class SfuClient {
 
     if (this.unlockAudioCleanup) {
       this.unlockAudioCleanup()
+    }
+    if (this.visibilityCleanup) {
+      this.visibilityCleanup()
     }
     this.userToTrackMap.clear()
 
@@ -891,22 +1529,22 @@ export class SfuClient {
     }
 
     if (this.localVideoTrack) {
+      try {
+        this.localVideoTrack.onended = null
+      } catch {}
       this.localVideoTrack.stop()
       this.localVideoTrack = null
     }
     this.localVideoStream = null
     this.videoSender = null
-    this.isCameraOn = false
+    this.videoSource = 'off'
     this.remoteVideoStreams.clear()
 
-    if (this.localScreenTrack) {
-      this.localScreenTrack.stop()
-      this.localScreenTrack = null
-    }
-    this.localScreenStream = null
-    this.screenSender = null
-    this.isScreenSharingOn = false
     this.remoteScreenStreams.clear()
+    this.midIndex.clear()
+    this.screenRevoked.clear()
+    this.lastDownstreamSdp = null
+    this.remoteTrackKind.clear()
 
     for (const audioEl of this.audioElements.values()) {
       audioEl.srcObject = null
@@ -928,6 +1566,71 @@ export class SfuClient {
         this.ws.close()
       }
       this.ws = null
+    }
+  }
+
+  // ICE restart + re-offer recovery (R10). restartIce() makes the next
+  // offer carry fresh ICE credentials; renegotiate() re-offers every live
+  // sender, so cam/screen tracks are re-announced to the SFU in one step.
+  private async attemptRecovery(): Promise<void> {
+    if (this.isClosed || !this.pc || this.recoveryInFlight || !this.hasConnected) return
+    if (this.restartAttempts >= SfuClient.MAX_RESTARTS) {
+      this.giveUp()
+      return
+    }
+    this.recoveryInFlight = true
+    this.restartAttempts += 1
+    // Surfaced as connecting: the UI shows "reconnecting" instead of a leave.
+    this.options.onConnectionStateChange?.('connecting')
+    try {
+      this.pc.restartIce()
+      await this.renegotiate()
+      if (this.isClosed) return
+      const recovered = await this.waitForRecovery()
+      if (this.isClosed) return
+      if (recovered) {
+        this.clearRecovery()
+        this.options.onConnectionStateChange?.('connected')
+      } else {
+        this.giveUp()
+      }
+    } catch {
+      this.giveUp()
+    } finally {
+      this.recoveryInFlight = false
+    }
+  }
+
+  private waitForRecovery(): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      this.recoveryWaiter = { resolve }
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = null
+        const waiter = this.recoveryWaiter
+        this.recoveryWaiter = null
+        waiter?.resolve(false)
+      }, this.options.reconnectTimeoutMs ?? 5000)
+    })
+  }
+
+  private giveUp(): void {
+    this.clearRecoveryTimers()
+    this.recoveryWaiter = null
+    if (!this.isClosed) {
+      this.options.onConnectionStateChange?.('failed')
+    }
+  }
+
+  private clearRecovery(): void {
+    this.clearRecoveryTimers()
+    this.recoveryWaiter = null
+    this.restartAttempts = 0
+  }
+
+  private clearRecoveryTimers(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
     }
   }
 

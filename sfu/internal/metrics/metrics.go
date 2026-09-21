@@ -46,6 +46,11 @@ var (
 		Help: "Total number of RTCP NACK requests received from subscribers.",
 	})
 
+	RTCPNackForwarded = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "sfu_rtcp_nack_forwarded_total",
+		Help: "Total number of RTCP NACK requests translated and forwarded to publishers.",
+	})
+
 	RTCPPLITotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "sfu_rtcp_pli_total",
 		Help: "Total number of RTCP PLI (Picture Loss Indication) requests received from subscribers.",

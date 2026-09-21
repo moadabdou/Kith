@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"strings"
 	"sync"
 
 	"github.com/pion/rtcp"
@@ -29,6 +28,7 @@ type PublisherUplink struct {
 	mu          sync.RWMutex
 	subscribers map[string]*SubscriberDownlink
 	rtcpWriter  func([]rtcp.Packet) error
+	onDeath     func(trackKey string)
 
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -49,10 +49,19 @@ func NewPublisherUplink(pubID string, trackRemote *webrtc.TrackRemote, receiver 
 		kind = trackRemote.Kind()
 		trackID = trackRemote.ID()
 		streamID = trackRemote.StreamID()
-		codecCap = trackRemote.Codec().RTPCodecCapability
-		if strings.HasPrefix(streamID, "kith-screen-") || strings.Contains(trackID, "-screen") {
-			isScreen = true
+		// Codec() is populated on first RTP; fall back to a kind-correct
+		// default when empty so downlink creation never poisons on an empty
+		// capability (which would silently drop the subscriber). In production
+		// OnTrack fires post-first-RTP so this branch is unreachable there.
+		if cc := trackRemote.Codec().RTPCodecCapability; cc.MimeType != "" {
+			codecCap = cc
+		} else if kind == webrtc.RTPCodecTypeVideo {
+			codecCap = webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8}
 		}
+		// NOTE: no msid sniffing here by design. Under the negotiate-once
+		// contract uplink SDP ids are browser-random; the screen label comes
+		// from the declared kind flag (Router.SetVideoKind) applied by
+		// AddPublisher after construction.
 	}
 
 	p := &PublisherUplink{
@@ -82,8 +91,10 @@ func (p *PublisherUplink) SetRTCPWriter(writer func([]rtcp.Packet) error) {
 	p.rtcpWriter = writer
 }
 
-// SendRTCP forwards RTCP packets (such as PLI and FIR) to the publisher.
-// Rewrites MediaSSRC to match the publisher's incoming track SSRC.
+// SendRTCP forwards RTCP packets (PLI, FIR, and translated NACKs) to the
+// publisher. Rewrites MediaSSRC to match the publisher's incoming track
+// SSRC. NACK sequences arrive pre-translated to uplink space (see
+// seqTranslator); only the SSRC needs fixing here.
 func (p *PublisherUplink) SendRTCP(pkts []rtcp.Packet) error {
 	p.mu.RLock()
 	writer := p.rtcpWriter
@@ -102,6 +113,8 @@ func (p *PublisherUplink) SendRTCP(pkts []rtcp.Packet) error {
 				fb.MediaSSRC = mediaSSRC
 			case *rtcp.FullIntraRequest:
 				fb.MediaSSRC = mediaSSRC
+			case *rtcp.TransportLayerNack:
+				fb.MediaSSRC = mediaSSRC
 			}
 		}
 	}
@@ -109,23 +122,46 @@ func (p *PublisherUplink) SendRTCP(pkts []rtcp.Packet) error {
 	return writer(pkts)
 }
 
+// SetOnDeath configures the callback invoked (async) when the uplink dies
+// (readingLoop EOF/error via Close). The router uses it to evict the map
+// entry and tear down downlinks. Nil-safe; fired at most once via closeOnce.
+func (p *PublisherUplink) SetOnDeath(cb func(trackKey string)) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.onDeath = cb
+}
+
+// IsClosed reports whether the uplink's reading loop has terminated.
+func (p *PublisherUplink) IsClosed() bool {
+	select {
+	case <-p.ctx.Done():
+		return true
+	default:
+		return false
+	}
+}
+
 // DownlinkTrackID returns the unique track ID for downstream subscribers.
+// Screen-ness comes from the IsScreen label (declared kind), never from SDP.
 func (p *PublisherUplink) DownlinkTrackID(pubID string) string {
-	if p.IsScreen || strings.HasPrefix(p.StreamID, "kith-screen-") || strings.Contains(p.TrackID, "-screen") {
+	if p.IsScreen {
 		return fmt.Sprintf("kith-track-%s-screen", pubID)
+	}
+	// Stable camera id: never embed the browser's random uplink track id —
+	// viewers must be able to parse the uid back from the downlink id (R9).
+	if p.Kind == webrtc.RTPCodecTypeVideo {
+		return fmt.Sprintf("kith-track-%s-video", pubID)
 	}
 	if p.TrackRemote != nil && p.TrackRemote.ID() != "" {
 		return fmt.Sprintf("kith-track-%s-%s", pubID, p.TrackRemote.ID())
-	}
-	if p.Kind == webrtc.RTPCodecTypeVideo {
-		return fmt.Sprintf("kith-track-%s-video", pubID)
 	}
 	return fmt.Sprintf("kith-track-%s", pubID)
 }
 
 // DownlinkStreamID returns the shared stream ID for all tracks of this publisher.
+// Screen-ness comes from the IsScreen label (declared kind), never from SDP.
 func (p *PublisherUplink) DownlinkStreamID(pubID string) string {
-	if p.IsScreen || strings.HasPrefix(p.StreamID, "kith-screen-") {
+	if p.IsScreen {
 		return fmt.Sprintf("kith-screen-%s", pubID)
 	}
 	return fmt.Sprintf("kith-stream-%s", pubID)
@@ -190,16 +226,23 @@ func (p *PublisherUplink) readingLoop() {
 }
 
 // Close gracefully closes the publisher reading loop and all attached subscribers.
+// Notifies the router via onDeath (async, at most once) so the map entry is
+// evicted and downlinks are torn down even without an explicit remove (R5).
 func (p *PublisherUplink) Close() {
 	p.closeOnce.Do(func() {
 		if p.cancel != nil {
 			p.cancel()
 		}
 		p.mu.Lock()
-		defer p.mu.Unlock()
 		for id, sub := range p.subscribers {
 			sub.Close()
 			delete(p.subscribers, id)
+		}
+		cb := p.onDeath
+		tKey := p.TrackKey
+		p.mu.Unlock()
+		if cb != nil && tKey != "" {
+			go cb(tKey)
 		}
 	})
 }

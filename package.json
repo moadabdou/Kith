@@ -1,0 +1,25 @@
+{
+  "name": "discord",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/moadabdou/Kith.git"
+  },
+  "keywords": [],
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/moadabdou/Kith/issues"
+  },
+  "homepage": "https://github.com/moadabdou/Kith#readme",
+  "dependencies": {
+    "playwright-core": "^1.63.0"
+  }
+}

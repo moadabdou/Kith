@@ -355,3 +355,56 @@ func TestRoomDisconnectGracePeriod_Expires(t *testing.T) {
 		t.Errorf("expected voice.peer_left to be published after grace period expired")
 	}
 }
+
+// Grace-enter disconnect must explicitly clear viewers' media state for the
+// departed publisher (Image 5 ghost screen). Track ended/mute is unreliable
+// on its own, so viewers get deterministic video:false + screen:false.
+func TestRoomDisconnectBroadcastsMediaOff(t *testing.T) {
+	r := NewRoom("chan_media_off", nil, nil)
+	defer r.Close()
+
+	p1 := createTestPeer(t, "user_sharer", "chan_media_off")
+	defer p1.Close()
+	p2 := createTestPeer(t, "user_viewer", "chan_media_off")
+	defer p2.Close()
+
+	var mu sync.Mutex
+	var events []Event
+	sender2 := func(targetUID string, ev Event) {
+		mu.Lock()
+		defer mu.Unlock()
+		events = append(events, ev)
+	}
+
+	if err := r.Join(p2, sender2); err != nil {
+		t.Fatalf("failed to join p2: %v", err)
+	}
+	if err := r.Join(p1, nil); err != nil {
+		t.Fatalf("failed to join p1: %v", err)
+	}
+
+	if err := r.Disconnect("user_sharer", 10*time.Second); err != nil {
+		t.Fatalf("failed to disconnect sharer: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	var videoOff, screenOff bool
+	for _, ev := range events {
+		if ev.UserID != "user_sharer" {
+			continue
+		}
+		if ev.Type == "video" && ev.Video != nil && !*ev.Video {
+			videoOff = true
+		}
+		if ev.Type == "screen" && ev.Screen != nil && !*ev.Screen {
+			screenOff = true
+		}
+	}
+	if !videoOff {
+		t.Errorf("viewer never received video:false for departed sharer")
+	}
+	if !screenOff {
+		t.Errorf("viewer never received screen:false for departed sharer")
+	}
+}

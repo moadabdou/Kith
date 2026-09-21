@@ -225,6 +225,7 @@ services:
       STUN_SERVER: ${STUN_SERVER:-}
       NAT_1TO1_IPS: ${NAT_1TO1_IPS:-127.0.0.1}
       NATS_URL: ${NATS_URL:-nats://nats:4222}
+      SFU_PION_LOG: ${SFU_PION_LOG:-warn}
     cap_add:
       - NET_ADMIN
     ports:

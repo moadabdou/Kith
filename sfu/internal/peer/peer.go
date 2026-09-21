@@ -3,12 +3,70 @@ package peer
 import (
 	"fmt"
 	"log/slog"
+	"os"
+	"strings"
 	"sync"
 
 	"github.com/moadabdou/Kith/sfu/internal/metrics"
+	"github.com/pion/logging"
 	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
 )
+
+// pionLoggerFactory routes Pion internals (pc, ice, dtls, rtp, rtcp, srtp…)
+// through slog at SFU_PION_LOG (default warn) so OnTrack/peek/codec failures
+// are diagnosable without drowning the log.
+type pionLoggerFactory struct {
+	level logging.LogLevel
+}
+
+type pionLogger struct {
+	scope string
+	level logging.LogLevel
+}
+
+func newPionLoggerFactory() logging.LoggerFactory {
+	lvl := logging.LogLevelWarn
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("SFU_PION_LOG"))) {
+	case "trace":
+		lvl = logging.LogLevelTrace
+	case "debug":
+		lvl = logging.LogLevelDebug
+	case "info":
+		lvl = logging.LogLevelInfo
+	case "error":
+		lvl = logging.LogLevelError
+	case "disabled", "none", "off":
+		lvl = logging.LogLevelDisabled
+	}
+	return &pionLoggerFactory{level: lvl}
+}
+
+func (f *pionLoggerFactory) NewLogger(scope string) logging.LeveledLogger {
+	return &pionLogger{scope: "pion/" + scope, level: f.level}
+}
+
+func (l *pionLogger) levelEnabled(want logging.LogLevel) bool {
+	// Disabled=0 … Trace=6: higher value = more verbose.
+	return l.level != logging.LogLevelDisabled && want <= l.level
+}
+
+func (l *pionLogger) log(level slog.Level, msg string) {
+	slog.Log(nil, level, msg, "scope", l.scope)
+}
+
+func (l *pionLogger) Trace(msg string)                 { if l.levelEnabled(logging.LogLevelTrace) { l.log(slog.LevelDebug, msg) } }
+func (l *pionLogger) Tracef(f string, a ...any)        { if l.levelEnabled(logging.LogLevelTrace) { l.log(slog.LevelDebug, fmt.Sprintf(f, a...)) } }
+func (l *pionLogger) Debug(msg string)                 { if l.levelEnabled(logging.LogLevelDebug) { l.log(slog.LevelDebug, msg) } }
+func (l *pionLogger) Debugf(f string, a ...any)        { if l.levelEnabled(logging.LogLevelDebug) { l.log(slog.LevelDebug, fmt.Sprintf(f, a...)) } }
+func (l *pionLogger) Info(msg string)                  { if l.levelEnabled(logging.LogLevelInfo) { l.log(slog.LevelInfo, msg) } }
+func (l *pionLogger) Infof(f string, a ...any)         { if l.levelEnabled(logging.LogLevelInfo) { l.log(slog.LevelInfo, fmt.Sprintf(f, a...)) } }
+func (l *pionLogger) Warn(msg string)                  { if l.levelEnabled(logging.LogLevelWarn) { l.log(slog.LevelWarn, msg) } }
+func (l *pionLogger) Warnf(f string, a ...any)         { if l.levelEnabled(logging.LogLevelWarn) { l.log(slog.LevelWarn, fmt.Sprintf(f, a...)) } }
+func (l *pionLogger) Error(msg string)                 { if l.levelEnabled(logging.LogLevelError) { l.log(slog.LevelError, msg) } }
+func (l *pionLogger) Errorf(f string, a ...any)        { if l.levelEnabled(logging.LogLevelError) { l.log(slog.LevelError, fmt.Sprintf(f, a...)) } }
+func (l *pionLogger) Fatal(msg string)                 { l.log(slog.LevelError, msg) }
+func (l *pionLogger) Fatalf(f string, a ...any)        { l.log(slog.LevelError, fmt.Sprintf(f, a...)) }
 
 // Config configures Pion WebRTC settings for the SFU.
 type Config struct {
@@ -274,6 +332,8 @@ func CreateAPI(cfg Config) (*webrtc.API, error) {
 	for _, fb := range videoFeedbacks {
 		mediaEngine.RegisterFeedback(fb, webrtc.RTPCodecTypeVideo)
 	}
+
+	settingEngine.LoggerFactory = newPionLoggerFactory()
 
 	return webrtc.NewAPI(
 		webrtc.WithSettingEngine(settingEngine),

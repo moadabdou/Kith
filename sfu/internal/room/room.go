@@ -284,6 +284,25 @@ func (r *Room) handleDisconnect(m disconnectMsg) {
 	delete(r.senders, m.userID)
 	_ = p.Close()
 
+	// The publisher is gone without sending video:false/screen:false, so tell
+	// viewers explicitly. Otherwise they keep rendering the dead tracks until
+	// (and unless) track mute/ended fires — the ghost-share. Safe on quick
+	// rejoin: a returning user re-announces live tracks with video:true /
+	// screen:true, which overwrite these falses.
+	mediaOff := false
+	r.broadcastExcept(m.userID, Event{
+		Type:      "video",
+		UserID:    m.userID,
+		ChannelID: r.ID,
+		Video:     &mediaOff,
+	})
+	r.broadcastExcept(m.userID, Event{
+		Type:      "screen",
+		UserID:    m.userID,
+		ChannelID: r.ID,
+		Screen:    &mediaOff,
+	})
+
 	// Keep p in r.peers[m.userID] during grace period, but schedule eviction timer
 	uid := m.userID
 	targetPeer := p

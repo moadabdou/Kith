@@ -258,6 +258,12 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
             setConnectionStatus('connecting')
           } else if (state === 'disconnected' || state === 'failed') {
             setConnectionStatus('disconnected')
+            // The PC is gone: receiver tracks are dead. Drop remote media
+            // state so a rejoin starts clean instead of rendering ghosts of
+            // the previous session. (Transient blips never reach here — the
+            // client debounces them internally.)
+            setRemoteVideoStreams(new Map())
+            setRemoteScreenStreams(new Map())
           }
         },
         onSpeakingChange: (speakingUid, speaking) => {
@@ -492,8 +498,11 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       if (err?.name !== 'NotAllowedError') {
         console.error('[VoiceContext] Failed to toggle screen share:', err)
       }
-      setIsScreenSharing(false)
-      setLocalScreenStream(null)
+      // Sync from the client instead of assuming off: a failed stop may have
+      // rolled back to a still-live share.
+      const stillSharing = sfuClientRef.current?.isScreenSharing() ?? false
+      setIsScreenSharing(stillSharing)
+      setLocalScreenStream(stillSharing ? sfuClientRef.current?.getLocalScreenStream() ?? null : null)
     }
   }, [])
 

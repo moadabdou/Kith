@@ -557,4 +557,40 @@ describe('VoiceContext Client Integration (Phase 5c / Issue #74)', () => {
 
     expect(voiceValue?.remoteVideoStreams.get('user-2')).toBe(remoteStream)
   })
+
+  // Images 4-5: a real connection drop must clear remote media state so a
+  // rejoin starts clean instead of rendering the previous session's ghosts.
+  it('clears remote video and screen maps when the SFU connection drops', async () => {
+    await act(async () => {
+      voiceValue?.joinVoice('guild-1', 'channel-voice-1')
+      gatewayListeners.voiceServerUpdates.forEach((cb) =>
+        cb({
+          guild_id: 'guild-1',
+          channel_id: 'channel-voice-1',
+          endpoint: '127.0.0.1:5000',
+          token: 'token-abc',
+        })
+      )
+    })
+
+    const sfu = sfuClientInstances[0]
+    const remoteVideo = { id: 'remote-video-u2' } as MediaStream
+    const remoteScreen = { id: 'remote-screen-u2' } as MediaStream
+
+    await act(async () => {
+      sfu.options.onConnectionStateChange('connected')
+      sfu.options.onRemoteVideoChange?.('user-2', remoteVideo)
+      sfu.options.onRemoteScreenShareChange?.('user-2', remoteScreen)
+    })
+    expect(voiceValue?.remoteVideoStreams.get('user-2')).toBe(remoteVideo)
+    expect(voiceValue?.remoteScreenStreams.get('user-2')).toBe(remoteScreen)
+
+    await act(async () => {
+      sfu.options.onConnectionStateChange('failed')
+    })
+
+    expect(voiceValue?.connectionStatus).toBe('disconnected')
+    expect(voiceValue?.remoteVideoStreams.has('user-2')).toBe(false)
+    expect(voiceValue?.remoteScreenStreams.has('user-2')).toBe(false)
+  })
 })

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Headphones, Maximize2, MicOff, Monitor } from 'lucide-react'
+import { isBenignPlayAbort, isTrackLive } from '../../lib/spotlight'
 
 export interface VideoTileProps {
   userId: string
@@ -37,13 +38,23 @@ export function VideoTile({
     if (!videoEl) return
 
     if (stream && stream.getVideoTracks().length > 0) {
-      videoEl.srcObject = stream
+      // Same-stream re-render (parent churn, same MediaStream identity):
+      // never reassign — the reassignment itself aborts in-flight play().
+      if (videoEl.srcObject !== stream) {
+        videoEl.srcObject = stream
+      }
       setHasVideoTrack(true)
-      videoEl.play().catch((err) => console.warn('[VideoTile] Autoplay failed:', err))
+      const playPromise = videoEl.play()
+      if (playPromise !== undefined) {
+        playPromise.catch((err) => {
+          if (isBenignPlayAbort(err)) return
+          console.warn('[VideoTile] Autoplay failed:', err)
+        })
+      }
 
       const track = stream.getVideoTracks()[0]
       const checkTrack = () => {
-        setHasVideoTrack(track.readyState === 'live' && track.enabled)
+        setHasVideoTrack(isTrackLive(track))
       }
 
       checkTrack()
@@ -55,6 +66,11 @@ export function VideoTile({
         track.removeEventListener('ended', checkTrack)
         track.removeEventListener('mute', checkTrack)
         track.removeEventListener('unmute', checkTrack)
+        // Only detach when the stream actually changed or went away;
+        // clearing on every same-stream re-run aborts playback for nothing.
+        if (videoEl.srcObject !== stream) {
+          videoEl.srcObject = null
+        }
       }
     } else {
       videoEl.srcObject = null

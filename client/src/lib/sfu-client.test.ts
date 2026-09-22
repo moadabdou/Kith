@@ -88,8 +88,23 @@ describe('SfuClient', () => {
 
     // Mock RTCPeerConnection. The pre-negotiated sendonly video transceiver
     // (negotiate-once slot) resolves to mockVideoSender on every connect.
+    // Sender parameters are stateful (mirrors a real sender): setParameters
+    // applies, getParameters reflects.
+    const senderParams: any = {
+      degradationPreference: '',
+      encodings: [
+        { rid: 'f', active: true },
+        { rid: 'h', active: true },
+        { rid: 'q', active: true },
+      ],
+    }
     mockVideoSender = {
       replaceTrack: vi.fn().mockResolvedValue(undefined),
+      getParameters: vi.fn(() => senderParams),
+      setParameters: vi.fn().mockImplementation(async (p: any) => {
+        if (p?.encodings) senderParams.encodings = p.encodings
+        if ('degradationPreference' in (p ?? {})) senderParams.degradationPreference = p.degradationPreference
+      }),
     }
     // Mock RTCPeerConnection
     mockPc = {
@@ -585,11 +600,108 @@ describe('SfuClient', () => {
     await client.connect()
     await mockWs.onmessage({ data: JSON.stringify({ type: 'joined', channel_id: 'voice-chan-1' }) })
 
-    // Negotiate-once: the video slot exists from join, before any toggle.
-    expect(mockPc.addTransceiver).toHaveBeenCalledWith('video', { direction: 'sendonly' })
+    // Negotiate-once: the video slot exists from join, before any toggle,
+    // declaring the 3 simulcast send encodings (issue #80).
+    expect(mockPc.addTransceiver).toHaveBeenCalledWith('video', {
+      direction: 'sendonly',
+      sendEncodings: [
+        { rid: 'f', maxBitrate: 2_500_000 },
+        { rid: 'h', maxBitrate: 500_000, scaleResolutionDownBy: 2 },
+        { rid: 'q', maxBitrate: 150_000, scaleResolutionDownBy: 4 },
+      ],
+    })
     expect((client as any).videoSender).toBe(mockVideoSender)
     // Exactly one offer per session so far (the join offer).
     expect(mockPc.createOffer).toHaveBeenCalledTimes(1)
+
+    client.disconnect()
+  })
+
+  it('screen switch activates f-only encodings with 720p30 capture, cam restores all', async () => {
+    const client = new SfuClient({
+      endpoint: '127.0.0.1:5000',
+      token: 'jwt-token-123',
+      channelId: 'voice-chan-1',
+    })
+
+    await client.connect()
+    await mockWs.onmessage({ data: JSON.stringify({ type: 'joined', channel_id: 'voice-chan-1' }) })
+
+    const camTrack: any = { id: 'cam-sim', kind: 'video', enabled: true, stop: vi.fn(), onended: null }
+    const camStream: any = {
+      id: 'cam-stream-sim',
+      getVideoTracks: () => [camTrack],
+      getTracks: () => [camTrack],
+    }
+    const screenTrack: any = { id: 'screen-sim', kind: 'video', enabled: true, stop: vi.fn(), onended: null }
+    const screenStream: any = {
+      id: 'screen-stream-sim',
+      getVideoTracks: () => [screenTrack],
+      getTracks: () => [screenTrack],
+    }
+    const getDisplayMediaMock = vi.fn().mockResolvedValue(screenStream)
+    ;(navigator.mediaDevices as any).getUserMedia = vi.fn().mockResolvedValue(camStream)
+    ;(navigator.mediaDevices as any).getDisplayMedia = getDisplayMediaMock
+    mockPc.createOffer.mockClear()
+    mockVideoSender.setParameters.mockClear()
+
+    // Screen: 720p30 capture requested, only f stays active, resolution
+    // pinned (P1) — no offers.
+    await client.setVideoSource('screen')
+    expect(getDisplayMediaMock).toHaveBeenCalledWith({
+      video: {
+        width: { max: 1280 },
+        height: { max: 720 },
+        frameRate: { ideal: 30 },
+      },
+      audio: false,
+    })
+    expect(mockVideoSender.setParameters).toHaveBeenCalledTimes(1)
+    const screenParams = mockVideoSender.setParameters.mock.calls[0][0]
+    expect(screenParams.encodings).toEqual([
+      { rid: 'f', active: true },
+      { rid: 'h', active: false },
+      { rid: 'q', active: false },
+    ])
+    expect(screenParams.degradationPreference).toBe('maintain-resolution')
+    expect(mockPc.createOffer).not.toHaveBeenCalled()
+
+    // Back to cam: all layers reactivated, preference reset to default —
+    // still no offers.
+    mockVideoSender.setParameters.mockClear()
+    await client.setVideoSource('camera')
+    expect(mockVideoSender.setParameters).toHaveBeenCalledTimes(1)
+    const camParams = mockVideoSender.setParameters.mock.calls[0][0]
+    expect(camParams.encodings.every((e: any) => e.active !== false)).toBe(true)
+    expect(camParams.degradationPreference ?? '').toBe('')
+    expect(mockPc.createOffer).not.toHaveBeenCalled()
+
+    client.disconnect()
+  })
+
+  it('P1: setParameters rejection keeps previous encoding set, switch still resolves', async () => {
+    const client = new SfuClient({
+      endpoint: '127.0.0.1:5000',
+      token: 'jwt-token-123',
+      channelId: 'voice-chan-1',
+    })
+
+    await client.connect()
+    await mockWs.onmessage({ data: JSON.stringify({ type: 'joined', channel_id: 'voice-chan-1' }) })
+
+    const screenTrack: any = { id: 'screen-p1', kind: 'video', enabled: true, stop: vi.fn(), onended: null }
+    const screenStream: any = {
+      id: 'screen-stream-p1',
+      getVideoTracks: () => [screenTrack],
+      getTracks: () => [screenTrack],
+    }
+    ;(navigator.mediaDevices as any).getDisplayMedia = vi.fn().mockResolvedValue(screenStream)
+    mockVideoSender.setParameters.mockRejectedValueOnce(new Error('params rejected'))
+
+    // Rejection is swallowed: the share still goes live with the previous set.
+    const stream = await client.setVideoSource('screen')
+    expect(stream).toBe(screenStream)
+    expect(client.getVideoSource()).toBe('screen')
 
     client.disconnect()
   })
@@ -659,6 +771,41 @@ describe('SfuClient', () => {
     expect(mockPc.createOffer).not.toHaveBeenCalled()
     expect(onLocalVideo).toHaveBeenCalledWith(null)
     expect((client as any).videoSender).toBe(mockVideoSender)
+
+    client.disconnect()
+  })
+
+  it('reuses one MediaStream per receiver track across re-announcements', async () => {
+    const onRemoteVideo = vi.fn()
+    const client = new SfuClient({
+      endpoint: '127.0.0.1:5000',
+      token: 'jwt-token-123',
+      channelId: 'voice-chan-1',
+      onRemoteVideoChange: onRemoteVideo,
+    })
+
+    await client.connect()
+    await mockWs.onmessage({ data: JSON.stringify({ type: 'joined', channel_id: 'voice-chan-1' }) })
+
+    const camTrack: any = { id: 'receiver-cam-stable', kind: 'video', readyState: 'live', onended: null }
+    const firstStream: any = {
+      id: 'kith-stream-alice',
+      getTracks: () => [camTrack],
+      getVideoTracks: () => [camTrack],
+    }
+    mockPc.ontrack({ track: camTrack, streams: [firstStream] })
+    expect(onRemoteVideo).toHaveBeenCalledWith('alice', firstStream)
+    onRemoteVideo.mockClear()
+
+    // Same physical track re-announced WITHOUT a browser stream
+    // (attachTransceiverTracks path, streams[0] undefined): the client must
+    // reuse the stable wrapper instead of minting a fresh MediaStream per
+    // event — new identities abort in-flight <video> play() and latch
+    // "ended" in spotlight.
+    mockPc.ontrack({ track: camTrack, streams: [] })
+    expect(onRemoteVideo).not.toHaveBeenCalled()
+    expect(client.getRemoteVideoStreams().get('alice')).toBe(firstStream)
+    expect((client as any).remoteStreamByTrack.get('receiver-cam-stable')).toBe(firstStream)
 
     client.disconnect()
   })

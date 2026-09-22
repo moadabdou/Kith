@@ -278,6 +278,77 @@ describe('VoiceContext Client Integration (Phase 5c / Issue #74)', () => {
     expect(voiceValue?.connectionStatus).toBe('connected')
   })
 
+  it('ignores duplicate VOICE_SERVER_UPDATEs for the same connected session', async () => {
+    await act(async () => {
+      voiceValue?.joinVoice('guild-1', 'channel-voice-1')
+      gatewayListeners.voiceServerUpdates.forEach((cb) =>
+        cb({
+          guild_id: 'guild-1',
+          channel_id: 'channel-voice-1',
+          endpoint: '127.0.0.1:5000',
+          token: 'token-abc',
+        })
+      )
+    })
+
+    expect(sfuClientInstances.length).toBe(1)
+    const sfu = sfuClientInstances[0]
+
+    await act(async () => {
+      sfu.options.onConnectionStateChange('connected')
+    })
+    expect(voiceValue?.connectionStatus).toBe('connected')
+
+    // Duplicate re-emit (token refresh / state re-push): must NOT rebuild.
+    await act(async () => {
+      gatewayListeners.voiceServerUpdates.forEach((cb) =>
+        cb({
+          guild_id: 'guild-1',
+          channel_id: 'channel-voice-1',
+          endpoint: '127.0.0.1:5000',
+          token: 'token-refreshed',
+        })
+      )
+    })
+
+    expect(sfuClientInstances.length).toBe(1)
+    expect(sfu.disconnect).not.toHaveBeenCalled()
+    expect(voiceValue?.connectionStatus).toBe('connected')
+  })
+
+  it('rebuilds the SFU session when the endpoint actually changes', async () => {
+    await act(async () => {
+      voiceValue?.joinVoice('guild-1', 'channel-voice-1')
+      gatewayListeners.voiceServerUpdates.forEach((cb) =>
+        cb({
+          guild_id: 'guild-1',
+          channel_id: 'channel-voice-1',
+          endpoint: '127.0.0.1:5000',
+          token: 'token-abc',
+        })
+      )
+    })
+
+    const first = sfuClientInstances[0]
+    await act(async () => {
+      first.options.onConnectionStateChange('connected')
+    })
+
+    await act(async () => {
+      gatewayListeners.voiceServerUpdates.forEach((cb) =>
+        cb({
+          guild_id: 'guild-1',
+          channel_id: 'channel-voice-1',
+          endpoint: '10.9.9.9:5000',
+          token: 'token-new-transport',
+        })
+      )
+    })
+
+    expect(sfuClientInstances.length).toBe(2)
+    expect(first.disconnect).toHaveBeenCalled()
+  })
+
   it('updates speaking indicators for remote peers and current user', async () => {
     await act(async () => {
       voiceValue?.joinVoice('guild-1', 'channel-voice-1')

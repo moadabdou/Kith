@@ -2,6 +2,8 @@
 // Handles WebSocket signaling, SDP offer/answer exchange, ICE candidates,
 // audio playout, microphone capture, speaking detection, and mute/deafen controls.
 
+import { isBenignPlayAbort } from './spotlight'
+
 export interface SfuClientOptions {
   endpoint: string
   token: string
@@ -118,9 +120,26 @@ export function parseScreenMidsFromSdp(sdp: string): Map<string, string> {
   return result
 }
 
+export interface VideoSendEncoding {
+  rid?: string
+  maxBitrate?: number
+  scaleResolutionDownBy?: number
+  active?: boolean
+}
+
 export class SfuClient {
   private ws: WebSocket | null = null
   private pc: RTCPeerConnection | null = null
+
+  // Simulcast send encodings (issue #80): cam publishes all three layers,
+  // screen publishes f only (720p30 single layer). Specced bitrates.
+  static readonly DEFAULT_VIDEO_ENCODINGS: VideoSendEncoding[] = [
+    { rid: 'f', maxBitrate: 2_500_000 },
+    { rid: 'h', maxBitrate: 500_000, scaleResolutionDownBy: 2 },
+    { rid: 'q', maxBitrate: 150_000, scaleResolutionDownBy: 4 },
+  ]
+  /** Currently applied encoding set (observability; the sender owns truth). */
+  public videoEncodings: VideoSendEncoding[] = SfuClient.DEFAULT_VIDEO_ENCODINGS
   private localStream: MediaStream | null = null
   // Single video slot (Step 1): at most ONE live video uplink. The active
   // track/stream/sender below holds whichever source is live; switching
@@ -175,6 +194,9 @@ export class SfuClient {
   // Receiver track.id -> {uid, kind}. Prevents double-registration of the
   // same track in both video and screen maps (ontrack + attachTransceiverTracks).
   private remoteTrackKind: Map<string, { uid: string; kind: 'screen' | 'video' }> = new Map()
+  // Receiver track.id -> stable MediaStream wrapper. Identity is what the
+  // UI keys on; the same physical track must never be re-wrapped.
+  private remoteStreamByTrack: Map<string, MediaStream> = new Map()
   private vadCleanup: (() => void) | null = null
   private unlockAudioCleanup: (() => void) | null = null
   private visibilityCleanup: (() => void) | null = null
@@ -354,12 +376,17 @@ export class SfuClient {
     this.setupVisibilityKeyframe()
 
     // Negotiate-once video slot: a sendonly video m-section rides the join
-    // offer even with no track yet. All later cam/screen toggles only
-    // replaceTrack on this sender — never re-offer (glare-proof). If setup
-    // fails, the publish path falls back to addTrack + one renegotiation.
+    // offer even with no track yet, declaring the 3 simulcast send encodings
+    // (f/h/q per issue #80). All later cam/screen toggles only replaceTrack
+    // on this sender — never re-offer (glare-proof). If setup fails, the
+    // publish path falls back to addTrack + one renegotiation.
+    this.videoEncodings = [...SfuClient.DEFAULT_VIDEO_ENCODINGS]
     try {
       if (typeof this.pc.addTransceiver === 'function') {
-        const tx = this.pc.addTransceiver('video', { direction: 'sendonly' })
+        const tx = this.pc.addTransceiver('video', {
+          direction: 'sendonly',
+          sendEncodings: SfuClient.DEFAULT_VIDEO_ENCODINGS.map((e) => ({ ...e })),
+        })
         if (tx && tx.sender) {
           this.videoSender = tx.sender
         }
@@ -694,7 +721,33 @@ export class SfuClient {
   }
 
   private handleRemoteTrack(track: MediaStreamTrack, initialStream: MediaStream | null, mid: string | null = null): void {
-    const stream = initialStream || new MediaStream([track])
+    // Stream-identity stability: the same receiver track re-announced
+    // (ontrack + attachTransceiverTracks, re-offers) must keep ONE
+    // MediaStream object. A fresh synthetic wrapper per event swaps the
+    // identity every <video> effect depends on — srcObject reassignment
+    // aborts in-flight play() and the UI flickers/latches "ended".
+    // The browser-provided initialStream wins when present (it carries the
+    // negotiated msid identity); the stable wrapper is only the fallback
+    // for synthetic (track-only) announcements.
+    let stream: MediaStream | null = null
+    if (initialStream) {
+      stream = initialStream
+      this.remoteStreamByTrack.set(track.id, stream)
+    } else {
+      stream = this.remoteStreamByTrack.get(track.id) || null
+    }
+    if (!stream) {
+      stream = new MediaStream([track])
+      this.remoteStreamByTrack.set(track.id, stream)
+    } else if (!stream.getTracks?.().some((t) => t.id === track.id)) {
+      // Stable wrapper lost the track (ended + replaced at the source):
+      // adopt the fresh track into the SAME stream identity so attached
+      // elements keep playing without re-attach churn.
+      try {
+        stream.addTrack(track)
+      } catch {}
+      this.remoteStreamByTrack.set(track.id, stream)
+    }
     this.options.onRemoteTrack?.(track, stream)
 
     const streamId = stream?.id || ''
@@ -767,6 +820,7 @@ export class SfuClient {
             this.options.onRemoteScreenShareChange?.(screenKey, null)
           }
           this.remoteTrackKind.delete(trackId)
+          this.remoteStreamByTrack.delete(trackId)
         }
         return
       }
@@ -798,6 +852,7 @@ export class SfuClient {
           this.options.onRemoteVideoChange?.(videoKey, null)
         }
         this.remoteTrackKind.delete(trackId)
+        this.remoteStreamByTrack.delete(trackId)
       }
       return
     }
@@ -836,7 +891,11 @@ export class SfuClient {
 
       const playPromise = audioEl.play()
       if (playPromise !== undefined) {
-        playPromise.catch((err) => {
+        playPromise.catch((err: unknown) => {
+          // A play() aborted by a newer load is churn, not a block — the new
+          // attach owns playback. Only a real NotAllowedError earns the
+          // gesture unlock (registering it on every churn leaks listeners).
+          if (isBenignPlayAbort(err)) return
           console.warn('[SfuClient] Autoplay prevented, registering user gesture unlock:', err)
           this.ensureGlobalAudioUnlock()
         })
@@ -1145,6 +1204,11 @@ export class SfuClient {
         }
       }
 
+      // Simulcast layers follow the source: cam publishes all three
+      // encodings, screen publishes f only (720p30 single layer). Local
+      // parameter change only — never an offer.
+      await this.applyVideoEncodings(source === 'camera' ? 'cam' : 'screen')
+
       if (source === 'camera') {
         this.sendWsMessage({ type: 'video', video: true })
         this.options.onLocalVideoChange?.(this.localVideoStream)
@@ -1291,6 +1355,57 @@ export class SfuClient {
     }
   }
 
+  // P1 experiment: activate/deactivate simulcast send encodings on the live
+  // video sender (cam: f+h+q, screen: f only) AND pin degradationPreference
+  // per source — screen gets 'maintain-resolution' (sharpness over
+  // smoothness: a dropped frame beats an unreadable one), cam resets to the
+  // browser default (Chrome 'balanced': smoothness over sharpness, right for
+  // faces). Best-effort: rejection keeps the previous set (bandwidth impact
+  // only, never a session error). Never renegotiates.
+  private async applyVideoEncodings(source: 'cam' | 'screen'): Promise<void> {
+    const sender = this.videoSender as unknown as {
+      getParameters?: () => {
+        encodings?: Array<{ rid?: string; active?: boolean }>
+        degradationPreference?: string
+      }
+      setParameters?: (p: unknown) => Promise<void>
+    } | null
+    if (!sender || typeof sender.getParameters !== 'function' || typeof sender.setParameters !== 'function') {
+      return
+    }
+    try {
+      const params = sender.getParameters()
+      const encodings = params.encodings
+      if (!encodings || encodings.length === 0) return
+      const wantActive = source === 'cam' ? null : new Set(['f'])
+      let changed = false
+      for (const enc of encodings) {
+        const active = wantActive === null ? true : wantActive.has(enc.rid ?? 'f')
+        if ((enc.active ?? true) !== active) {
+          enc.active = active
+          changed = true
+        }
+      }
+      // Screen-only degradation pin: 'maintain-resolution' on screen,
+      // explicit reset to default ('') on cam so the preference can't leak
+      // across switches on the shared sender.
+      const wantDegradation = source === 'screen' ? 'maintain-resolution' : ''
+      if ((params.degradationPreference ?? '') !== wantDegradation) {
+        params.degradationPreference = wantDegradation
+        changed = true
+      }
+      if (changed) {
+        await sender.setParameters({ ...params, encodings })
+      }
+      this.videoEncodings =
+        source === 'cam'
+          ? SfuClient.DEFAULT_VIDEO_ENCODINGS
+          : SfuClient.DEFAULT_VIDEO_ENCODINGS.map((e) => ({ ...e, active: e.rid === 'f' }))
+    } catch (err) {
+      console.warn('[SfuClient] Simulcast encoding switch failed, keeping previous set:', err)
+    }
+  }
+
   // Background tabs stall the (expensive) screen encoder; on return, open
   // with a keyframe so viewers resync immediately instead of waiting out
   // the sparse static-content keyframe cadence. Camera needs nothing: its
@@ -1343,8 +1458,15 @@ export class SfuClient {
     }
 
     try {
+      // 720p30 single-layer screen: half the bandwidth of 1080p, text stays
+      // readable, one encode. The f-only encoding activation happens in
+      // applyVideoEncodings after publish.
       return await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: 30 },
+        video: {
+          width: { max: 1280 },
+          height: { max: 720 },
+          frameRate: { ideal: 30 },
+        },
         audio: false,
       })
     } catch (err: any) {
@@ -1545,6 +1667,7 @@ export class SfuClient {
     this.screenRevoked.clear()
     this.lastDownstreamSdp = null
     this.remoteTrackKind.clear()
+    this.remoteStreamByTrack.clear()
 
     for (const audioEl of this.audioElements.values()) {
       audioEl.srcObject = null

@@ -74,6 +74,11 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   const activeVoiceRef = useRef(activeVoice)
   const connectionStatusRef = useRef(connectionStatus)
   const sfuClientRef = useRef<SfuClient | null>(null)
+  // Last VOICE_SERVER_UPDATE transport we built a session for. The gateway
+  // may re-emit server updates for the same channel (token refresh, state
+  // re-push) — rebuilding the SfuClient on each one swaps every remote
+  // MediaStream identity and aborts in-flight <video> playback.
+  const lastVoiceServerRef = useRef<{ guildId: string; channelId: string; endpoint: string } | null>(null)
 
   useEffect(() => {
     selfMuteRef.current = selfMute
@@ -195,6 +200,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
             sfuClientRef.current.disconnect(false)
             sfuClientRef.current = null
           }
+          lastVoiceServerRef.current = null
           activeVoiceRef.current = null
           setActiveVoice(null)
           setConnectionStatus('disconnected')
@@ -229,11 +235,22 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       setActiveVoice({ guildId: payload.guild_id, channelId: payload.channel_id })
       activeVoiceRef.current = { guildId: payload.guild_id, channelId: payload.channel_id }
 
-      // If already connected or connecting to this channel with an active SFU client, do not disconnect
+      // Dedupe: the gateway may re-emit the same server update (token
+      // refresh, state re-push). Rebuilding the SfuClient on a duplicate
+      // tears down a healthy session for nothing — every remote MediaStream
+      // gets a new identity and in-flight <video> play() aborts. Only
+      // rebuild when the transport actually changed or the session died.
+      const last = lastVoiceServerRef.current
+      const isDuplicateTransport =
+        !!last &&
+        last.guildId === payload.guild_id &&
+        last.channelId === payload.channel_id &&
+        last.endpoint === payload.endpoint
       if (
         sfuClientRef.current &&
         isSameChannel &&
-        (connectionStatusRef.current === 'connected' || connectionStatusRef.current === 'connecting')
+        isDuplicateTransport &&
+        connectionStatusRef.current !== 'disconnected'
       ) {
         return
       }
@@ -242,6 +259,12 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       if (sfuClientRef.current) {
         sfuClientRef.current.disconnect()
         sfuClientRef.current = null
+      }
+
+      lastVoiceServerRef.current = {
+        guildId: payload.guild_id,
+        channelId: payload.channel_id,
+        endpoint: payload.endpoint,
       }
 
       setConnectionStatus('connecting')
@@ -339,6 +362,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         sfuClientRef.current.disconnect(false)
         sfuClientRef.current = null
       }
+      lastVoiceServerRef.current = null
       activeVoiceRef.current = null
       setActiveVoice(null)
       setConnectionStatus('disconnected')
@@ -385,6 +409,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       sfuClientRef.current.disconnect(true)
       sfuClientRef.current = null
     }
+    lastVoiceServerRef.current = null
 
     if (activeVoiceRef.current) {
       const gid = activeVoiceRef.current.guildId

@@ -3,6 +3,7 @@ package router
 import (
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 
@@ -84,16 +85,105 @@ func (r *Router) VideoKindOf(pubID string) VideoKind {
 	return r.videoKind[pubID]
 }
 
-// trackKey returns a unique key for an ingress track: pubID:kind:trackID, or pubID if remote is nil.
+// trackKey returns a unique key for an ingress track:
+// pubID:kind:trackID for audio, pubID:video:rid for video (simulcast layers
+// share the track ID, so the RID disambiguates; empty RID = legacy or
+// dormant uplink, treated as the full layer 'f'). Nil remote → bare pubID.
 func trackKey(pubID string, trackRemote *webrtc.TrackRemote) string {
 	if trackRemote == nil {
 		return pubID
+	}
+	if trackRemote.Kind() == webrtc.RTPCodecTypeVideo {
+		rid := trackRemote.RID()
+		if rid == "" {
+			rid = LayerFull
+		}
+		return fmt.Sprintf("%s:video:%s", pubID, rid)
 	}
 	id := trackRemote.ID()
 	if id == "" {
 		id = trackRemote.Kind().String()
 	}
 	return fmt.Sprintf("%s:%s:%s", pubID, trackRemote.Kind().String(), id)
+}
+
+// Simulcast layer RIDs (issue #80). LayerFull is also the legacy label for
+// uplinks with no RID (non-simulcast publishers, dormant video).
+const (
+	LayerFull    = "f"
+	LayerHalf    = "h"
+	LayerQuarter = "q"
+)
+
+// LayerInfo describes one ingested simulcast layer (for #82 + observability).
+type LayerInfo struct {
+	RID   string
+	SSRC  uint32
+	Kind  VideoKind
+	Alive bool
+}
+
+// Layers returns the ingested simulcast layer state for a publisher.
+func (r *Router) Layers(pubID string) []LayerInfo {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out []LayerInfo
+	for key, pub := range r.publishers {
+		if pub == nil || pub.PublisherID != pubID || pub.Kind != webrtc.RTPCodecTypeVideo {
+			continue
+		}
+		rid := LayerFull
+		if rest, ok := cutPrefix(key, pubID+":video:"); ok && rest != "" {
+			rid = rest
+		}
+		var ssrc uint32
+		if pub.TrackRemote != nil {
+			ssrc = uint32(pub.TrackRemote.SSRC())
+		}
+		out = append(out, LayerInfo{
+			RID:   rid,
+			SSRC:  ssrc,
+			Kind:  r.videoKind[pubID],
+			Alive: !pub.IsClosed(),
+		})
+	}
+	sortLayers(out)
+	return out
+}
+
+func cutPrefix(s, prefix string) (string, bool) {
+	if len(s) < len(prefix) || s[:len(prefix)] != prefix {
+		return "", false
+	}
+	return s[len(prefix):], true
+}
+
+// layerOfKey extracts the simulcast layer RID from a publisher key
+// (pubID:video:rid); anything unparseable is the full layer.
+func layerOfKey(key string) string {
+	idx := strings.LastIndex(key, ":")
+	if idx < 0 || idx+1 >= len(key) {
+		return LayerFull
+	}
+	if rest := key[idx+1:]; rest != "" {
+		return rest
+	}
+	return LayerFull
+}
+
+func sortLayers(layers []LayerInfo) {
+	order := map[string]int{LayerFull: 0, LayerHalf: 1, LayerQuarter: 2}
+	sort.Slice(layers, func(i, j int) bool {
+		oi, oki := order[layers[i].RID]
+		oj, okj := order[layers[j].RID]
+		if oki && okj {
+			return oi < oj
+		}
+		if oki != okj {
+			return oki
+		}
+		return layers[i].RID < layers[j].RID
+	})
 }
 
 // AddPeer registers a peer and its renegotiation callback with the router.
@@ -205,10 +295,13 @@ func (r *Router) AddPublisher(pubID string, trackRemote *webrtc.TrackRemote, rec
 	}
 	r.publishers[tKey] = uplink
 
-	// A dormant video uplink (kind none: signal hasn't arrived yet, or the
-	// user stopped sharing) gets no downlinks; SetVideoKind builds them when
-	// the kind is declared.
-	if uplink.Kind == webrtc.RTPCodecTypeVideo && r.videoKind[pubID] == VideoKindNone {
+	// A dormant video uplink gets no downlinks; SetVideoKind builds them
+	// when the kind is declared. Dormant = kind none (signal hasn't arrived
+	// yet, or the user stopped sharing) or a non-full simulcast layer:
+	// until #82 adds per-viewer switching, only the full layer f is
+	// forwarded.
+	if uplink.Kind == webrtc.RTPCodecTypeVideo &&
+		(r.videoKind[pubID] == VideoKindNone || layerOfKey(tKey) != LayerFull) {
 		r.mu.Unlock()
 		return
 	}
@@ -251,6 +344,11 @@ func (r *Router) SetVideoKind(pubID string, kind VideoKind) {
 	peerNeedsReneg := make(map[string]bool)
 	for key, pub := range r.publishers {
 		if pub == nil || pub.PublisherID != pubID || pub.Kind != webrtc.RTPCodecTypeVideo {
+			continue
+		}
+		// Only the full simulcast layer is converged here; h/q uplinks stay
+		// ingested-but-dormant until #82 switches viewers between layers.
+		if layerOfKey(key) != LayerFull {
 			continue
 		}
 		if kind == VideoKindNone {
@@ -523,7 +621,9 @@ func (r *Router) SubscribeToExistingPublishers(userID string) {
 		// Never fan out dormant video: the uplink object survives kind:false
 		// (same RTP stream may be reused), but with no declared kind there
 		// is nothing to forward yet. SetVideoKind subscribes on declaration.
-		if pub.Kind == webrtc.RTPCodecTypeVideo && r.videoKind[pub.PublisherID] == VideoKindNone {
+		// Non-full simulcast layers stay ingested-but-dormant until #82.
+		if pub.Kind == webrtc.RTPCodecTypeVideo &&
+			(r.videoKind[pub.PublisherID] == VideoKindNone || layerOfKey(tKey) != LayerFull) {
 			continue
 		}
 

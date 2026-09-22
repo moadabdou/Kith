@@ -490,12 +490,12 @@ func TestRouter_AudioAndVideoMultiplexing(t *testing.T) {
 	videoUplink := NewPublisherUplink("pub_1", nil, nil)
 	videoUplink.Kind = webrtc.RTPCodecTypeVideo
 	videoUplink.CodecCap = webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8}
-	videoUplink.TrackKey = "pub_1:video:track_v"
+	videoUplink.TrackKey = "pub_1:video:f"
 	videoUplink.TrackID = "track_v"
 
 	r.mu.Lock()
 	r.publishers["pub_1:audio:track_a"] = audioUplink
-	r.publishers["pub_1:video:track_v"] = videoUplink
+	r.publishers["pub_1:video:f"] = videoUplink
 	r.mu.Unlock()
 
 	// Declare the video kind (as the client's video:true signal would):
@@ -546,7 +546,7 @@ func TestRouter_AudioAndVideoMultiplexing(t *testing.T) {
 	}
 
 	audioEntry := subEntries["pub_1:audio:track_a"]
-	videoEntry := subEntries["pub_1:video:track_v"]
+	videoEntry := subEntries["pub_1:video:f"]
 	r.mu.RUnlock()
 
 	if audioEntry == nil || videoEntry == nil {
@@ -886,8 +886,8 @@ func TestRouter_SetVideoKindRelabelsSingleUplink(t *testing.T) {
 	reneg := make(chan webrtc.SessionDescription, 8)
 	r.AddPeer(bobPeer, func(offer webrtc.SessionDescription) { reneg <- offer })
 
-	// Single uplink, browser-random IDs (negotiate-once shape): no msid
-	// carries kind information anymore.
+	// Single uplink, full simulcast layer (RID-keyed under negotiate-once):
+	// TrackID/StreamID carry no kind information anymore.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	uplink := &PublisherUplink{
@@ -895,7 +895,7 @@ func TestRouter_SetVideoKindRelabelsSingleUplink(t *testing.T) {
 		Kind:        webrtc.RTPCodecTypeVideo,
 		TrackID:     "a1b2c3d4-e5f6-4789-abcd-ef0123456789",
 		StreamID:    "f7a2b3c4-d5e6-4f78-9012-345678abcdef",
-		TrackKey:    "alice:video:a1b2c3d4-e5f6-4789-abcd-ef0123456789",
+		TrackKey:    "alice:video:f",
 		CodecCap:    webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8},
 		IsScreen:    false,
 		subscribers: make(map[string]*SubscriberDownlink),

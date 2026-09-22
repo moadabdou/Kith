@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ArrowLeft, Maximize2, Minimize2, Monitor, StopCircle, Video } from 'lucide-react'
 import { VideoTile, type VideoTileProps } from './VideoTile'
-import type { SpotlightKind } from '../../lib/spotlight'
+import { isBenignPlayAbort, isTrackLive, type SpotlightKind } from '../../lib/spotlight'
 
 export interface SpotlightTarget {
   userId: string
@@ -64,25 +64,37 @@ export function SpotlightView({
   // Never render the spotlighted user as a filmstrip tile.
   const filmstripParticipants = participants.filter((p) => p.userId !== spotlight.userId)
 
-  // Attach spotlight stream to video element
+  // Attach spotlight stream to video element. Same-stream re-renders must
+  // not reassign srcObject (the reassignment aborts in-flight play()); the
+  // shared liveness gate matches VideoTile so the two can't disagree.
   useEffect(() => {
     const videoEl = videoRef.current
     if (!videoEl || !spotlight.stream) return
 
-    videoEl.srcObject = spotlight.stream
-    videoEl.play().catch((err) => {
-      console.warn('[SpotlightView] Autoplay error:', err)
-    })
+    if (videoEl.srcObject !== spotlight.stream) {
+      videoEl.srcObject = spotlight.stream
+    }
+    const playPromise = videoEl.play()
+    if (playPromise !== undefined) {
+      playPromise.catch((err) => {
+        if (isBenignPlayAbort(err)) return
+        console.warn('[SpotlightView] Autoplay error:', err)
+      })
+    }
 
-    // Mirror VideoTile liveness: ended/mute → fallback, unmute → resume.
     const track = spotlight.stream.getVideoTracks()[0]
     if (!track) {
       setHasLiveTrack(false)
       return
     }
     const checkTrack = () => {
-      setHasLiveTrack(track.readyState === 'live' && track.enabled && !track.muted)
+      setHasLiveTrack(isTrackLive(track))
     }
+    // Element-driven recovery: a muted-but-rendering track must never hide.
+    const onPlaying = () => {
+      setHasLiveTrack(true)
+    }
+    videoEl.addEventListener('playing', onPlaying)
 
     checkTrack()
     track.addEventListener('ended', checkTrack)
@@ -93,7 +105,10 @@ export function SpotlightView({
       track.removeEventListener('ended', checkTrack)
       track.removeEventListener('mute', checkTrack)
       track.removeEventListener('unmute', checkTrack)
-      videoEl.srcObject = null
+      videoEl.removeEventListener('playing', onPlaying)
+      if (videoEl.srcObject !== spotlight.stream) {
+        videoEl.srcObject = null
+      }
     }
   }, [spotlight.stream])
 
@@ -136,6 +151,7 @@ export function SpotlightView({
       <div className="screenshare-spotlight">
         {spotlight.stream ? (
           <video
+            key={spotlight.stream.id}
             ref={videoRef}
             autoPlay
             playsInline

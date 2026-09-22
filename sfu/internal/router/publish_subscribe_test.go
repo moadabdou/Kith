@@ -2,7 +2,8 @@ package router
 
 // L2 integration: full publish → subscribe chain through REAL Pion
 // PeerConnections (real offer/answer SDP, real TrackRemote identity —
-// no mocks, no hand-built SDP, no ICE/RTP needed).
+// the offer SDP is Chrome-shaped with a rid + simulcast block injected,
+// exactly as a browser client sends).
 //
 // The test drives Pion negotiation exactly as the room does, then ingests
 // the negotiated receiver tracks into the router the same way room.go's
@@ -10,11 +11,12 @@ package router
 // read the same TrackRemote objects straight off the receivers — identity
 // fields are SDP-derived and identical either way).
 //
-// What it proves (S2/S3/S4/G at the mechanism layer): browser-shaped uplink
-// msids flow through real offer/answer into TrackRemote identity, the router
-// keys cam vs screen correctly, downstream offers carry stable Kith downlink
-// ids, camera removal drops exactly the cam m-section while screen survives,
-// and a late joiner receives exactly the surviving set.
+// What it proves (simulcast #80 + negotiate-once kind flag): one uplink per
+// RID (f/h/q), RID-keyed publisher map with no key collision, only the f
+// layer fanned out to viewers under stable Kith downlink ids, kind switches
+// relabeling the f uplink in place (offer shape changes, uplink object
+// retained), kind none retaining the uplink for stream reuse, and a late
+// joiner receiving exactly the live set.
 //
 // What it does NOT prove: live RTP bytes (no media flows here; the
 // readingLoop goroutines started per uplink block on ReadRTP until test end —
@@ -34,6 +36,38 @@ type seenTrack struct {
 	id       string
 	streamID string
 	kind     webrtc.RTPCodecType
+}
+
+// injectSimulcast rewrites a locally-generated offer into Chrome shape: a
+// rid + simulcast block on the video m-section. Production browsers generate
+// this natively; Pion's sender side does not (verified by spike). Only the
+// copy handed to the SFU is rewritten — never the sender's own local
+// description (Pion rejects hand-edited local SDP).
+func injectSimulcast(sdp string) string {
+	return injectVideoSimulcast(sdp)
+}
+
+func injectVideoSimulcast(sdp string) string {
+	lines := strings.Split(sdp, "\r\n")
+	var out []string
+	inVideo := false
+	injected := false
+	for _, l := range lines {
+		if strings.HasPrefix(l, "m=") {
+			inVideo = strings.HasPrefix(l, "m=video")
+		}
+		out = append(out, l)
+		if inVideo && !injected && strings.HasPrefix(l, "a=mid:") {
+			out = append(out,
+				"a=rid:f send",
+				"a=rid:h send",
+				"a=rid:q send",
+				"a=simulcast:send f;h;q",
+			)
+			injected = true
+		}
+	}
+	return strings.Join(out, "\r\n")
 }
 
 // nextOffer reads exactly one queued renegotiation offer.
@@ -125,33 +159,52 @@ func TestRouter_PublishSubscribeCamScreenChain(t *testing.T) {
 	r.AddPeer(sfuAlice, nil)
 	r.AddPeer(sfuBob, func(offer webrtc.SessionDescription) { bobReneg <- offer })
 
-	// Negotiate-once shape: Alice publishes audio + ONE video uplink, both
-	// with browser-random msids. Kind is declared out-of-band afterwards
+	// Chrome-simulcast shape: Alice publishes audio + ONE video track with
+	// 3 send encodings (f/h/q). Kind is declared out-of-band afterwards
 	// (SetVideoKind, as the video:true/screen:true signals do).
-	addUplink := func(mime, id, sid string) {
-		t.Helper()
-		tr, err := webrtc.NewTrackLocalStaticRTP(webrtc.RTPCodecCapability{MimeType: mime}, id, sid)
-		if err != nil {
-			t.Fatalf("failed to create track %s: %v", id, err)
-		}
-		if _, err := clientAlice.AddTrack(tr); err != nil {
-			t.Fatalf("failed to add uplink track: %v", err)
-		}
+	micTrack, err := webrtc.NewTrackLocalStaticRTP(
+		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus}, "browser-mic-xyz", "browser-mic-stream",
+	)
+	if err != nil {
+		t.Fatalf("failed to create mic track: %v", err)
 	}
-	addUplink(webrtc.MimeTypeOpus, "browser-mic-xyz", "browser-mic-stream")
-	addUplink(webrtc.MimeTypeVP8, "browser-cam-xyz", "browser-stream-xyz")
+	if _, err := clientAlice.AddTrack(micTrack); err != nil {
+		t.Fatalf("failed to add mic uplink: %v", err)
+	}
+	camTrack, err := webrtc.NewTrackLocalStaticRTP(
+		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8}, "browser-cam-xyz", "browser-stream-xyz",
+	)
+	if err != nil {
+		t.Fatalf("failed to create cam track: %v", err)
+	}
+	if _, err := clientAlice.PC.AddTransceiverFromTrack(camTrack, webrtc.RTPTransceiverInit{
+		Direction: webrtc.RTPTransceiverDirectionSendonly,
+		SendEncodings: []webrtc.RTPEncodingParameters{
+			{RTPCodingParameters: webrtc.RTPCodingParameters{RID: "f"}},
+			{RTPCodingParameters: webrtc.RTPCodingParameters{RID: "h"}},
+			{RTPCodingParameters: webrtc.RTPCodingParameters{RID: "q"}},
+		},
+	}); err != nil {
+		t.Fatalf("failed to add simulcast uplink: %v", err)
+	}
 
 	offer, err := clientAlice.CreateOffer()
 	if err != nil {
 		t.Fatalf("clientAlice failed to create offer: %v", err)
 	}
-	answer, err := sfuAlice.HandleOffer(offer.SDP)
+	// peer.CreateOffer already set the local description; hand the SFU a
+	// Chrome-shaped copy (rid + simulcast block on the video m-section).
+	// The sender's own local description stays pristine (Pion rejects
+	// hand-edited local SDP).
+	chromeSDP := injectVideoSimulcast(offer.SDP)
+	answer, err := sfuAlice.HandleOffer(chromeSDP)
 	if err != nil {
 		t.Fatalf("sfuAlice failed to handle offer: %v", err)
 	}
 	if err := clientAlice.HandleAnswer(answer.SDP); err != nil {
 		t.Fatalf("clientAlice failed to handle answer: %v", err)
 	}
+
 	// Ingest one negotiated uplink at a time, completing each downstream
 	// offer before the next (mirrors production, where answers arrive between
 	// OnTrack events; batching without answering would correctly postpone
@@ -166,13 +219,13 @@ func TestRouter_PublishSubscribeCamScreenChain(t *testing.T) {
 			incomingTracks = append(incomingTracks, incoming{track: track, rx: rx})
 		}
 	}
-	if len(incomingTracks) != 2 {
-		t.Fatalf("expected 2 negotiated uplink tracks, got %d", len(incomingTracks))
+	if len(incomingTracks) != 4 {
+		t.Fatalf("expected 4 negotiated uplinks (audio + f/h/q), got %d", len(incomingTracks))
 	}
 	for _, in := range incomingTracks {
 		r.AddPublisher("alice", in.track, in.rx)
-		// Only the audio uplink fans out: the video uplink is dormant until
-		// its kind is declared, so at most one downstream offer fires here.
+		// Only the audio uplink fans out: video layers are dormant until
+		// their kind is declared, so at most one downstream offer fires here.
 		select {
 		case o := <-bobReneg:
 			completeOffer(t, sfuBob, clientBob, o)
@@ -180,19 +233,31 @@ func TestRouter_PublishSubscribeCamScreenChain(t *testing.T) {
 		}
 	}
 
-	// Both uplinks registered; bob holds audio only (video dormant).
+	// Audio + 3 layers registered under distinct RID keys (no collision);
+	// bob holds audio only (video dormant).
 	r.mu.RLock()
-	if len(r.publishers) != 2 {
+	if len(r.publishers) != 4 {
 		r.mu.RUnlock()
-		t.Fatalf("expected 2 publisher uplinks, got %d", len(r.publishers))
+		t.Fatalf("expected 4 publisher uplinks, got %d", len(r.publishers))
+	}
+	for _, key := range []string{"alice:video:f", "alice:video:h", "alice:video:q"} {
+		if _, ok := r.publishers[key]; !ok {
+			r.mu.RUnlock()
+			t.Fatalf("missing layer uplink %s", key)
+		}
 	}
 	r.mu.RUnlock()
+	if layers := r.Layers("alice"); len(layers) != 3 {
+		t.Fatalf("Layers() = %+v, want 3 layers", layers)
+	} else if layers[0].RID != "f" || layers[1].RID != "h" || layers[2].RID != "q" {
+		t.Fatalf("Layers() order = %+v, want f/h/q", layers)
+	}
 	byID := collectReceiverTracks(clientBob)
 	if len(byID) != 1 {
 		t.Fatalf("expected audio-only downlinks before kind declaration, got %+v", byID)
 	}
 
-	// Declare camera (video:true): bob gains the stable cam downlink (R7/R9).
+	// Declare camera (video:true): bob gains the stable f-layer cam downlink.
 	r.SetVideoKind("alice", VideoKindCamera)
 	completeOffer(t, sfuBob, clientBob, nextOffer(t, bobReneg))
 	byID = collectReceiverTracks(clientBob)
@@ -203,8 +268,9 @@ func TestRouter_PublishSubscribeCamScreenChain(t *testing.T) {
 		t.Errorf("bob missing cam downlink (kith-track-alice-video/kith-stream-alice), got %+v", byID)
 	}
 
-	// Switch to screen (screen:true): same uplink relabeled, cam downlink
-	// replaced by the screen downlink in the next offer.
+	// Switch to screen (screen:true): f uplink relabeled, cam downlink
+	// replaced by the screen downlink in the next offer. h/q stay
+	// ingested-but-dormant throughout.
 	r.SetVideoKind("alice", VideoKindScreen)
 	screenOffer := latestOffer(t, bobReneg)
 	completeOffer(t, sfuBob, clientBob, screenOffer)
@@ -223,14 +289,19 @@ func TestRouter_PublishSubscribeCamScreenChain(t *testing.T) {
 	}
 	r.mu.RLock()
 	for key, pub := range r.publishers {
-		if pub.PublisherID == "alice" && pub.Kind == webrtc.RTPCodecTypeVideo && !pub.IsScreen {
+		if pub.PublisherID == "alice" && pub.Kind == webrtc.RTPCodecTypeVideo && layerOfKey(key) == LayerFull && !pub.IsScreen {
 			r.mu.RUnlock()
-			t.Errorf("cam-labeled uplink still registered after switch: %s", key)
+			t.Errorf("f uplink still cam-labeled after switch: %s", key)
 		}
+	}
+	if len(r.publishers) != 4 {
+		r.mu.RUnlock()
+		t.Fatalf("h/q layer uplinks lost on kind switch (want 4 publishers)")
 	}
 	r.mu.RUnlock()
 
-	// Kind none (video:false): downlinks torn down, uplink retained for reuse.
+	// Kind none (video:false): f downlinks torn down, all 4 uplink objects
+	// retained for stream reuse.
 	r.SetVideoKind("alice", VideoKindNone)
 	noneOffer := latestOffer(t, bobReneg)
 	completeOffer(t, sfuBob, clientBob, noneOffer)
@@ -239,9 +310,9 @@ func TestRouter_PublishSubscribeCamScreenChain(t *testing.T) {
 		t.Fatalf("expected audio-only downlinks after kind none, got %+v", byID)
 	}
 	r.mu.RLock()
-	if len(r.publishers) != 2 {
+	if len(r.publishers) != 4 {
 		r.mu.RUnlock()
-		t.Fatalf("uplink object dropped on kind none (stream reuse broken)")
+		t.Fatalf("uplink objects dropped on kind none (stream reuse broken)")
 	}
 	r.mu.RUnlock()
 

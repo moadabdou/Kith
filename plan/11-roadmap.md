@@ -136,6 +136,11 @@ PLI rate-limiting, screenshare with contentHint, SFU metrics dashboard.
 your PLI limiter holds. DevTools-throttled subscribers land on different layers.
 
 **Gate:** see `07-voice-video.md` §6 Phase 6.
+- [x] Phase 6 completed and all 4 gates signed off (see [postmortems/phase-6.md](../postmortems/phase-6.md))
+  - [x] 3-layer simulcast switching: clean/degraded/severe viewers stabilize on f/h/q (3 DOWN/0 UP, bounded)
+  - [x] PLI rate-limiter proven under join/leave storm (30 requests -> 2 forwards, 15:1)
+  - [x] Screenshare single-layer f at 'detail' hint usable (PLI round-trip, 0 switches)
+  - [x] SFU-kill chaos drill: call survives SIGKILL, first video keyframes in 0.90s/1.45s (< 2s)
 
 ## Phase 7 — Scale & failover (wk 20–22) ← the payoff phase
 

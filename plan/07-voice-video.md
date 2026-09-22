@@ -218,10 +218,10 @@ Phase 5:
       `tc qdisc add dev eth0 root netem loss 5% delay 40ms`)
 
 Phase 6:
-- [ ] 3-layer simulcast switching under DevTools-throttled clients
-- [ ] PLI rate-limiter proven under join/leave storm
-- [ ] Screenshare 1080p at 'detail' hint usable
-- [ ] SFU-kill chaos drill: call survives via reconnect < 2s
+- [x] 3-layer simulcast switching under DevTools-throttled clients (drill 2: clean/degraded/severe -> f=1,h=1,q=1, 3 DOWN/0 UP; see postmortems/phase-6.md §2, §6.2)
+- [x] PLI rate-limiter proven under join/leave storm (drill 1: 10 joiners x 3 PLIs -> 30 received, 2 forwarded 15:1; see postmortems/phase-6.md §3, §6.1)
+- [x] Screenshare 1080p at 'detail' hint usable (drill 3: single-layer f stable, 181/182 delivered, PLI round-trip, 0 switches; see postmortems/phase-6.md §5, §6.3)
+- [x] SFU-kill chaos drill: call survives via reconnect < 2s (drill 4: SIGKILL -> first keyframes 0.90s / 1.45s; see postmortems/phase-6.md §6.4)
 
 ## 7. Reading (in order)
 - webrtcforthecurious.com (read fully, it's short and perfect)

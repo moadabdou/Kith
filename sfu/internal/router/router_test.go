@@ -20,6 +20,12 @@ func getCounterValue(counter metricsCollector) float64 {
 	return m.GetCounter().GetValue()
 }
 
+func getGaugeValue(gauge metricsCollector) float64 {
+	var m dto.Metric
+	_ = gauge.Write(&m)
+	return m.GetGauge().GetValue()
+}
+
 type metricsCollector interface {
 	Write(*dto.Metric) error
 }

@@ -443,6 +443,18 @@ func (r *Router) AddPeer(p *peer.Peer, renegotiate RenegotiateCallback) {
 	})
 }
 
+// decLayerGauge balances the LayerDistribution.Inc done at subscribe time.
+// Every downlink-removal path must call it (video downlinks only; audio
+// never Inc'd). Missing calls leak the gauge on every peer leave (#83).
+func decLayerGauge(entry *subscriberEntry) {
+	if entry == nil || entry.downlink == nil {
+		return
+	}
+	if entry.downlink.Kind() == webrtc.RTPCodecTypeVideo {
+		metrics.LayerDistribution.WithLabelValues(entry.downlink.GetLayer()).Dec()
+	}
+}
+
 // removePublisherLocked removes an active publisher and cleans up all downlinks receiving from it.
 // Returns the list of subscriber IDs that require renegotiation.
 // Caller MUST hold r.mu.
@@ -461,6 +473,7 @@ func (r *Router) removePublisherLocked(pubID string) []string {
 		for key, entry := range subMap {
 			if entry.downlink.PublisherID == pubID || key == pubID {
 				entry.downlink.Close()
+				decLayerGauge(entry)
 				if pe, okPeer := r.peers[subID]; okPeer && pe.peer != nil {
 					_ = pe.peer.RemoveTrack(entry.sender)
 					peerNeedsReneg[subID] = true
@@ -487,6 +500,7 @@ func (r *Router) RemovePeer(userID string) {
 	if subMap, ok := r.subscribers[userID]; ok {
 		for pubTrackKey, entry := range subMap {
 			entry.downlink.Close()
+			decLayerGauge(entry)
 			if pub, okPub := r.publishers[pubTrackKey]; okPub {
 				pub.RemoveSubscriber(userID)
 			}
@@ -691,9 +705,7 @@ func (r *Router) removeDownlinksLocked(tKey string, peerNeedsReneg map[string]bo
 		if !ok {
 			continue
 		}
-		if entry.downlink != nil && entry.downlink.Kind() == webrtc.RTPCodecTypeVideo {
-			metrics.LayerDistribution.WithLabelValues(entry.downlink.GetLayer()).Dec()
-		}
+		decLayerGauge(entry)
 		entry.downlink.Close()
 		if pe, okPeer := r.peers[subID]; okPeer && pe.peer != nil {
 			_ = pe.peer.RemoveTrack(entry.sender)
@@ -800,6 +812,7 @@ func (r *Router) RemovePublisherKind(pubID string, kind webrtc.RTPCodecType) {
 				if (kind == webrtc.RTPCodecTypeVideo && strings.Contains(key, ":video:")) ||
 					(kind == webrtc.RTPCodecTypeAudio && strings.Contains(key, ":audio:")) {
 					entry.downlink.Close()
+					decLayerGauge(entry)
 					if pe, okPeer := r.peers[subID]; okPeer && pe.peer != nil {
 						_ = pe.peer.RemoveTrack(entry.sender)
 						peerNeedsReneg[subID] = true
@@ -839,6 +852,7 @@ func (r *Router) onUplinkDeath(tKey string) {
 	for subID, subMap := range r.subscribers {
 		if entry, ok := subMap[tKey]; ok {
 			entry.downlink.Close()
+			decLayerGauge(entry)
 			if pe, okPeer := r.peers[subID]; okPeer && pe.peer != nil {
 				_ = pe.peer.RemoveTrack(entry.sender)
 				peerNeedsReneg[subID] = true

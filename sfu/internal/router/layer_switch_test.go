@@ -239,6 +239,52 @@ func TestLayerSwitch_AlwaysRequestsFreshPLI(t *testing.T) {
 	}
 }
 
+func TestLayerDistribution_NoLeakOnPeerLeave(t *testing.T) {
+	before := getGaugeValue(metrics.LayerDistribution.WithLabelValues(LayerFull))
+	r, _ := switchTestBed(t)
+
+	entry := r.subscribers["bob"]["alice:video:f"]
+	if entry == nil {
+		t.Fatalf("bob has no f downlink after setup")
+	}
+	if got := getGaugeValue(metrics.LayerDistribution.WithLabelValues(LayerFull)) - before; got != 1 {
+		t.Fatalf("subscribe f delta = %v, want 1", got)
+	}
+
+	// Subscriber leave must balance the gauge.
+	r.RemovePeer("bob")
+	if got := getGaugeValue(metrics.LayerDistribution.WithLabelValues(LayerFull)) - before; got != 0 {
+		t.Fatalf("after RemovePeer(sub) f delta = %v, want 0 (gauge leak)", got)
+	}
+}
+
+func TestLayerDistribution_NoLeakOnPublisherLeave(t *testing.T) {
+	beforeF := getGaugeValue(metrics.LayerDistribution.WithLabelValues(LayerFull))
+	r, _ := switchTestBed(t)
+
+	if r.subscribers["bob"]["alice:video:f"] == nil {
+		t.Fatalf("bob has no f downlink after setup")
+	}
+	// Publisher leave must balance every dependent downlink.
+	r.RemovePeer("alice")
+	if got := getGaugeValue(metrics.LayerDistribution.WithLabelValues(LayerFull)) - beforeF; got != 0 {
+		t.Fatalf("after RemovePeer(pub) f delta = %v, want 0 (gauge leak)", got)
+	}
+}
+
+func TestLayerDistribution_NoLeakOnKindOff(t *testing.T) {
+	beforeF := getGaugeValue(metrics.LayerDistribution.WithLabelValues(LayerFull))
+	r, _ := switchTestBed(t)
+
+	if r.subscribers["bob"]["alice:video:f"] == nil {
+		t.Fatalf("bob has no f downlink after setup")
+	}
+	r.RemovePublisherKind("alice", webrtc.RTPCodecTypeVideo)
+	if got := getGaugeValue(metrics.LayerDistribution.WithLabelValues(LayerFull)) - beforeF; got != 0 {
+		t.Fatalf("after RemovePublisherKind f delta = %v, want 0 (gauge leak)", got)
+	}
+}
+
 // --- helpers ---
 
 func subKeys(r *Router, subID string) []string {

@@ -56,6 +56,16 @@ var (
 		Help: "Total number of RTCP PLI (Picture Loss Indication) requests received from subscribers.",
 	})
 
+	PLIRequestsReceived = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "sfu_pli_requests_received_total",
+		Help: "Total number of PLI/FIR keyframe requests received from subscribers (issue #81).",
+	})
+
+	PLIRequestsForwarded = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "sfu_pli_requests_forwarded_total",
+		Help: "Total number of PLI/FIR keyframe requests forwarded to publishers after coalescing (issue #81).",
+	})
+
 	RTCPFIRTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "sfu_rtcp_fir_total",
 		Help: "Total number of RTCP FIR (Full Intra Request) requests received from subscribers.",

@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/moadabdou/Kith/sfu/internal/peer"
+	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -413,6 +414,22 @@ func (r *Router) subscribeUplinkLocked(uplink *PublisherUplink, tKey string, pee
 		downlink.SetScreen(uplink.IsScreen)
 		uplink.AddSubscriber(downlink)
 
+		// Instant render (#81): replay the cached keyframe into the fresh
+		// downlink so the joiner decodes immediately instead of waiting out
+		// the natural keyframe cadence. Replay goes through the normal
+		// Enqueue path, so per-downlink seq rewriting + NACK translation
+		// apply automatically. A stale/missing cache falls back to
+		// PLI-immediate below.
+		replayed := false
+		if uplink.Kind == webrtc.RTPCodecTypeVideo {
+			if cached := uplink.cachedKeyframe(); len(cached) > 0 {
+				for _, pkt := range cached {
+					downlink.Enqueue(pkt)
+				}
+				replayed = true
+			}
+		}
+
 		if r.subscribers[subID] == nil {
 			r.subscribers[subID] = make(map[string]*subscriberEntry)
 		}
@@ -421,6 +438,12 @@ func (r *Router) subscribeUplinkLocked(uplink *PublisherUplink, tKey string, pee
 			sender:   sender,
 		}
 		peerNeedsReneg[subID] = true
+
+		if uplink.Kind == webrtc.RTPCodecTypeVideo && !replayed {
+			// No fresh cache: ask for a keyframe now (coalesced by the
+			// limiter if several joiners land together).
+			uplink.requestPLI(&rtcp.PictureLossIndication{})
+		}
 	}
 }
 

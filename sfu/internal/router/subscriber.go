@@ -34,6 +34,10 @@ type SubscriberDownlink struct {
 
 	feedbackMu sync.RWMutex
 	onFeedback func([]rtcp.Packet)
+	// feedbackUplink is the publisher uplink owning this downlink, used to
+	// route PLI/FIR through the per-publisher limiter (#81). Set at
+	// subscribe time; nil-safe (falls back to direct forward).
+	feedbackUplink *PublisherUplink
 
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -147,20 +151,32 @@ func (s *SubscriberDownlink) rtcpLoop() {
 
 				case *rtcp.PictureLossIndication:
 					metrics.RTCPPLITotal.Inc()
-					s.feedbackMu.RLock()
-					cb := s.onFeedback
-					s.feedbackMu.RUnlock()
-					if cb != nil {
-						cb([]rtcp.Packet{report})
+					// Route through the uplink PLI limiter (#81): storms
+					// coalesce instead of stampeding the publisher encoder.
+					// Fall back to direct forward when the uplink is gone
+					// (e.g. publisher left mid-feedback).
+					if up := uplinkForFeedback(s); up != nil {
+						up.requestPLI(report)
+					} else {
+						s.feedbackMu.RLock()
+						cb := s.onFeedback
+						s.feedbackMu.RUnlock()
+						if cb != nil {
+							cb([]rtcp.Packet{report})
+						}
 					}
 
 				case *rtcp.FullIntraRequest:
 					metrics.RTCPFIRTotal.Inc()
-					s.feedbackMu.RLock()
-					cb := s.onFeedback
-					s.feedbackMu.RUnlock()
-					if cb != nil {
-						cb([]rtcp.Packet{report})
+					if up := uplinkForFeedback(s); up != nil {
+						up.requestFIR(report)
+					} else {
+						s.feedbackMu.RLock()
+						cb := s.onFeedback
+						s.feedbackMu.RUnlock()
+						if cb != nil {
+							cb([]rtcp.Packet{report})
+						}
 					}
 				}
 			}
@@ -203,6 +219,31 @@ func (s *SubscriberDownlink) forwardNack(nack *rtcp.TransportLayerNack) {
 	if cb != nil {
 		cb([]rtcp.Packet{fwd})
 	}
+}
+
+// uplinkForFeedback resolves the publisher uplink owning this downlink's
+// feedback path. The downlink's onFeedback closure is installed by
+// AddSubscriber on the uplink, so we recover the uplink via the callback's
+// target: stored explicitly at subscribe time (see feedbackUplink).
+func (s *SubscriberDownlink) feedbackTarget() *PublisherUplink {
+	s.feedbackMu.RLock()
+	defer s.feedbackMu.RUnlock()
+	return s.feedbackUplink
+}
+
+// SetFeedbackUplink records the publisher uplink for limiter-routed PLI/FIR.
+func (s *SubscriberDownlink) SetFeedbackUplink(up *PublisherUplink) {
+	s.feedbackMu.Lock()
+	defer s.feedbackMu.Unlock()
+	s.feedbackUplink = up
+}
+
+// uplinkForFeedback is the package-level lookup used by the rtcpLoop.
+func uplinkForFeedback(s *SubscriberDownlink) *PublisherUplink {
+	if s == nil {
+		return nil
+	}
+	return s.feedbackTarget()
 }
 
 // SetOnFeedback configures the callback for RTCP feedback (e.g., PLI, FIR) to forward to publisher.

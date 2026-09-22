@@ -6,10 +6,21 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/pion/rtcp"
+	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
 )
+
+// maxKeyframePackets bounds the cache: a 1080p VP8 keyframe is dozens of
+// packets; 256 is generous headroom before we stop collecting (and drop the
+// partial cache) rather than grow unbounded on a pathological stream.
+const maxKeyframePackets = 256
+
+// maxKeyframeAge bounds replay freshness: a keyframe older than this decodes
+// to a stale frozen frame, so subscribers fall back to PLI-immediate.
+const maxKeyframeAge = 2 * time.Second
 
 // PublisherUplink manages an ingress track (audio or video) from a publisher and distributes RTP packets
 // to all subscribed downlinks.
@@ -29,6 +40,21 @@ type PublisherUplink struct {
 	subscribers map[string]*SubscriberDownlink
 	rtcpWriter  func([]rtcp.Packet) error
 	onDeath     func(trackKey string)
+
+	// Keyframe cache (#81): latest full picture per uplink, replayed to
+	// late joiners for instant rendering. Uplinks are per-layer already
+	// (pubID:video:<rid>), so the cache is per-layer for free. Guarded by
+	// keyMu (separate from mu: readingLoop writes, subscribe paths read).
+	keyMu       sync.RWMutex
+	keyframe    []*rtp.Packet
+	keyframeAt  time.Time
+	hasKeyframe bool
+
+	// PLI limiter (#81): coalesces per-subscriber keyframe requests so a
+	// join/leave storm can't stampede the publisher encoder. Guarded by
+	// pliMu; installed once via ensurePLILimiter.
+	pliMu      sync.Mutex
+	pliLimiter *pliLimiter
 
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -176,6 +202,8 @@ func (p *PublisherUplink) AddSubscriber(sub *SubscriberDownlink) {
 		existing.Close()
 	}
 	p.subscribers[sub.SubscriberID] = sub
+	p.ensurePLILimiter()
+	sub.SetFeedbackUplink(p)
 	sub.SetOnFeedback(func(pkts []rtcp.Packet) {
 		_ = p.SendRTCP(pkts)
 	})
@@ -221,8 +249,74 @@ func (p *PublisherUplink) readingLoop() {
 				sub.Enqueue(pkt.Clone())
 			}
 			p.mu.RUnlock()
+
+			p.observeKeyframe(pkt)
 		}
 	}
+}
+
+// observeKeyframe maintains the latest-keyframe cache for video uplinks.
+// Detection runs on the readingLoop goroutine; cache writes take keyMu, so
+// subscribe-time replay never races the ingest path.
+func (p *PublisherUplink) observeKeyframe(pkt *rtp.Packet) {
+	if p.Kind != webrtc.RTPCodecTypeVideo || pkt == nil {
+		return
+	}
+	detector := DetectorFor(p.CodecCap.MimeType)
+	if detector == nil {
+		return
+	}
+	p.keyMu.Lock()
+	defer p.keyMu.Unlock()
+
+	if detector.IsKeyframeStart(pkt.Payload) {
+		// New keyframe: rotate (drop the old frame's packets).
+		p.keyframe = p.keyframe[:0]
+		p.hasKeyframe = false
+	}
+	if !p.hasKeyframe && len(p.keyframe) < maxKeyframePackets {
+		// Collecting the current frame — but only while it could still be
+		// the keyframe we just detected: any non-keyframe-start packet
+		// after the first one belongs to the same keyframe frame ONLY if
+		// we are already collecting (rotated above). A fresh non-start
+		// packet with an empty cache means the keyframe start was missed
+		// (joined mid-frame, packet loss): don't cache a partial frame.
+		if len(p.keyframe) == 0 && !detector.IsKeyframeStart(pkt.Payload) {
+			return
+		}
+		p.keyframe = append(p.keyframe, pkt.Clone())
+		p.keyframeAt = time.Now()
+		// Heuristic frame end: RTP marker bit closes the frame. Until then
+		// we keep collecting; the next keyframe start rotates anyway.
+		if pkt.Header.Marker {
+			p.hasKeyframe = true
+		}
+		return
+	}
+	// Cache full and complete: a new keyframe start rotates at the top on
+	// the next call. Non-start packets are just forwarded (handled above).
+	if len(p.keyframe) >= maxKeyframePackets {
+		p.keyframe = p.keyframe[:0]
+		p.hasKeyframe = false
+	}
+}
+
+// cachedKeyframe returns clones of the cached keyframe packets when fresh,
+// or nil when there is nothing (or nothing fresh) to replay.
+func (p *PublisherUplink) cachedKeyframe() []*rtp.Packet {
+	p.keyMu.RLock()
+	defer p.keyMu.RUnlock()
+	if !p.hasKeyframe || len(p.keyframe) == 0 {
+		return nil
+	}
+	if time.Since(p.keyframeAt) > maxKeyframeAge {
+		return nil
+	}
+	out := make([]*rtp.Packet, len(p.keyframe))
+	for i, pkt := range p.keyframe {
+		out[i] = pkt.Clone()
+	}
+	return out
 }
 
 // Close gracefully closes the publisher reading loop and all attached subscribers.
@@ -233,6 +327,11 @@ func (p *PublisherUplink) Close() {
 		if p.cancel != nil {
 			p.cancel()
 		}
+		p.pliMu.Lock()
+		if p.pliLimiter != nil {
+			p.pliLimiter.stop()
+		}
+		p.pliMu.Unlock()
 		p.mu.Lock()
 		for id, sub := range p.subscribers {
 			sub.Close()

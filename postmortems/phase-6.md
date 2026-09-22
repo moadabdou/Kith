@@ -321,5 +321,41 @@ Gates from `plan/07-voice-video.md` §6:
 
 ---
 
+## 12. Note: Bandwidth Diet (future optimization, not built)
+
+Reference call: 50 viewers × (49 cams + 1 screen presenter + 1 speaker) × 3 h.
+Naive Phase-6 cost (subscribe to everything, all `h`): **~1.33 Gbps egress →
+~1.7 TB**, ~250 MB RAM, ~25–50% of 2 OCPUs (~200k pps out). Projected cost
+after all six optimizations below, stacked in order:
+
+| # | Optimization | Egress after | Saving vs naive | RAM / CPU effect |
+| :--- | :--- | :--- | :--- | :--- |
+| 0 | Naive (49 subs/viewer @h) | ~1.7 TB | — | ~5,000 downlinks, ~10k goroutines, ~200k pps |
+| 1 | **Visible-only** (12-tile page: 11 cams @h + screen + audio) | ~0.55 TB | −69% | downlinks 5,000→650 (−87%), eval scan 5k→650 entries |
+| 2 | **Size-matched** (11 tiles → `q`, screen stays spotlight `f`) | ~0.25 TB | −86% cum. | pps out ~200k→~35k |
+| 3 | **Speaker tiers** (2 recent speakers back to `h`) | ~0.30 TB | −82% cum. | +0.7 Mbps/viewer vs all-`q` — costs bits, buys UX |
+| 4 | **DTX** (1 speaker assumed; 50 unmuted would add ~250 GB) | avoids +~250 GB | audio pps 125k→2.5k (−98%), biggest CPU win |
+| 5 | **Server caps** (max senders/channel, max subs/viewer) | bounds worst case | structural, no steady-state saving | OOM-proof under abuse |
+
+End state: **~0.3 TB per 3 h call (~5–6× less), ~130 MB RAM, ~5% CPU (~20k
+pps)** — ten such calls fit the 10 TB free tier.
+
+Corrections and caveats (from review discussion):
+
+- **VP8 has no true stillness-silence.** Unlike Opus DTX, a static face still
+  emits full-framerate P-frames (smaller deltas, not zero packets). Real
+  savings need explicit pause/unsubscribe — which visible-only already does
+  for off-page tiles. Don't budget stillness as a line item.
+- **Page-flip storms:** flipping pages = mass unsubscribe/subscribe +
+  keyframe bursts. Needs debounce; the §3 limiter + §81 cache replay are the
+  shock absorbers, not the solution.
+- **Tile-size must become a server signal:** the selector keys on congestion
+  only today; the client should send `wanted = min(congestion_layer,
+  tile_size_layer)` per downlink.
+- Client cooperation is optional — caps (5) must be router-enforced, or one
+  abusive client re-creates the 50×50 case.
+
+---
+
 *Signed off by:* **Moad Abdellaoui**
 *Milestone 7 Completed:* September 22, 2026

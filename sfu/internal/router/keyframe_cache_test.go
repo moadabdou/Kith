@@ -70,6 +70,32 @@ func TestKeyframeCache_CollectAndReplay(t *testing.T) {
 	}
 }
 
+func TestKeyframeCache_MaxAgeBound(t *testing.T) {
+	up := NewPublisherUplink("pub_kf_age", nil, nil)
+	defer up.Close()
+	up.Kind = webrtc.RTPCodecTypeVideo
+	up.CodecCap = webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8}
+
+	for _, pkt := range keyframeRTP(t, 1000, 3) {
+		up.observeKeyframe(pkt)
+	}
+	if got := up.cachedKeyframeMaxAge(switchReplayMaxAge); len(got) != 3 {
+		t.Fatalf("fresh cache must replay under switch bound: %d packets", len(got))
+	}
+
+	// Backdate past the switch bound but inside the join bound: switch
+	// replay refuses, join replay still serves.
+	up.keyMu.Lock()
+	up.keyframeAt = time.Now().Add(-switchReplayMaxAge - 100*time.Millisecond)
+	up.keyMu.Unlock()
+	if got := up.cachedKeyframeMaxAge(switchReplayMaxAge); got != nil {
+		t.Fatalf("stale cache must not replay on switch: %d packets", len(got))
+	}
+	if got := up.cachedKeyframe(); len(got) != 3 {
+		t.Fatalf("join path must still serve within its own bound: %d packets", len(got))
+	}
+}
+
 func TestKeyframeCache_PartialStartMissed(t *testing.T) {
 	up := NewPublisherUplink("pub_kf_partial", nil, nil)
 	defer up.Close()

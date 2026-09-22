@@ -51,6 +51,21 @@ var (
 		Help: "Total number of RTCP NACK requests translated and forwarded to publishers.",
 	})
 
+	RTXRepaired = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "sfu_rtx_repaired_total",
+		Help: "Retransmitted packets surfaced by Pion ingress repair (RTX stream consumed).",
+	})
+
+	RTXForwarded = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "sfu_rtx_forwarded_total",
+		Help: "Repaired packets written to subscriber downlinks with gap seqs.",
+	})
+
+	RTXUnmatched = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "sfu_rtx_unmatched_total",
+		Help: "Repaired packets dropped per subscriber: no reverse seq mapping (aged out or never forwarded).",
+	})
+
 	RTCPPLITotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "sfu_rtcp_pli_total",
 		Help: "Total number of RTCP PLI (Picture Loss Indication) requests received from subscribers.",
@@ -65,6 +80,16 @@ var (
 		Name: "sfu_pli_requests_forwarded_total",
 		Help: "Total number of PLI/FIR keyframe requests forwarded to publishers after coalescing (issue #81).",
 	})
+
+	LayerDistribution = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "sfu_layer_distribution",
+		Help: "Current number of video downlinks per simulcast layer (issue #82).",
+	}, []string{"layer"})
+
+	LayerSwitches = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "sfu_layer_switches_total",
+		Help: "Total simulcast layer switches by direction (issue #82).",
+	}, []string{"direction"})
 
 	RTCPFIRTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "sfu_rtcp_fir_total",

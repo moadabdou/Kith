@@ -39,6 +39,13 @@ type SubscriberDownlink struct {
 	// subscribe time; nil-safe (falls back to direct forward).
 	feedbackUplink *PublisherUplink
 
+	// score is the smoothed downlink health for layer selection (#82).
+	// Updated by rtcpLoop, read by the router evaluation ticker.
+	score downlinkScore
+	// layer is the simulcast RID this downlink currently forwards.
+	// Guarded by feedbackMu (written under router lock at switch time).
+	layer string
+
 	ctx       context.Context
 	cancel    context.CancelFunc
 	closeOnce sync.Once
@@ -143,10 +150,15 @@ func (s *SubscriberDownlink) rtcpLoop() {
 						// FractionLost is fixed point fraction of 256
 						lossRate := float64(r.FractionLost) / 256.0
 						metrics.FractionLost.Set(lossRate)
+						// Feed the layer selector (#82). Clock rate is
+						// video-typical 90kHz here; audio reports share the
+						// path but audio downlinks are never layer-switched.
+						s.score.observeRR(r.FractionLost, r.Jitter, 90000)
 					}
 
 				case *rtcp.TransportLayerNack:
 					metrics.RTCPNackTotal.Inc()
+					s.score.observeNack()
 					s.forwardNack(report)
 
 				case *rtcp.PictureLossIndication:
@@ -195,6 +207,15 @@ func (s *SubscriberDownlink) IsScreen() bool {
 	return s.isScreen
 }
 
+// Kind reports the codec kind of this downlink (audio/video).
+// Used for metric bookkeeping on teardown.
+func (s *SubscriberDownlink) Kind() webrtc.RTPCodecType {
+	if s.TrackLocal != nil {
+		return s.TrackLocal.Kind()
+	}
+	return webrtc.RTPCodecTypeVideo
+}
+
 // forwardNack translates a viewer NACK from downlink to uplink sequence
 // space and forwards it to the publisher for retransmission (~50ms repair
 // instead of a keyframe wait). Untranslatable entries (aged out / dropped
@@ -236,6 +257,29 @@ func (s *SubscriberDownlink) SetFeedbackUplink(up *PublisherUplink) {
 	s.feedbackMu.Lock()
 	defer s.feedbackMu.Unlock()
 	s.feedbackUplink = up
+}
+
+// SetLayer records the simulcast RID this downlink forwards (#82).
+func (s *SubscriberDownlink) SetLayer(layer string) {
+	s.feedbackMu.Lock()
+	defer s.feedbackMu.Unlock()
+	s.layer = layer
+}
+
+// GetLayer returns the simulcast RID this downlink forwards.
+func (s *SubscriberDownlink) GetLayer() string {
+	s.feedbackMu.RLock()
+	defer s.feedbackMu.RUnlock()
+	if s.layer == "" {
+		return LayerFull
+	}
+	return s.layer
+}
+
+// ScoreSnapshot returns the smoothed downlink health for layer selection,
+// including NACKs/sec repair effort.
+func (s *SubscriberDownlink) ScoreSnapshot() (loss, jitterMs float64, goodWindows int, nacks uint64, nackRate float64) {
+	return s.score.snapshot()
 }
 
 // uplinkForFeedback is the package-level lookup used by the rtcpLoop.

@@ -1,12 +1,15 @@
 package router
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/moadabdou/Kith/sfu/internal/metrics"
 	"github.com/moadabdou/Kith/sfu/internal/peer"
 	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
@@ -30,6 +33,8 @@ type peerEntry struct {
 type Router struct {
 	roomID string
 	mu     sync.RWMutex
+	ctx    context.Context
+	cancel context.CancelFunc
 
 	// Registered publishers: pubUserID -> PublisherUplink
 	publishers map[string]*PublisherUplink
@@ -37,7 +42,9 @@ type Router struct {
 	// Registered peers: userID -> *peerEntry (bundles peer, callback, and pending state)
 	peers map[string]*peerEntry
 
-	// Downlinks per subscriber: subUserID -> map[pubUserID]*subscriberEntry
+	// Downlinks per subscriber: subUserID -> map[uplinkKey]*subscriberEntry.
+	// Video entries are per-(publisher, layer): pubID:video:<rid> (#82);
+	// audio stays per-publisher.
 	subscribers map[string]map[string]*subscriberEntry
 
 	// videoKind: pubID -> declared kind of the user's single video uplink.
@@ -45,7 +52,26 @@ type Router struct {
 	// video/screen signals instead of renegotiating, so the SFU trusts the
 	// last-writer-wins signal here — never SDP msids — for labeling.
 	videoKind map[string]VideoKind
+
+	// switchCooldown: (subID/pubID) -> last layer-switch time. Second
+	// anti-flap guard after hysteresis (#82 conservative policy).
+	switchCooldown map[string]time.Time
 }
+
+// switchCooldownInterval is the minimum time between layer switches for one
+// (subscriber, publisher) pair.
+const switchCooldownInterval = 10 * time.Second
+
+// evalInterval is the layer-selection evaluation period (one router ticker,
+// not per-downlink).
+const evalInterval = time.Second
+
+// switchReplayMaxAge bounds keyframe replay freshness on layer switches.
+// Tighter than the initial-join bound (maxKeyframeAge): a stale anchor
+// combined with live deltas referencing newer state freezes the decoder
+// until the next natural keyframe, and a fresh PLI (always sent alongside)
+// covers the gap.
+const switchReplayMaxAge = time.Second
 
 // VideoKind is the declared kind of a user's single video uplink.
 type VideoKind int
@@ -61,12 +87,216 @@ const (
 
 // NewRouter creates a new audio track router for a room.
 func NewRouter(roomID string) *Router {
-	return &Router{
-		roomID:      roomID,
-		publishers:  make(map[string]*PublisherUplink),
-		peers:       make(map[string]*peerEntry),
-		subscribers: make(map[string]map[string]*subscriberEntry),
-		videoKind:   make(map[string]VideoKind),
+	ctx, cancel := context.WithCancel(context.Background())
+	r := &Router{
+		roomID:         roomID,
+		ctx:            ctx,
+		cancel:         cancel,
+		publishers:     make(map[string]*PublisherUplink),
+		peers:          make(map[string]*peerEntry),
+		subscribers:    make(map[string]map[string]*subscriberEntry),
+		videoKind:      make(map[string]VideoKind),
+		switchCooldown: make(map[string]time.Time),
+	}
+	go r.evalLoop()
+	return r
+}
+
+// evalLoop periodically converges every video downlink to its entitled
+// simulcast layer (#82). One goroutine per router; exits on Close.
+func (r *Router) evalLoop() {
+	t := time.NewTicker(evalInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-r.ctx.Done():
+			return
+		case <-t.C:
+			r.evalLayers()
+		}
+	}
+}
+
+// switchCooldownKey keys the per-pair switch cooldown.
+func switchCooldownKey(subID, pubID string) string {
+	return subID + "\x00" + pubID
+}
+
+// evalLayers converges each cam-video downlink to its score-entitled layer.
+// Screen, audio, dead, and kind-none uplinks are skipped. Switch DOWN takes
+// effect via keyframe-gated repointing; switch UP is instant with cached
+// keyframe replay. Cooldown + hysteresis (in desiredLayer) prevent flapping.
+func (r *Router) evalLayers() {
+	type switchReq struct {
+		subID, pubID, from, to string
+		loss, nackRate         float64
+	}
+	var reqs []switchReq
+	now := time.Now()
+
+	r.mu.Lock()
+	for subID, subMap := range r.subscribers {
+		for tKey, entry := range subMap {
+			if entry == nil || entry.downlink == nil {
+				continue
+			}
+			pubID := entry.downlink.PublisherID
+			pub, ok := r.publishers[tKey]
+			if !ok || pub == nil || pub.IsClosed() {
+				continue
+			}
+			if pub.Kind != webrtc.RTPCodecTypeVideo || pub.IsScreen {
+				continue // screen + audio never switch
+			}
+			if r.videoKind[pubID] == VideoKindNone {
+				continue
+			}
+			current := entry.downlink.GetLayer()
+			loss, jitter, good, _, nackRate := entry.downlink.ScoreSnapshot()
+			want := desiredLayer(current, sanitizeScore(loss), jitter, good, nackRate)
+			if want == current {
+				continue
+			}
+			// Target layer must exist and be alive.
+			wantKey := pubID + ":video:" + want
+			target, ok := r.publishers[wantKey]
+			if !ok || target == nil || target.IsClosed() {
+				continue
+			}
+			if last, ok := r.switchCooldown[switchCooldownKey(subID, pubID)]; ok &&
+				now.Sub(last) < switchCooldownInterval {
+				continue
+			}
+			r.switchCooldown[switchCooldownKey(subID, pubID)] = now
+			reqs = append(reqs, switchReq{subID: subID, pubID: pubID, from: current, to: want, loss: loss, nackRate: nackRate})
+		}
+	}
+	r.mu.Unlock()
+
+	for _, req := range reqs {
+		r.switchLayer(req.subID, req.pubID, req.from, req.to, req.loss, req.nackRate)
+	}
+}
+
+// switchLayer repoints one viewer's downlink from one simulcast layer to
+// another, preserving the stable downlink IDs (kith-track-UID-video) so
+// client tiles never orphan. UP: instant swap + cached-keyframe replay.
+// DOWN: hold until the target layer's next keyframe (drop intermediates),
+// with a PLI-forced fallback after keyframeWaitTimeout. loss/nackRate are
+// the deciding snapshot values, logged for observability.
+func (r *Router) switchLayer(subID, pubID, from, to string, loss, nackRate float64) {
+	if from == to {
+		return
+	}
+	direction := "up"
+	if layerRank[to] < layerRank[from] {
+		direction = "down"
+	}
+
+	r.mu.Lock()
+	subMap := r.subscribers[subID]
+	if subMap == nil {
+		r.mu.Unlock()
+		return
+	}
+	fromKey := pubID + ":video:" + from
+	toKey := pubID + ":video:" + to
+	oldEntry, ok := subMap[fromKey]
+	if !ok || oldEntry == nil || oldEntry.downlink == nil {
+		r.mu.Unlock()
+		return
+	}
+	target, ok := r.publishers[toKey]
+	if !ok || target == nil || target.IsClosed() {
+		r.mu.Unlock()
+		return
+	}
+	pe, ok := r.peers[subID]
+	if !ok || pe == nil || pe.peer == nil {
+		r.mu.Unlock()
+		return
+	}
+
+	// DOWN gating: need a fresh keyframe on the target layer first (issue
+	// rule: drop intermediates until the next keyframe to prevent decoder
+	// corruption). #81's cache usually has one already. The switch path
+	// uses a tighter freshness bound than initial joins: a stale anchor
+	// desyncs the decoder until the next natural keyframe.
+	if direction == "down" {
+		if cached := target.cachedKeyframeMaxAge(switchReplayMaxAge); len(cached) == 0 {
+			target.requestPLI(&rtcp.PictureLossIndication{})
+			r.mu.Unlock()
+			// Retry on the next evaluation tick (cooldown was already
+			// stamped above, so this re-arms at most once per interval
+			// without spinning: reset cooldown to allow the retry).
+			r.mu.Lock()
+			delete(r.switchCooldown, switchCooldownKey(subID, pubID))
+			r.mu.Unlock()
+			return
+		}
+	}
+
+	// Build the replacement downlink on the target layer. Same stable IDs
+	// (DownlinkTrackID/StreamID are kind-derived, not layer-derived), so
+	// the viewer's tile/stream identity survives the switch.
+	trackLocal, err := webrtc.NewTrackLocalStaticRTP(
+		target.CodecCap,
+		target.DownlinkTrackID(pubID),
+		target.DownlinkStreamID(pubID),
+	)
+	if err != nil {
+		slog.Error("Layer switch: failed to create track", "sub_id", subID, "pub_id", pubID, "to", to, "err", err)
+		r.mu.Unlock()
+		return
+	}
+	sender, err := pe.peer.AddTrack(trackLocal)
+	if err != nil {
+		slog.Error("Layer switch: failed to add track", "sub_id", subID, "pub_id", pubID, "to", to, "err", err)
+		r.mu.Unlock()
+		return
+	}
+	downlink := NewSubscriberDownlink(subID, pubID, trackLocal, sender)
+	downlink.SetScreen(target.IsScreen)
+	downlink.SetLayer(to)
+
+	// Prime the new downlink BEFORE AddSubscriber exposes it to the live
+	// fan-out: downlink seq numbers are assigned in enqueue order, so any
+	// live packet enqueued first would steal lower rewritten seqs and the
+	// jitter buffer would drop the keyframe pieces as late. Replay first
+	// guarantees the keyframe owns the lowest seqs on the fresh downlink.
+	if cached := target.cachedKeyframeMaxAge(switchReplayMaxAge); len(cached) > 0 {
+		for _, pkt := range cached {
+			downlink.Enqueue(pkt)
+		}
+	}
+	// Always request a fresh keyframe alongside the replay: the cache can
+	// still be up to switchReplayMaxAge stale, and live deltas reference
+	// newer state — without a fresh keyframe the decoder anchors on old
+	// state and freezes until the next natural one. The PLI limiter
+	// coalesces this for free.
+	target.requestPLI(&rtcp.PictureLossIndication{})
+	target.AddSubscriber(downlink)
+
+	// Swap: detach the old sender track, close the old downlink, file the
+	// new entry under the target key.
+	oldEntry.downlink.Close()
+	_ = pe.peer.RemoveTrack(oldEntry.sender)
+	delete(subMap, fromKey)
+	subMap[toKey] = &subscriberEntry{downlink: downlink, sender: sender}
+	peerNeedsReneg := map[string]bool{subID: true}
+	var peersToRenegotiate []string
+	for sub := range peerNeedsReneg {
+		peersToRenegotiate = append(peersToRenegotiate, sub)
+	}
+	r.mu.Unlock()
+
+	metrics.LayerSwitches.WithLabelValues(direction).Inc()
+	metrics.LayerDistribution.WithLabelValues(from).Dec()
+	metrics.LayerDistribution.WithLabelValues(to).Inc()
+	slog.Info("Layer switch", "sub_id", subID, "pub_id", pubID, "from", from, "to", to, "direction", direction,
+		"loss", loss, "nack_rate", nackRate)
+	for _, sub := range peersToRenegotiate {
+		r.TriggerRenegotiation(sub)
 	}
 }
 
@@ -412,6 +642,12 @@ func (r *Router) subscribeUplinkLocked(uplink *PublisherUplink, tKey string, pee
 
 		downlink := NewSubscriberDownlink(subID, pubID, trackLocal, sender)
 		downlink.SetScreen(uplink.IsScreen)
+		// Fresh subscriptions always start on the full layer; the eval
+		// loop converges downward from there (#82).
+		if uplink.Kind == webrtc.RTPCodecTypeVideo {
+			downlink.SetLayer(layerOfKey(tKey))
+			metrics.LayerDistribution.WithLabelValues(layerOfKey(tKey)).Inc()
+		}
 		uplink.AddSubscriber(downlink)
 
 		// Instant render (#81): replay the cached keyframe into the fresh
@@ -454,6 +690,9 @@ func (r *Router) removeDownlinksLocked(tKey string, peerNeedsReneg map[string]bo
 		entry, ok := subMap[tKey]
 		if !ok {
 			continue
+		}
+		if entry.downlink != nil && entry.downlink.Kind() == webrtc.RTPCodecTypeVideo {
+			metrics.LayerDistribution.WithLabelValues(entry.downlink.GetLayer()).Dec()
 		}
 		entry.downlink.Close()
 		if pe, okPeer := r.peers[subID]; okPeer && pe.peer != nil {
@@ -673,6 +912,10 @@ func (r *Router) SubscribeToExistingPublishers(userID string) {
 
 		downlink := NewSubscriberDownlink(userID, pub.PublisherID, trackLocal, sender)
 		downlink.SetScreen(pub.IsScreen)
+		if pub.Kind == webrtc.RTPCodecTypeVideo {
+			downlink.SetLayer(layerOfKey(tKey))
+			metrics.LayerDistribution.WithLabelValues(layerOfKey(tKey)).Inc()
+		}
 		pub.AddSubscriber(downlink)
 
 		if r.subscribers[userID] == nil {
@@ -744,6 +987,9 @@ func (r *Router) OnSignalingStateStable(userID string) {
 func (r *Router) Close() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.cancel != nil {
+		r.cancel()
+	}
 
 	for _, pub := range r.publishers {
 		pub.Close()

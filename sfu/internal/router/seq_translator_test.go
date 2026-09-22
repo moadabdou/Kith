@@ -20,6 +20,58 @@ func offsetLookup(offset uint16, live func(down uint16) bool) func(uint16) (uint
 	}
 }
 
+func TestSeqTranslator_ReverseRoundTrip(t *testing.T) {
+	var tr seqTranslator
+	// note() populates both directions atomically-enough for readers.
+	for i := uint16(0); i < 100; i++ {
+		tr.note(1000+i, 5000+i)
+	}
+	for i := uint16(0); i < 100; i++ {
+		if u, ok := tr.lookup(1000 + i); !ok || u != 5000+i {
+			t.Fatalf("forward lookup(%d) = %d,%v, want %d,true", 1000+i, u, ok, 5000+i)
+		}
+		if d, ok := tr.lookupDown(5000 + i); !ok || d != 1000+i {
+			t.Fatalf("reverse lookupDown(%d) = %d,%v, want %d,true", 5000+i, d, ok, 1000+i)
+		}
+	}
+}
+
+func TestSeqTranslator_ReverseAgedOut(t *testing.T) {
+	var tr seqTranslator
+	tr.note(100, 200)
+	// Overwrite the same reverse slot with a colliding uplink seq
+	// (same % seqRingSize, different value): old mapping must miss.
+	collide := uint16(200 + seqRingSize)
+	tr.note(999, collide)
+	if _, ok := tr.lookupDown(200); ok {
+		t.Fatalf("stale reverse entry must miss after overwrite")
+	}
+	if d, ok := tr.lookupDown(collide); !ok || d != 999 {
+		t.Fatalf("lookupDown(%d) = %d,%v, want 999,true", collide, d, ok)
+	}
+	// Untouched entries miss on both directions.
+	if _, ok := tr.lookupDown(4242); ok {
+		t.Fatalf("untouched reverse slot must miss")
+	}
+	if _, ok := tr.lookup(4242); ok {
+		t.Fatalf("untouched forward slot must miss")
+	}
+}
+
+func TestSeqTranslator_ReverseWraparound(t *testing.T) {
+	var tr seqTranslator
+	// Uplink seqs near uint16 max: reverse mapping must survive wrap.
+	tr.note(10, 65534)
+	tr.note(11, 65535)
+	tr.note(12, 0)
+	tr.note(13, 1)
+	for down, up := range map[uint16]uint16{10: 65534, 11: 65535, 12: 0, 13: 1} {
+		if d, ok := tr.lookupDown(up); !ok || d != down {
+			t.Fatalf("lookupDown(%d) = %d,%v, want %d,true", up, d, ok, down)
+		}
+	}
+}
+
 func TestTranslateNackPairs_BasicRange(t *testing.T) {
 	// Viewer lost downlink 100,101,102,103 (base + mask bits 0..2).
 	pairs := []rtcp.NackPair{{PacketID: 100, LostPackets: 0b0111}}

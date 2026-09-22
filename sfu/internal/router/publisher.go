@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/moadabdou/Kith/sfu/internal/metrics"
+	"github.com/pion/interceptor"
 	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
@@ -222,6 +224,11 @@ func (p *PublisherUplink) RemoveSubscriber(subID string) {
 }
 
 // readingLoop reads RTP packets from the remote track and fans them out to all subscribers.
+// Packets Pion repaired from the publisher's RTX stream arrive here rewritten
+// to look exactly like the original (primary SSRC/seq/PT) plus RTX marker
+// attributes — they are routed to deliverRepair instead of the normal
+// fan-out, because a fresh downlink seq would arrive as an out-of-window
+// duplicate instead of filling the viewer's gap.
 func (p *PublisherUplink) readingLoop() {
 	defer func() {
 		slog.Debug("Publisher reading loop terminated", "publisher_id", p.PublisherID)
@@ -232,7 +239,7 @@ func (p *PublisherUplink) readingLoop() {
 		case <-p.ctx.Done():
 			return
 		default:
-			pkt, _, err := p.TrackRemote.ReadRTP()
+			pkt, attrs, err := p.TrackRemote.ReadRTP()
 			if err != nil {
 				if err != io.EOF {
 					slog.Warn("Failed to read RTP from publisher", "publisher_id", p.PublisherID, "err", err)
@@ -241,6 +248,12 @@ func (p *PublisherUplink) readingLoop() {
 				}
 				p.Close()
 				return
+			}
+
+			if isRepairPacket(attrs) {
+				metrics.RTXRepaired.Inc()
+				p.deliverRepair(pkt)
+				continue
 			}
 
 			p.mu.RLock()
@@ -252,6 +265,68 @@ func (p *PublisherUplink) readingLoop() {
 
 			p.observeKeyframe(pkt)
 		}
+	}
+}
+
+// IsRTXTrack reports whether a remote track is an RTX retransmission
+// stream rather than a media uplink (checked via codec, with empty-codec
+// tracks allowed through — codec is unset pre-first-RTP).
+func IsRTXTrack(track *webrtc.TrackRemote) bool {
+	if track == nil {
+		return false
+	}
+	mime := track.Codec().MimeType
+	return mime != "" && mime == webrtc.MimeTypeRTX
+}
+
+// isRepairPacket reports whether Pion surfaced this packet from the
+// publisher's RTX repair stream rather than the primary. The header is
+// already rewritten to the original (primary SSRC/seq/PT); only the
+// interceptor attributes betray its origin.
+func isRepairPacket(attrs interceptor.Attributes) bool {
+	if attrs == nil {
+		return false
+	}
+	return attrs.Get(webrtc.AttributeRtxPayloadType) != nil
+}
+
+// repairForDownlink clones a repaired uplink packet for one subscriber,
+// stamped with the exact missing downlink seq so the viewer jitter buffer
+// fills the hole. SSRC, timestamp and payload pass through untouched — only
+// the sequence number is rewritten, mirroring what the packet would have
+// carried had it arrived live in that slot.
+func repairForDownlink(pkt *rtp.Packet, downSeq uint16) *rtp.Packet {
+	repair := pkt.Clone()
+	repair.Header.SequenceNumber = downSeq
+	return repair
+}
+
+// deliverRepair writes a retransmitted packet to every subscriber downlink
+// whose translator maps its uplink seq to a missing downlink seq — i.e. the
+// viewers that actually lost it. Viewers with no mapping (never missed it,
+// aged out) are skipped, since an identical-seq duplicate would be pointless
+// traffic. Direct TrackLocal writes bypass the inbox (retransmits are late
+// by nature and must not consume fresh seqs or disturb ordering); WriteRTP
+// is internally locked.
+func (p *PublisherUplink) deliverRepair(pkt *rtp.Packet) {
+	upSeq := pkt.Header.SequenceNumber
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	for _, sub := range p.subscribers {
+		downSeq, ok := sub.seqTr.lookupDown(upSeq)
+		if !ok {
+			metrics.RTXUnmatched.Inc()
+			continue
+		}
+		if err := sub.TrackLocal.WriteRTP(repairForDownlink(pkt, downSeq)); err != nil {
+			slog.Debug("Repair write failed",
+				"subscriber_id", sub.SubscriberID,
+				"publisher_id", p.PublisherID,
+				"err", err,
+			)
+			continue
+		}
+		metrics.RTXForwarded.Inc()
 	}
 }
 
@@ -304,12 +379,20 @@ func (p *PublisherUplink) observeKeyframe(pkt *rtp.Packet) {
 // cachedKeyframe returns clones of the cached keyframe packets when fresh,
 // or nil when there is nothing (or nothing fresh) to replay.
 func (p *PublisherUplink) cachedKeyframe() []*rtp.Packet {
+	return p.cachedKeyframeMaxAge(maxKeyframeAge)
+}
+
+// cachedKeyframeMaxAge is cachedKeyframe with a caller-chosen freshness
+// bound. Layer switches use a tighter bound than initial joins: replaying
+// a stale anchor while live deltas reference newer state desyncs the
+// decoder until the next natural keyframe.
+func (p *PublisherUplink) cachedKeyframeMaxAge(maxAge time.Duration) []*rtp.Packet {
 	p.keyMu.RLock()
 	defer p.keyMu.RUnlock()
 	if !p.hasKeyframe || len(p.keyframe) == 0 {
 		return nil
 	}
-	if time.Since(p.keyframeAt) > maxKeyframeAge {
+	if time.Since(p.keyframeAt) > maxAge {
 		return nil
 	}
 	out := make([]*rtp.Packet, len(p.keyframe))

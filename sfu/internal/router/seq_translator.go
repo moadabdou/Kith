@@ -23,11 +23,18 @@ const seqRingSize = 2048
 // corrupt) a translation.
 type seqTranslator struct {
 	slots [seqRingSize]atomic.Uint32
+	// rev maps uplink -> downlink (the inverse direction), populated by the
+	// same note() call at zero extra hot-path cost. Used by the RTX repair
+	// path: a retransmitted packet carries its original uplink seq, and must
+	// be written with the exact missing downlink seq to fill the viewer's
+	// gap (a fresh seq would arrive as an out-of-window duplicate).
+	rev [seqRingSize]atomic.Uint32
 }
 
 // note records that uplink sequence up was forwarded as downlink sequence down.
 func (t *seqTranslator) note(down, up uint16) {
 	t.slots[down%seqRingSize].Store(uint32(down)<<16 | uint32(up))
+	t.rev[up%seqRingSize].Store(uint32(up)<<16 | uint32(down))
 }
 
 // lookup returns the uplink sequence for a downlink sequence, or false when
@@ -35,6 +42,18 @@ func (t *seqTranslator) note(down, up uint16) {
 func (t *seqTranslator) lookup(down uint16) (uint16, bool) {
 	v := t.slots[down%seqRingSize].Load()
 	if uint16(v>>16) != down {
+		return 0, false
+	}
+	return uint16(v), true
+}
+
+// lookupDown returns the downlink sequence for an uplink sequence, or false
+// when the entry aged out or that uplink packet was never forwarded on this
+// downlink. Same staleness semantics as lookup: overwrite can only drop,
+// never corrupt.
+func (t *seqTranslator) lookupDown(up uint16) (uint16, bool) {
+	v := t.rev[up%seqRingSize].Load()
+	if uint16(v>>16) != up {
 		return 0, false
 	}
 	return uint16(v), true

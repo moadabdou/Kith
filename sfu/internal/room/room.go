@@ -204,8 +204,16 @@ func (r *Room) handleJoin(m joinMsg) {
 		}
 	})
 
-	// Setup OnTrack to register incoming track with router
+	// Setup OnTrack to register incoming track with router.
+	// RTX retransmission tracks are consumed inside Pion's ingress repair
+	// machinery (never standalone uplinks): registering one would map its
+	// RID-less video key onto LayerFull and clobber the real f uplink.
 	m.p.SetOnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
+		if router.IsRTXTrack(track) {
+			slog.Warn("Ignoring RTX track as publisher uplink (handled by ingress repair)",
+				"user_id", uid, "room_id", r.ID, "ssrc", uint32(track.SSRC()))
+			return
+		}
 		slog.Info("Remote audio track received from peer, registering with router", "user_id", uid, "room_id", r.ID)
 		r.router.AddPublisher(uid, track, receiver)
 	})

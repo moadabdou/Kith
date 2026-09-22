@@ -20,6 +20,7 @@ import type { Channel, Guild, Member } from '../../types'
 import { VideoGrid } from './VideoGrid'
 import { SpotlightView } from './SpotlightView'
 import {
+  getVideoQualityLabel,
   isSpotlightTargetValid,
   resolveSpotlightStream,
   spotlightStorageKey,
@@ -53,8 +54,19 @@ export function VoiceChannelView({ currentGuild, channel }: VoiceChannelViewProp
     isScreenSharing,
     localScreenStream,
     remoteScreenStreams,
+    videoStats,
     toggleScreenShare,
   } = useVoice()
+
+  // Resolve live stats fps for a participant's current stream: match the
+  // stream's video track id against the polled inbound stats. Local (self)
+  // tracks have no inbound stats — settings-only label.
+  const statsFpsFor = (isSelfParticipant: boolean, s: MediaStream | null): number | null => {
+    if (isSelfParticipant || !s) return null
+    const trackId = s.getVideoTracks?.()[0]?.id
+    if (!trackId) return null
+    return videoStats.get(trackId)?.framesPerSecond ?? null
+  }
 
   const [members, setMembers] = useState<Map<string, Member>>(new Map())
   const [showDeviceMenu, setShowDeviceMenu] = useState(false)
@@ -159,6 +171,11 @@ export function VoiceChannelView({ currentGuild, channel }: VoiceChannelViewProp
     const screenStream = isSelf ? localScreenStream : remoteScreenStreams.get(vs.user_id) || null
     const camStream = isSelf ? localVideoStream : remoteVideoStreams.get(vs.user_id) || null
     const stream = screenStream ?? camStream
+    const quality = getVideoQualityLabel(
+      stream,
+      screenStream ? 'screen' : 'camera',
+      statsFpsFor(isSelf, stream),
+    )
 
     return {
       userId: vs.user_id,
@@ -171,6 +188,9 @@ export function VoiceChannelView({ currentGuild, channel }: VoiceChannelViewProp
       isSharingScreen: sharingScreen,
       isScreenContent: !!screenStream,
       onSpotlight: () => selectSpotlight(vs.user_id),
+      qualityLabel: stream ? quality.label : null,
+      qualityLayer: quality.layer,
+      qualityDetail: quality.detail,
     }
   })
 
@@ -197,12 +217,20 @@ export function VoiceChannelView({ currentGuild, channel }: VoiceChannelViewProp
           remoteVideoStreams,
           remoteScreenStreams,
         })
+        const quality = getVideoQualityLabel(
+          resolved.stream,
+          resolved.kind,
+          statsFpsFor(spotlightBase.isSelf, resolved.stream),
+        )
         return {
           userId: spotlightBase.userId,
           displayName: spotlightBase.displayName,
           isSelf: spotlightBase.isSelf,
           stream: resolved.stream,
           kind: resolved.kind,
+          qualityLabel: resolved.stream ? quality.label : null,
+          qualityLayer: quality.layer,
+          qualityDetail: quality.detail,
         }
       })()
     : null

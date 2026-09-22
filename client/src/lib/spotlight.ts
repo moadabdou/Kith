@@ -46,6 +46,56 @@ export function isSpotlightTargetValid(targetUserId: string | null, memberUserId
   return memberUserIds.has(targetUserId)
 }
 
+/** Simulcast layer pill derived from received frame height bands. */
+export type VideoLayer = 'f' | 'h' | 'q' | null
+
+export function layerForHeight(height: number | null | undefined): VideoLayer {
+  if (height == null || !Number.isFinite(height) || height <= 0) return null
+  if (height >= 540) return 'f'
+  if (height >= 270) return 'h'
+  return 'q'
+}
+
+export interface VideoQuality {
+  /** Compact badge text, e.g. "720p", "360p", "No video". */
+  label: string
+  /** Simulcast layer pill, null when unknown (e.g. audio-only). */
+  layer: VideoLayer
+  /** Full detail for tooltips, e.g. "720p • 30fps". Null parts omitted. */
+  detail: string | null
+}
+
+function contentHintDetail(track: MediaStreamTrack | null | undefined): boolean {
+  return (
+    (track as (MediaStreamTrack & { contentHint?: string }) | null | undefined)?.contentHint ===
+    'detail'
+  )
+}
+
+/**
+ * Quality label for any video content (cam or screen, local or remote).
+ * Resolution-first: height from track settings; layer pill from height
+ * bands; fps/detail appended when provided (from getStats polling).
+ */
+export function getVideoQualityLabel(
+  stream: MediaStream | null | undefined,
+  kind: SpotlightKind,
+  fps?: number | null,
+): VideoQuality {
+  const track = stream?.getVideoTracks?.()[0] ?? null
+  const height = track?.getSettings?.()?.height ?? null
+  const detailSuffix = contentHintDetail(track) ? 'Detail' : null
+  if (height == null || !Number.isFinite(height) || height <= 0) {
+    return { label: kind === 'screen' ? (detailSuffix ?? 'Live') : 'Live', layer: null, detail: null }
+  }
+  const rounded = Math.round(height)
+  const parts = [`${rounded}p`]
+  if (fps != null && Number.isFinite(fps) && fps > 0) parts.push(`${Math.round(fps)}fps`)
+  if (detailSuffix) parts.push(detailSuffix)
+  const detail = parts.length > 1 ? parts.join(' • ') : null
+  return { label: `${rounded}p`, layer: layerForHeight(rounded), detail }
+}
+
 /**
  * Shared track-liveness gate for grid tiles and spotlight.
  * A track is live when it hasn't ended and isn't disabled. `muted` is

@@ -1,4 +1,5 @@
 import { createContext } from 'react'
+import type { InboundVideoStats } from '../lib/sfu-client'
 import type { GuildVoiceStates } from '../lib/voice'
 import type { VoiceState } from '../types'
 
@@ -25,6 +26,8 @@ export interface VoiceContextValue {
   isScreenSharing: boolean
   localScreenStream: MediaStream | null
   remoteScreenStreams: Map<string, MediaStream>
+  /** Latest inbound video stats keyed by receiver track id (2s poll). */
+  videoStats: InboundVideoStats
   joinVoice: (guildId: string, channelId: string) => void
   leaveVoice: () => void
   toggleMute: () => void

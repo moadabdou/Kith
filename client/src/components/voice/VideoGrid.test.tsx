@@ -99,6 +99,31 @@ describe('VideoTile Component', () => {
     expect(plain).not.toContain('sharing')
     expect(plain).not.toContain('Spotlight')
   })
+
+  it('renders the quality badge with layer pill and tooltip detail', () => {
+    const html = renderToString(
+      <VideoTile
+        userId="u1"
+        displayName="Sharer"
+        isSelf={false}
+        stream={null}
+        speaking={false}
+        qualityLabel="720p"
+        qualityLayer="f"
+        qualityDetail="720p • 30fps"
+      />,
+    )
+    expect(html).toContain('720p')
+    expect(html).toContain('>f<')
+    expect(html).toContain('title="720p • 30fps"')
+  })
+
+  it('omits the quality badge when no label is provided', () => {
+    const html = renderToString(
+      <VideoTile userId="u2" displayName="Viewer" isSelf={false} stream={null} speaking={false} />,
+    )
+    expect(html).not.toContain('voice-badge quality')
+  })
 })
 
 describe('VideoGrid Component', () => {

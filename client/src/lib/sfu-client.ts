@@ -17,6 +17,8 @@ export interface SfuClientOptions {
   onLocalVideoChange?: (stream: MediaStream | null) => void
   onRemoteScreenShareChange?: (userId: string, stream: MediaStream | null) => void
   onLocalScreenChange?: (stream: MediaStream | null) => void
+  /** Periodic inbound video stats (2s poll while connected). Keyed by receiver track id. */
+  onStatsUpdate?: (stats: InboundVideoStats) => void
   userId?: string
   onError?: (error: Error) => void
   /** How long a transient `disconnected` is tolerated before recovery starts. Default 3000. */
@@ -56,7 +58,68 @@ export function resolveSfuWsUrl(endpoint: string): string {
   return `${protocol}//${host}:${port}/ws`
 }
 
+/**
+ * Extract inbound video stats from a getStats report, keyed by receiver
+ * track id. Pure function over the report — unit testable with fakes.
+ */
+export function collectInboundVideoStats(report: RTCStatsReport): InboundVideoStats {
+  const out: InboundVideoStats = new Map()
+  const byId = new Map<string, Record<string, unknown>>()
+  report.forEach((s: unknown) => {
+    const r = s as Record<string, unknown>
+    if (typeof r?.id === 'string') byId.set(r.id as string, r)
+  })
+  report.forEach((s: unknown) => {
+    const r = s as Record<string, unknown>
+    if (r?.type !== 'inbound-rtp') return
+    const kind = (r.kind as string) ?? ((r.mediaType as string) ?? '')
+    if (kind && kind !== 'video') return
+    let trackId = r.trackId as string | undefined
+    let trackStats: Record<string, unknown> | undefined
+    if (trackId) trackStats = byId.get(trackId)
+    // Fallback: some stacks omit trackId — match via trackIdentifier.
+    if (!trackStats && typeof r.trackIdentifier === 'string') {
+      const want = r.trackIdentifier as string
+      for (const [, cand] of byId) {
+        if (cand['trackIdentifier'] === want || cand['id'] === want) {
+          trackStats = cand
+          trackId = (cand['trackIdentifier'] as string) ?? (cand['id'] as string)
+          break
+        }
+      }
+    }
+    const num = (v: unknown): number | null =>
+      typeof v === 'number' && Number.isFinite(v) ? v : null
+    const jbd = num(r['jitterBufferDelay']);
+    const jbe = num(r['jitterBufferEmittedCount']);
+    out.set((trackId ?? r.ssrc ?? r.id) as string, {
+      trackId: (trackId ?? r.ssrc ?? r.id) as string,
+      width: num(r['frameWidth']) ?? num(trackStats?.['frameWidth']),
+      height: num(r['frameHeight']) ?? num(trackStats?.['frameHeight']),
+      framesPerSecond: num(r['framesPerSecond']),
+      framesDropped: num(r['framesDropped']),
+      jitterBufferDelayMs:
+        jbd != null && jbe != null && jbe > 0 ? (jbd / jbe) * 1000 : null,
+    })
+  })
+  return out
+}
+
 export type VideoSource = 'off' | 'camera' | 'screen'
+
+export interface InboundVideoTrackStats {
+  trackId: string
+  width: number | null
+  height: number | null
+  framesPerSecond: number | null
+  framesDropped: number | null
+  jitterBufferDelayMs: number | null
+}
+
+export type InboundVideoStats = Map<string, InboundVideoTrackStats>
+
+/** getStats poll interval while connected (ms). */
+export const STATS_POLL_INTERVAL_MS = 2000
 
 export interface SetVideoSourceOptions {
   deviceId?: string
@@ -200,6 +263,7 @@ export class SfuClient {
   private vadCleanup: (() => void) | null = null
   private unlockAudioCleanup: (() => void) | null = null
   private visibilityCleanup: (() => void) | null = null
+  private statsTimer: ReturnType<typeof setInterval> | null = null
 
   private options: SfuClientOptions
   private isMuted = false
@@ -334,6 +398,7 @@ export class SfuClient {
         this.clearRecoveryTimers()
         this.restartAttempts = 0
         this.options.onConnectionStateChange?.('connected')
+        this.startStatsPolling()
       } else if (state === 'disconnected') {
         // Pre-connect blips keep legacy behavior (no recovery basis yet).
         if (!this.hasConnected) {
@@ -423,6 +488,39 @@ export class SfuClient {
     }
   }
 
+  /**
+   * Poll pc.getStats() every STATS_POLL_INTERVAL_MS while the session is
+   * alive, emitting inbound video stats keyed by receiver track id. Pure
+   * observability — drives the per-tile quality badges. Idempotent; safe to
+   * call on every connected transition.
+   */
+  public startStatsPolling(): void {
+    if (this.statsTimer || this.isClosed || !this.pc || !this.options.onStatsUpdate) return
+    if (typeof this.pc.getStats !== 'function') return
+    const tick = () => {
+      if (this.isClosed || !this.pc) return
+      this.pc
+        .getStats()
+        .then((report) => {
+          if (this.isClosed) return
+          this.options.onStatsUpdate?.(collectInboundVideoStats(report))
+        })
+        .catch(() => {
+          // Stats are best-effort; a failed poll must never disturb media.
+        })
+    }
+    // Prime immediately so badges populate without waiting one interval.
+    tick()
+    this.statsTimer = setInterval(tick, STATS_POLL_INTERVAL_MS)
+  }
+
+  public stopStatsPolling(): void {
+    if (this.statsTimer) {
+      clearInterval(this.statsTimer)
+      this.statsTimer = null
+    }
+  }
+
   private async publishLocalAudio(): Promise<void> {
     if (!this.pc) return
 
@@ -441,6 +539,7 @@ export class SfuClient {
         this.joinAcked = true
         this.offerRetryAttempts = 0
         this.options.onConnectionStateChange?.('connected')
+        this.startStatsPolling()
         break
 
       case 'answer':
@@ -1621,6 +1720,7 @@ export class SfuClient {
 
   private cleanup(): void {
     this.queue = []
+    this.stopStatsPolling()
     this.clearRecoveryTimers()
     if (this.recoveryWaiter) {
       const waiter = this.recoveryWaiter

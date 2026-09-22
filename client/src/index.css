@@ -345,6 +345,39 @@ body {
   opacity: 1;
 }
 
+/* Compact per-tile quality badge (resolution + simulcast layer pill). */
+.voice-badge.quality {
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.voice-badge-layer,
+.screenshare-layer-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 4px;
+  background: rgba(88, 101, 242, 0.85);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.screenshare-quality-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 /* Voice Connection Status Bar */
 .voice-status-bar {
   background-color: rgba(0, 0, 0, 0.25);

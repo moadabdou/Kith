@@ -13,7 +13,7 @@ import {
   getUsersInVoiceChannel,
   type GuildVoiceStates,
 } from '../lib/voice'
-import { SfuClient } from '../lib/sfu-client'
+import { SfuClient, type InboundVideoStats } from '../lib/sfu-client'
 import { getVideoInputDevices, onDeviceChange } from '../lib/video-devices'
 import {
   VoiceContext,
@@ -64,6 +64,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   const [isScreenSharing, setIsScreenSharing] = useState(false)
   const [localScreenStream, setLocalScreenStream] = useState<MediaStream | null>(null)
   const [remoteScreenStreams, setRemoteScreenStreams] = useState<Map<string, MediaStream>>(new Map())
+  const [videoStats, setVideoStats] = useState<InboundVideoStats>(new Map())
 
   // Ref to track state in callbacks without stale closures
   const selfMuteRef = useRef(selfMute)
@@ -287,6 +288,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
             // client debounces them internally.)
             setRemoteVideoStreams(new Map())
             setRemoteScreenStreams(new Map())
+            setVideoStats(new Map())
           }
         },
         onSpeakingChange: (speakingUid, speaking) => {
@@ -334,6 +336,9 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
             }
             return next
           })
+        },
+        onStatsUpdate: (stats) => {
+          setVideoStats(new Map(stats))
         },
         onError: (err) => {
           console.error('[VoiceContext] SFU error:', err)
@@ -556,6 +561,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         isScreenSharing,
         localScreenStream,
         remoteScreenStreams,
+        videoStats,
         joinVoice,
         leaveVoice,
         toggleMute,

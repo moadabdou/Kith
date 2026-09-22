@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { SfuClient, resolveSfuWsUrl, parseScreenMidsFromSdp } from './sfu-client'
+import {
+  collectInboundVideoStats,
+  SfuClient,
+  resolveSfuWsUrl,
+  parseScreenMidsFromSdp,
+  STATS_POLL_INTERVAL_MS,
+} from './sfu-client'
 
 describe('resolveSfuWsUrl', () => {
   it('resolves raw host:port endpoint to ws://', () => {
@@ -2127,6 +2133,129 @@ describe('SfuClient', () => {
     // Disconnect unregisters the listener.
     client.disconnect()
     expect(docStub.removeEventListener).toHaveBeenCalledWith('visibilitychange', expect.any(Function))
+  })
+
+  it('collectInboundVideoStats extracts video tracks keyed by track id', () => {
+    expect(STATS_POLL_INTERVAL_MS).toBe(2000)
+    const report = new Map<string, any>([
+      [
+        'inbound-video-1',
+        {
+          id: 'inbound-video-1',
+          type: 'inbound-rtp',
+          kind: 'video',
+          trackId: 'recv-track-1',
+          frameWidth: 1280,
+          frameHeight: 720,
+          framesPerSecond: 30,
+          framesDropped: 2,
+          jitterBufferDelay: 0.12,
+          jitterBufferEmittedCount: 6,
+        },
+      ],
+      ['track-1', { id: 'track-1', type: 'track', trackIdentifier: 'recv-track-1' }],
+      [
+        'inbound-audio-1',
+        { id: 'inbound-audio-1', type: 'inbound-rtp', kind: 'audio', trackId: 'audio-track-1' },
+      ],
+      [
+        'inbound-video-nofps',
+        {
+          id: 'inbound-video-nofps',
+          type: 'inbound-rtp',
+          kind: 'video',
+          trackId: 'recv-track-2',
+          frameWidth: 640,
+          frameHeight: 360,
+        },
+      ],
+    ]) as unknown as RTCStatsReport
+
+    const stats = collectInboundVideoStats(report)
+    expect(stats.size).toBe(2)
+    expect(stats.get('recv-track-1')).toEqual({
+      trackId: 'recv-track-1',
+      width: 1280,
+      height: 720,
+      framesPerSecond: 30,
+      framesDropped: 2,
+      jitterBufferDelayMs: 20,
+    })
+    expect(stats.get('recv-track-2')).toEqual({
+      trackId: 'recv-track-2',
+      width: 640,
+      height: 360,
+      framesPerSecond: null,
+      framesDropped: null,
+      jitterBufferDelayMs: null,
+    })
+  })
+
+  it('collectInboundVideoStats ignores non-finite values and empty reports', () => {
+    const report = new Map<string, any>([
+      [
+        'bad',
+        {
+          id: 'bad',
+          type: 'inbound-rtp',
+          kind: 'video',
+          trackId: 't-bad',
+          frameWidth: NaN,
+          frameHeight: Infinity,
+          framesPerSecond: 'fast',
+        },
+      ],
+    ]) as unknown as RTCStatsReport
+    const stats = collectInboundVideoStats(report)
+    expect(stats.get('t-bad')).toEqual({
+      trackId: 't-bad',
+      width: null,
+      height: null,
+      framesPerSecond: null,
+      framesDropped: null,
+      jitterBufferDelayMs: null,
+    })
+    expect(collectInboundVideoStats(new Map() as unknown as RTCStatsReport).size).toBe(0)
+  })
+
+  it('starts stats polling on connect and stops on disconnect', async () => {
+    const onStatsUpdate = vi.fn()
+    const client = new SfuClient({
+      endpoint: '127.0.0.1:5000',
+      token: 'jwt-token-123',
+      channelId: 'voice-chan-1',
+      onStatsUpdate,
+    })
+
+    let resolveFirst: ((v: unknown) => void) | null = null
+    const getStats = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolveFirst ??= resolve
+          // Resolve asynchronously: startStatsPolling fires-and-forgets.
+          setTimeout(() => resolve(new Map()), 0)
+        }),
+    )
+    mockPc.getStats = getStats
+
+    await client.connect()
+    await mockWs.onmessage({ data: JSON.stringify({ type: 'joined', channel_id: 'voice-chan-1' }) })
+
+    // Primed immediately on joined (async resolve).
+    await new Promise((r) => setTimeout(r, 10))
+    expect(getStats).toHaveBeenCalled()
+    expect(onStatsUpdate).toHaveBeenCalledTimes(1)
+    expect(onStatsUpdate).toHaveBeenCalledWith(expect.any(Map))
+
+    // stopStatsPolling halts the timer: direct unit check without
+    // fake-timer interference with the suite's other async tests.
+    client.stopStatsPolling()
+    expect((client as any).statsTimer).toBeNull()
+    const polls = getStats.mock.calls.length
+    await new Promise((r) => setTimeout(r, STATS_POLL_INTERVAL_MS + 50))
+    expect(getStats.mock.calls.length).toBe(polls)
+
+    client.disconnect()
   })
 
   // L2 parser interop: lone-LF SDP (non-Pion stacks) indexes identically to CRLF.

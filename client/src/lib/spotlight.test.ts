@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import {
+  getVideoQualityLabel,
   isBenignPlayAbort,
   isSpotlightTargetValid,
   isStreamLive,
   isTrackLive,
+  layerForHeight,
   resolveSpotlightStream,
   spotlightStorageKey,
 } from './spotlight'
@@ -126,6 +128,80 @@ describe('isStreamLive', () => {
     expect(isStreamLive(dead)).toBe(false)
     expect(isStreamLive(empty)).toBe(false)
     expect(isStreamLive(null)).toBe(false)
+  })
+})
+
+describe('layerForHeight', () => {
+  it('maps height bands to simulcast layers', () => {
+    expect(layerForHeight(720)).toBe('f')
+    expect(layerForHeight(540)).toBe('f')
+    expect(layerForHeight(539)).toBe('h')
+    expect(layerForHeight(360)).toBe('h')
+    expect(layerForHeight(270)).toBe('h')
+    expect(layerForHeight(269)).toBe('q')
+    expect(layerForHeight(180)).toBe('q')
+    expect(layerForHeight(null)).toBeNull()
+    expect(layerForHeight(undefined)).toBeNull()
+    expect(layerForHeight(0)).toBeNull()
+    expect(layerForHeight(NaN)).toBeNull()
+  })
+})
+
+describe('getVideoQualityLabel', () => {
+  const streamWith = (height: number | undefined, hint?: string) =>
+    ({
+      getVideoTracks: () => [
+        {
+          getSettings: () => (height === undefined ? {} : { height }),
+          ...(hint ? { contentHint: hint } : {}),
+        },
+      ],
+    }) as unknown as MediaStream
+
+  it('labels resolution and layer for camera content', () => {
+    expect(getVideoQualityLabel(streamWith(720), 'camera')).toEqual({
+      label: '720p',
+      layer: 'f',
+      detail: null,
+    })
+    expect(getVideoQualityLabel(streamWith(360), 'camera')).toEqual({
+      label: '360p',
+      layer: 'h',
+      detail: null,
+    })
+    expect(getVideoQualityLabel(streamWith(180), 'camera')).toEqual({
+      label: '180p',
+      layer: 'q',
+      detail: null,
+    })
+  })
+
+  it('appends fps and Detail hint to the tooltip detail', () => {
+    expect(getVideoQualityLabel(streamWith(720, 'detail'), 'screen', 30)).toEqual({
+      label: '720p',
+      layer: 'f',
+      detail: '720p • 30fps • Detail',
+    })
+    expect(getVideoQualityLabel(streamWith(360), 'camera', 15)).toEqual({
+      label: '360p',
+      layer: 'h',
+      detail: '360p • 15fps',
+    })
+  })
+
+  it('falls back gracefully without a usable track', () => {
+    expect(getVideoQualityLabel(null, 'camera')).toEqual({ label: 'Live', layer: null, detail: null })
+    expect(getVideoQualityLabel(undefined, 'camera')).toEqual({ label: 'Live', layer: null, detail: null })
+    expect(getVideoQualityLabel({ getVideoTracks: () => [] } as unknown as MediaStream, 'camera')).toEqual({
+      label: 'Live',
+      layer: null,
+      detail: null,
+    })
+    expect(getVideoQualityLabel(streamWith(undefined, 'detail'), 'screen')).toEqual({
+      label: 'Detail',
+      layer: null,
+      detail: null,
+    })
   })
 })
 

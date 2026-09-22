@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { ArrowLeft, Maximize2, Minimize2, Monitor, StopCircle, Video } from 'lucide-react'
 import { VideoTile, type VideoTileProps } from './VideoTile'
-import { isBenignPlayAbort, isTrackLive, type SpotlightKind } from '../../lib/spotlight'
+import {
+  getVideoQualityLabel,
+  isBenignPlayAbort,
+  isTrackLive,
+  type SpotlightKind,
+} from '../../lib/spotlight'
 
 export interface SpotlightTarget {
   userId: string
@@ -9,6 +14,9 @@ export interface SpotlightTarget {
   isSelf: boolean
   stream: MediaStream | null
   kind: SpotlightKind
+  qualityLabel?: string | null
+  qualityLayer?: 'f' | 'h' | 'q' | null
+  qualityDetail?: string | null
 }
 
 export interface SpotlightViewProps {
@@ -18,18 +26,17 @@ export interface SpotlightViewProps {
   onStopScreenShare?: () => void
 }
 
-function getQualityLabel(stream: MediaStream | null, kind: SpotlightKind): string {
-  if (kind !== 'screen') return 'Live'
-  const track = stream?.getVideoTracks()[0]
-  const settings = track?.getSettings?.()
-  const height = settings?.height
-  const hint =
-    (track as MediaStreamTrack & { contentHint?: string } | undefined)?.contentHint === 'detail'
-      ? 'Detail'
-      : null
-  if (height && height >= 720) return `${Math.round(height)}p${hint ? ` • ${hint}` : ''}`
-  if (height) return `${Math.round(height)}p${hint ? ` • ${hint}` : ''}`
-  return hint ?? 'Live'
+function getQualityLabel(
+  stream: MediaStream | null,
+  kind: SpotlightKind,
+  fps?: number | null,
+  override?: Pick<SpotlightTarget, 'qualityLabel' | 'qualityDetail'>,
+): string {
+  // Resolved upstream (per-participant, stats-enriched) wins; fall back to
+  // a local computation so the badge never goes blank.
+  if (override?.qualityLabel) return override.qualityDetail ?? override.qualityLabel
+  const q = getVideoQualityLabel(stream, kind, fps)
+  return q.detail ?? q.label
 }
 
 // Manual spotlight view. Entered ONLY via explicit user action (tile button
@@ -44,22 +51,29 @@ export function SpotlightView({
   const containerRef = useRef<HTMLDivElement | null>(null)
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const [isFullscreen, setIsFullscreen] = useState(false)
-  const [qualityLabel, setQualityLabel] = useState(() => getQualityLabel(spotlight.stream, spotlight.kind))
+  const qualityFps = useRef<number | null>(null)
+  const [qualityLabel, setQualityLabel] = useState(() =>
+    getQualityLabel(spotlight.stream, spotlight.kind, null, spotlight),
+  )
   // Liveness of the spotlighted track. A removed-but-not-ended downlink goes
   // mute (transceiver inactive) without firing ended — without this the
   // spotlight renders a frozen/black frame as if the stream were live.
   const [hasLiveTrack, setHasLiveTrack] = useState(!!spotlight.stream)
 
   // Refresh the quality badge as encoder resolution adapts mid-share.
+  // Prefer the upstream-resolved label (stats-enriched, per-participant);
+  // the local computation is the fallback. Fps comes from the same stats
+  // via the resolved label — refresh when the resolved values change.
   useEffect(() => {
-    setQualityLabel(getQualityLabel(spotlight.stream, spotlight.kind))
+    setQualityLabel(getQualityLabel(spotlight.stream, spotlight.kind, qualityFps.current, spotlight))
     setHasLiveTrack(!!spotlight.stream)
     if (!spotlight.stream) return
     const id = setInterval(() => {
-      setQualityLabel(getQualityLabel(spotlight.stream, spotlight.kind))
+      setQualityLabel(getQualityLabel(spotlight.stream, spotlight.kind, qualityFps.current, spotlight))
     }, 2000)
     return () => clearInterval(id)
-  }, [spotlight.stream, spotlight.kind])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spotlight.stream, spotlight.kind, spotlight.qualityLabel, spotlight.qualityDetail])
 
   // Never render the spotlighted user as a filmstrip tile.
   const filmstripParticipants = participants.filter((p) => p.userId !== spotlight.userId)
@@ -181,7 +195,12 @@ export function SpotlightView({
               <Video size={16} className="screenshare-badge-icon" />
             )}
             <span className="screenshare-presenter-name">{title}</span>
-            <span className="screenshare-quality-tag">{qualityLabel}</span>
+            <span className="screenshare-quality-tag" title={spotlight.qualityDetail ?? qualityLabel}>
+              {spotlight.qualityLayer && (
+                <span className="screenshare-layer-pill">{spotlight.qualityLayer}</span>
+              )}
+              {qualityLabel}
+            </span>
           </div>
 
           <div className="screenshare-actions-group">

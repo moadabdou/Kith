@@ -16,6 +16,10 @@ export interface VideoTileProps {
   isScreenContent?: boolean
   /** Explicit manual spotlight entry. Rendered only when provided. */
   onSpotlight?: () => void
+  /** Compact quality badge, e.g. "720p". Layer pill + detail in tooltip. */
+  qualityLabel?: string | null
+  qualityLayer?: 'f' | 'h' | 'q' | null
+  qualityDetail?: string | null
 }
 
 export function VideoTile({
@@ -29,6 +33,9 @@ export function VideoTile({
   isSharingScreen,
   isScreenContent,
   onSpotlight,
+  qualityLabel,
+  qualityLayer,
+  qualityDetail,
 }: VideoTileProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const [hasVideoTrack, setHasVideoTrack] = useState(false)
@@ -108,6 +115,15 @@ export function VideoTile({
         </div>
 
         <div className="video-tile-badges">
+          {qualityLabel && (
+            <span
+              className="voice-badge quality"
+              title={qualityDetail ?? qualityLabel}
+            >
+              {qualityLayer && <span className="voice-badge-layer">{qualityLayer}</span>}
+              {qualityLabel}
+            </span>
+          )}
           {isSharingScreen && (
             <span className="voice-badge sharing" title="Sharing screen">
               <Monitor size={14} />

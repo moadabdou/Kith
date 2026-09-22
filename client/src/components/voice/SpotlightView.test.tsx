@@ -61,6 +61,28 @@ describe('SpotlightView (manual spotlight, never automatic)', () => {
     expect(html).toContain('BO')
   })
 
+  it('renders the resolved quality label and layer pill', () => {
+    const html = renderToString(
+      <SpotlightView
+        spotlight={{
+          userId: 'alice',
+          displayName: 'Alice',
+          isSelf: false,
+          stream: null,
+          kind: 'camera',
+          qualityLabel: '360p',
+          qualityLayer: 'h',
+          qualityDetail: '360p • 15fps',
+        }}
+        participants={baseParticipants}
+        onBackToGrid={() => {}}
+      />,
+    )
+
+    expect(html).toContain('360p • 15fps')
+    expect(html).toContain('>h<')
+  })
+
   it('excludes the spotlighted user from the filmstrip', () => {
     const html = renderToString(
       <SpotlightView

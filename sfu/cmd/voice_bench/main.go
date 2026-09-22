@@ -20,8 +20,8 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
-	"github.com/pion/webrtc/v4"
 	"github.com/pion/rtp"
+	"github.com/pion/webrtc/v4"
 )
 
 const (
@@ -35,13 +35,17 @@ const (
 )
 
 type Config struct {
-	APIBase    string
-	GatewayWS  string
-	SFUWS      string
-	SFUMetrics string
-	Drill      string
-	Samples    int
-	Duration   time.Duration
+	APIBase      string
+	GatewayWS    string
+	SFUWS        string
+	SFUMetrics   string
+	Drill        string
+	Samples      int
+	Duration     time.Duration
+	Label        string
+	SnapshotFile string
+	SFUContainer string
+	KillFile     string
 }
 
 func main() {
@@ -50,9 +54,13 @@ func main() {
 	flag.StringVar(&cfg.GatewayWS, "gateway", "ws://127.0.0.1:4000/ws", "WebSocket URL for Kith Gateway")
 	flag.StringVar(&cfg.SFUWS, "sfu", "ws://127.0.0.1:5000/ws", "WebSocket URL for Pion SFU")
 	flag.StringVar(&cfg.SFUMetrics, "sfu-metrics", "http://127.0.0.1:5000/metrics", "Prometheus metrics URL for SFU")
-	flag.StringVar(&cfg.Drill, "drill", "clap", "Drill to execute: clap | impairment | failover | partition | all")
+	flag.StringVar(&cfg.Drill, "drill", "clap", "Drill to execute: clap | impairment | failover | partition | pli_storm | layer_throttle | screen_detail | video_failover | resource | all")
 	flag.IntVar(&cfg.Samples, "samples", 100, "Number of clap impulse samples")
 	flag.DurationVar(&cfg.Duration, "duration", 5*time.Second, "Duration for continuous streaming drills")
+	flag.StringVar(&cfg.Label, "label", "", "Label for resource snapshot rows (resource drill)")
+	flag.StringVar(&cfg.SnapshotFile, "snapshot", "", "TSV file to append resource snapshots to (resource drill)")
+	flag.StringVar(&cfg.SFUContainer, "container", "kith-sfu-1", "SFU container name for docker stats (resource drill)")
+	flag.StringVar(&cfg.KillFile, "killfile", "", "File where orchestrator writes kill epoch-nanos (video_failover)")
 	flag.Parse()
 
 	fmt.Printf("%s%s================================================================================%s\n", colorBold, colorCyan, colorReset)
@@ -71,6 +79,16 @@ func main() {
 		err = runFailoverDrill(cfg)
 	case "partition":
 		err = runPartitionDrill(cfg)
+	case "pli_storm":
+		err = runPLIStormDrill(cfg)
+	case "layer_throttle":
+		err = runLayerThrottleDrill(cfg)
+	case "screen_detail":
+		err = runScreenDetailDrill(cfg)
+	case "video_failover":
+		err = runVideoFailoverDrill(cfg)
+	case "resource":
+		err = runResourceSnapshot(cfg, cfg.Label, cfg.SnapshotFile, cfg.SFUContainer)
 	case "all":
 		if err = runClapBenchmark(cfg); err != nil {
 			break
@@ -359,11 +377,11 @@ type SFUPeer struct {
 	Cancel     context.CancelFunc
 }
 
-func connectSFUPeer(ctx context.Context, sfuWS, voiceToken, channelID, userID string, isPublisher bool) (*SFUPeer, error) {
-	pCtx, cancel := context.WithCancel(ctx)
+// dialSFUAndJoin opens the SFU signaling socket and completes the join
+// handshake. Shared by audio and video peers.
+func dialSFUAndJoin(pCtx context.Context, sfuWS, voiceToken, channelID string) (*websocket.Conn, error) {
 	conn, _, err := websocket.Dial(pCtx, sfuWS, nil)
 	if err != nil {
-		cancel()
 		return nil, fmt.Errorf("dial sfu ws: %w", err)
 	}
 
@@ -374,19 +392,90 @@ func connectSFUPeer(ctx context.Context, sfuWS, voiceToken, channelID, userID st
 		"channel_id": channelID,
 	}
 	if err := wsjson.Write(pCtx, conn, joinMsg); err != nil {
-		cancel()
+		_ = conn.Close(websocket.StatusInternalError, "join failed")
 		return nil, fmt.Errorf("send join msg: %w", err)
 	}
 
-	// 2. Read joined confirmation
-	var joinedResp map[string]any
-	if err := wsjson.Read(pCtx, conn, &joinedResp); err != nil {
-		cancel()
-		return nil, fmt.Errorf("read joined response: %w", err)
+	// 2. Read joined confirmation. Concurrent joins can interleave
+	// broadcasts (e.g. peer_joined for a racing peer) ahead of our own
+	// joined on the socket — skip those like a real client would.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var joinedResp map[string]any
+		if err := wsjson.Read(pCtx, conn, &joinedResp); err != nil {
+			_ = conn.Close(websocket.StatusInternalError, "join failed")
+			return nil, fmt.Errorf("read joined response: %w", err)
+		}
+		if joinedResp["type"] == "joined" {
+			return conn, nil
+		}
+		if time.Now().After(deadline) {
+			_ = conn.Close(websocket.StatusInternalError, "join failed")
+			return nil, fmt.Errorf("timed out waiting for joined (last: %+v)", joinedResp)
+		}
 	}
-	if joinedResp["type"] != "joined" {
+}
+
+// runSignalingLoop handles SFU answers, server renegotiation offers, and ICE
+// for the lifetime of pCtx, cancelling it on exit (socket drop). Shared by
+// audio and video peers.
+func runSignalingLoop(pCtx context.Context, cancel context.CancelFunc, conn *websocket.Conn, pc *webrtc.PeerConnection) {
+	runSignalingLoopNotify(pCtx, cancel, conn, pc, nil)
+}
+
+// runSignalingLoopNotify is runSignalingLoop with a per-message callback
+// (used by video peers to detect the initial answer for glare retries).
+func runSignalingLoopNotify(pCtx context.Context, cancel context.CancelFunc, conn *websocket.Conn, pc *webrtc.PeerConnection, notify func(msgType string)) {
+	go func() {
+		defer cancel()
+		for {
+			var msg struct {
+				Type      string                   `json:"type"`
+				SDP       string                   `json:"sdp"`
+				Candidate *webrtc.ICECandidateInit `json:"candidate"`
+			}
+			if err := wsjson.Read(pCtx, conn, &msg); err != nil {
+				return
+			}
+			if notify != nil {
+				notify(msg.Type)
+			}
+
+			switch msg.Type {
+			case "answer":
+				_ = pc.SetRemoteDescription(webrtc.SessionDescription{
+					Type: webrtc.SDPTypeAnswer,
+					SDP:  msg.SDP,
+				})
+			case "offer":
+				// Server-initiated renegotiation (e.g. downlink added)
+				_ = pc.SetRemoteDescription(webrtc.SessionDescription{
+					Type: webrtc.SDPTypeOffer,
+					SDP:  msg.SDP,
+				})
+				answer, err := pc.CreateAnswer(nil)
+				if err == nil {
+					_ = pc.SetLocalDescription(answer)
+					_ = wsjson.Write(pCtx, conn, map[string]any{
+						"type": "answer",
+						"sdp":  answer.SDP,
+					})
+				}
+			case "candidate":
+				if msg.Candidate != nil {
+					_ = pc.AddICECandidate(*msg.Candidate)
+				}
+			}
+		}
+	}()
+}
+
+func connectSFUPeer(ctx context.Context, sfuWS, voiceToken, channelID, userID string, isPublisher bool) (*SFUPeer, error) {
+	pCtx, cancel := context.WithCancel(ctx)
+	conn, err := dialSFUAndJoin(pCtx, sfuWS, voiceToken, channelID)
+	if err != nil {
 		cancel()
-		return nil, fmt.Errorf("unexpected join response: %+v", joinedResp)
+		return nil, err
 	}
 
 	// 3. Create Pion WebRTC PeerConnection
@@ -467,45 +556,7 @@ func connectSFUPeer(ctx context.Context, sfuWS, voiceToken, channelID, userID st
 	}
 
 	// Background signaling loop (handles SFU answers, server renegotiation offers, and ICE)
-	go func() {
-		defer cancel()
-		for {
-			var msg struct {
-				Type      string                    `json:"type"`
-				SDP       string                    `json:"sdp"`
-				Candidate *webrtc.ICECandidateInit `json:"candidate"`
-			}
-			if err := wsjson.Read(pCtx, conn, &msg); err != nil {
-				return
-			}
-
-			switch msg.Type {
-			case "answer":
-				_ = pc.SetRemoteDescription(webrtc.SessionDescription{
-					Type: webrtc.SDPTypeAnswer,
-					SDP:  msg.SDP,
-				})
-			case "offer":
-				// Server-initiated renegotiation (e.g. downlink added)
-				_ = pc.SetRemoteDescription(webrtc.SessionDescription{
-					Type: webrtc.SDPTypeOffer,
-					SDP:  msg.SDP,
-				})
-				answer, err := pc.CreateAnswer(nil)
-				if err == nil {
-					_ = pc.SetLocalDescription(answer)
-					_ = wsjson.Write(pCtx, conn, map[string]any{
-						"type": "answer",
-						"sdp":  answer.SDP,
-					})
-				}
-			case "candidate":
-				if msg.Candidate != nil {
-					_ = pc.AddICECandidate(*msg.Candidate)
-				}
-			}
-		}
-	}()
+	runSignalingLoop(pCtx, cancel, conn, pc)
 
 	return peerObj, nil
 }

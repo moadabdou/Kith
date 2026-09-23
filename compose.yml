@@ -136,6 +136,7 @@ services:
       PPROF_PORT: ${PPROF_PORT:-6060}
       MEILISEARCH_URL: ${MEILISEARCH_URL:-http://meilisearch:7700}
       MEILISEARCH_KEY: ${MEILI_MASTER_KEY:-dev-master-key}
+      SEARCH_INDEXER_ENABLED: ${SEARCH_INDEXER_ENABLED:-true}
     ports:
       - "127.0.0.1:8080:8080"
       - "127.0.0.1:6060:6060"
@@ -150,6 +151,50 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:${API_PORT:-8080}/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api-2:
+    build:
+      context: ./api
+      network: host
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
+    environment:
+      PORT: 8080
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DATABASE_URL: postgres://${POSTGRES_USER:-discord}:${POSTGRES_PASSWORD:-discord}@postgres:5432/${POSTGRES_DB:-discord}?sslmode=disable
+      SNOWFLAKE_NODE_ID: ${SNOWFLAKE_NODE_ID_2:-2}
+      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me}
+      EVENTS_BUS: ${EVENTS_BUS:-nats}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      NATS_URL: ${NATS_URL:-nats://nats:4222}
+      SCYLLA_HOSTS: ${SCYLLA_HOSTS:-scylla:9042}
+      SCYLLA_KEYSPACE: ${SCYLLA_KEYSPACE:-kith}
+      SCYLLA_CONSISTENCY: ${SCYLLA_CONSISTENCY:-ONE}
+      MESSAGE_STORE: ${MESSAGE_STORE:-scylla}
+      MESSAGES_STORE_MODE: ${MESSAGES_STORE_MODE:-scylla_only}
+      PPROF_PORT: 6061
+      MEILISEARCH_URL: ${MEILISEARCH_URL:-http://meilisearch:7700}
+      MEILISEARCH_KEY: ${MEILI_MASTER_KEY:-dev-master-key}
+      SEARCH_INDEXER_ENABLED: "false"
+    ports:
+      - "127.0.0.1:${API2_PORT:-8081}:8080"
+      - "127.0.0.1:${API2_PPROF_PORT:-6061}:6061"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/healthz"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -249,6 +294,8 @@ services:
       - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
     depends_on:
       api:
+        condition: service_healthy
+      api-2:
         condition: service_healthy
       client:
         condition: service_healthy

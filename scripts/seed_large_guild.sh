@@ -58,14 +58,17 @@ ON CONFLICT (guild_id, user_id) DO NOTHING;
 printf "${YELLOW}→ [2/5] Creating hoisted roles...${NC}\n"
 exec_sql "
 -- Roles: @everyone, Admin, Moderator, VIP, Regular
+-- NOTE: Moderator/VIP/Regular carry VIEW_CHANNEL+SEND_MESSAGES (1024+2048)
+-- so the 10k bench guild doubles as the k6 write-load guild (Phase 7b #85):
+-- all 1000 load users must pass requireChannelPerms.
 INSERT INTO roles (id, guild_id, name, color, hoist, position, permissions, mentionable)
 VALUES
   (${GUILD_ID}, ${GUILD_ID}, '@everyone', 0, false, 0, 0, false),
   (${GUILD_ID} + 1, ${GUILD_ID}, 'Admin', 15158332, true, 4, 8, true),
-  (${GUILD_ID} + 2, ${GUILD_ID}, 'Moderator', 3447003, true, 3, 0, true),
-  (${GUILD_ID} + 3, ${GUILD_ID}, 'VIP', 10181046, true, 2, 0, true),
-  (${GUILD_ID} + 4, ${GUILD_ID}, 'Regular', 1752220, true, 1, 0, true)
-ON CONFLICT (id) DO NOTHING;
+  (${GUILD_ID} + 2, ${GUILD_ID}, 'Moderator', 3447003, true, 3, 3072, true),
+  (${GUILD_ID} + 3, ${GUILD_ID}, 'VIP', 10181046, true, 2, 3072, true),
+  (${GUILD_ID} + 4, ${GUILD_ID}, 'Regular', 1752220, true, 1, 3072, true)
+ON CONFLICT (id) DO UPDATE SET permissions = EXCLUDED.permissions;
 "
 
 printf "${YELLOW}→ [3/5] Bulk-generating ${MEMBER_COUNT} users...${NC}\n"

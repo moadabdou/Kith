@@ -1,6 +1,6 @@
 :80 {
 	handle /api/* {
-		reverse_proxy api:8080
+		reverse_proxy api:8080 api-2:8080
 	}
 	handle /ws {
 		reverse_proxy gateway:4000

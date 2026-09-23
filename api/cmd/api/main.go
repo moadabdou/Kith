@@ -51,6 +51,30 @@ const (
 	refreshTokenTTL = 30 * 24 * time.Hour
 )
 
+// routeLimiter is implemented by *ratelimit.Limiter (process-local) and
+// *ratelimit.RedisLimiter (shared across replicas).
+type routeLimiter interface {
+	Middleware(key func(r *http.Request) string, bucketName string, next http.Handler) http.Handler
+}
+
+// sharedLimiter builds a Redis-backed limiter so rate budgets hold
+// globally across API replicas. When REDIS_URL is empty or Redis is
+// unreachable it falls back to the in-memory limiter (fail-open:
+// shaping, not security).
+func sharedLimiter(limit int, window time.Duration) routeLimiter {
+	if redisURL := envOr("REDIS_URL", ""); redisURL != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if client, err := ratelimit.Dial(ctx, redisURL); err == nil {
+			slog.Info("rate limiter initialized", "backend", "redis", "limit", limit, "window", window.String())
+			return ratelimit.NewRedisLimiter(client, limit, window)
+		} else {
+			slog.Warn("rate limiter falling back to in-memory", "error", err)
+		}
+	}
+	return ratelimit.NewLimiter(limit, window)
+}
+
 func main() {
 	initLogger(envOr("LOG_LEVEL", "info"))
 	prometheus.MustRegister(httpRequestsTotal, httpRequestDuration)
@@ -83,15 +107,16 @@ func main() {
 		slog.Error("failed to open database", "error", err)
 		os.Exit(1)
 	}
-	db.SetMaxOpenConns(50)
-	db.SetMaxIdleConns(50)
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(25)
 	db.SetConnMaxLifetime(5 * time.Minute)
 
 	jwt := auth.NewJWTManager([]byte(jwtSecret), accessTokenTTL)
 	authSvc := auth.NewService(db, node, jwt, refreshTokenTTL)
 	authHandler := &auth.Handler{Svc: authSvc}
 	usersHandler := &users.Handler{DB: db}
-	// Phase 1: NATS JetStream (default) and Redis Streams behind events.Publisher (EVENTS_BUS=nats|redis|noop).
+	// Phase 7b: NATS JetStream is the only events bus (EVENTS_BUS=nats|noop).
+	// Redis remains in the stack solely as the rate-limit store (Issue #85).
 	eventsBus := envOr("EVENTS_BUS", "nats")
 	var publisher events.Publisher
 	var natsPub *events.NatsPublisher
@@ -107,16 +132,6 @@ func main() {
 		defer natsPub.Close()
 		publisher = natsPub
 		slog.Info("events bus initialized", "bus", "nats", "url", natsURL)
-	case "redis":
-		redisURL := envOr("REDIS_URL", "redis://127.0.0.1:6379")
-		redisPub, err := events.NewRedisPublisher(redisURL)
-		if err != nil {
-			slog.Error("failed to initialize redis publisher", "url", redisURL, "error", err)
-			os.Exit(1)
-		}
-		defer redisPub.Close()
-		publisher = redisPub
-		slog.Info("events bus initialized", "bus", "redis", "url", redisURL)
 	case "noop":
 		publisher = events.NoopPublisher{}
 		slog.Info("events bus initialized", "bus", "noop")
@@ -266,9 +281,10 @@ func main() {
 
 	// messages — the hot path.
 	// POST /messages rate limit: 5/5s per (user, channel), Discord's model
-	// (plan/02 §5). In-memory now; Redis swap stays behind the same
-	// middleware interface in Phase 1.
-	msgLimiter := ratelimit.NewLimiter(5, 5*time.Second)
+	// (plan/02 §5). Redis-backed so the budget holds globally across
+	// replicas (Phase 7b, Issue #85); falls back to in-memory when Redis
+	// is unreachable.
+	msgLimiter := sharedLimiter(5, 5*time.Second)
 	postMessageKey := func(r *http.Request) string {
 		uid, _ := auth.UserIDFrom(r.Context())
 		cid := r.PathValue("cid")
@@ -292,7 +308,8 @@ func main() {
 
 	// search — Search Rung 1: PostgreSQL pg_trgm full-text search (plan/04 §2, §4).
 	// Hard rate limit: 1 req/s per user to prevent search worker starvation.
-	searchLimiter := ratelimit.NewLimiter(1, time.Second)
+	// Shared across replicas like the message limiter.
+	searchLimiter := sharedLimiter(1, time.Second)
 	mux.Handle("GET /api/guilds/{id}/messages/search",
 		auth.RequireAuth(jwt, searchLimiter.Middleware(
 			func(r *http.Request) string {

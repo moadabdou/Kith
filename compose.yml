@@ -262,6 +262,7 @@ services:
     image: prom/prometheus:v3.7.2
     volumes:
       - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/prometheus/rules.yml:/etc/prometheus/rules.yml:ro
     ports:
       - "127.0.0.1:9090:9090"
     healthcheck:

@@ -1,0 +1,60 @@
+groups:
+  - name: kith-slo
+    interval: 15s
+    rules:
+      - alert: SLOFanoutP99High
+        expr: histogram_quantile(0.99, sum by (le) (rate(gateway_fanout_latency_seconds_bucket[5m]))) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          slo: fanout-p99-50ms
+        annotations:
+          summary: "Gateway fan-out p99 above 50ms SLO"
+          description: "histogram_quantile(0.99, gateway_fanout_latency_seconds) has been > 50ms for 5m. See plan/09 §5."
+          runbook: "Check gateway load, NATS lag (gateway_consumer_lag), BEAM pressure. Deliberate test: lower threshold to 0.005 to fire."
+
+      - alert: SLOFanoutP99HighSlowBurn
+        expr: histogram_quantile(0.99, sum by (le) (rate(gateway_fanout_latency_seconds_bucket[30m]))) > 0.05
+        for: 30m
+        labels:
+          severity: warning
+          slo: fanout-p99-50ms
+        annotations:
+          summary: "Gateway fan-out p99 slow burn above 50ms SLO"
+          description: "30m-window p99 above 50ms for 30m. Same SLO, slower burn."
+
+      - alert: SLOSendToRenderP99High
+        expr: histogram_quantile(0.99, sum by (le) (rate(api_http_request_duration_seconds_bucket[5m]))) + histogram_quantile(0.99, sum by (le) (rate(gateway_fanout_latency_seconds_bucket[5m]))) > 0.15
+        for: 5m
+        labels:
+          severity: critical
+          slo: send-to-render-p99-150ms
+        annotations:
+          summary: "Send-to-render p99 proxy above 150ms SLO"
+          description: "PROXY: api p99 + gateway fan-out p99 > 150ms for 5m. True client render is uninstrumented; this sums the two server-side segments. See plan/09 §5."
+          runbook: "Check api latency panel and gateway fan-out panel to see which segment moved. Deliberate test: lower threshold to 0.01 to fire."
+
+      - alert: SLOSendToRenderP99HighSlowBurn
+        expr: histogram_quantile(0.99, sum by (le) (rate(api_http_request_duration_seconds_bucket[30m]))) + histogram_quantile(0.99, sum by (le) (rate(gateway_fanout_latency_seconds_bucket[30m]))) > 0.15
+        for: 30m
+        labels:
+          severity: warning
+          slo: send-to-render-p99-150ms
+        annotations:
+          summary: "Send-to-render p99 proxy slow burn above 150ms SLO"
+          description: "30m-window proxy above 150ms for 30m."
+
+  - name: kith-egress
+    interval: 30s
+    rules:
+      - record: sfu:egress_monthly_bytes_projected
+        expr: sum(rate(sfu_packets_forwarded_total[5m])) * 1200 * 2592000
+
+      - alert: EgressMonthlyProjectionHigh
+        expr: sfu:egress_monthly_bytes_projected > 7e12
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SFU monthly egress projection above 7 TB"
+          description: "Projected monthly egress (5m rate x 1200 B/pkt x 30d) above 7 TB for 15m. Assumption: ~1200 B avg RTP packet (postmortems/phase-6.md §8.1). Replaces screen-share quota idea per #84."

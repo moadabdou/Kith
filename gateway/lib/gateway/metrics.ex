@@ -159,6 +159,56 @@ defmodule Gateway.Metrics do
     end)
   end
 
+  # Phase 7d (Issue #87): SFU liveness transitions, by direction.
+  def incr_sfu_flip(direction) when direction in ["up", "down"] do
+    Agent.update(__MODULE__, fn state ->
+      %{state | sfu_flips: Map.update(state.sfu_flips, direction, 1, &(&1 + 1))}
+    end)
+  end
+
+  def get_sfu_flips do
+    Agent.get(__MODULE__, fn state -> state.sfu_flips end)
+  end
+
+  # Phase 7d Step 4: voice sessions moved off a dead SFU (null-then-reallocate).
+  def incr_sfu_failover(count \\ 1) do
+    Agent.update(__MODULE__, fn state ->
+      %{state | sfu_failovers: state.sfu_failovers + count}
+    end)
+  end
+
+  def get_sfu_failovers do
+    Agent.get(__MODULE__, fn state -> state.sfu_failovers end)
+  end
+
+  # Phase 7d Step 5c (Tier 1): session-cached intent applies + guarded drops.
+  def incr_voice_intent_apply do
+    Agent.update(__MODULE__, fn state ->
+      %{state | voice_intent_applies: state.voice_intent_applies + 1}
+    end)
+  end
+
+  def incr_voice_intent_drop(reason) when is_binary(reason) do
+    Agent.update(__MODULE__, fn state ->
+      %{state | voice_intent_drops: Map.update(state.voice_intent_drops, reason, 1, &(&1 + 1))}
+    end)
+  end
+
+  # Phase 7d Step 6a: demand-path confirmations that excluded a dead
+  # candidate for the answerer.
+  def incr_voice_placement_exclusion do
+    Agent.update(__MODULE__, fn state ->
+      %{state | voice_placement_exclusions: state.voice_placement_exclusions + 1}
+    end)
+  end
+
+  # Phase 7d Step 4 diagnosis: local actors notified per liveness transition.
+  def incr_sfu_notify(count) do
+    Agent.update(__MODULE__, fn state ->
+      %{state | sfu_notifies: state.sfu_notifies + count}
+    end)
+  end
+
   # Phase 7c cache-warm fix: counts actual Postgres loads (not hits), by
   # key type. The rate of these IS the cross-node miss rate.
   def incr_cache_warm(kind) when is_binary(kind) do
@@ -331,6 +381,24 @@ defmodule Gateway.Metrics do
           "# HELP gateway_session_resubscribes_total Sessions re-subscribed to a restarted guild actor (Phase 7c).",
           "# TYPE gateway_session_resubscribes_total counter",
           "gateway_session_resubscribes_total #{state.resubscribes}",
+          "# HELP gateway_sfu_flips_total SFU liveness transitions observed by the health poller (Phase 7d).",
+          "# TYPE gateway_sfu_flips_total counter"] ++
+          sfu_flip_lines(state.sfu_flips) ++ [
+          "# HELP gateway_sfu_failovers_total Voice sessions moved off a dead SFU via null-then-reallocate (Phase 7d).",
+          "# TYPE gateway_sfu_failovers_total counter",
+          "gateway_sfu_failovers_total #{state.sfu_failovers}",
+          "# HELP gateway_voice_intent_applies_total Session-cached voice intents applied on resubscribe/push (Phase 7d Tier 1).",
+          "# TYPE gateway_voice_intent_applies_total counter",
+          "gateway_voice_intent_applies_total #{state.voice_intent_applies}",
+          "# HELP gateway_voice_intent_drops_total Session-cached voice intents dropped by guard reason (Phase 7d Tier 1).",
+          "# TYPE gateway_voice_intent_drops_total counter"] ++
+          voice_intent_drop_lines(state.voice_intent_drops) ++ [
+          "# HELP gateway_voice_placement_exclusions_total Demand-path confirmations that excluded a dead candidate (Phase 7d Step 6a).",
+          "# TYPE gateway_voice_placement_exclusions_total counter",
+          "gateway_voice_placement_exclusions_total #{state.voice_placement_exclusions}",
+          "# HELP gateway_sfu_notifies_total Local guild actors notified per SFU liveness transition (Phase 7d Step 4 diagnosis).",
+          "# TYPE gateway_sfu_notifies_total counter",
+          "gateway_sfu_notifies_total #{state.sfu_notifies}"] ++ [
           "# HELP gateway_cache_warms_total Postgres loads on cache miss by key type (Phase 7c warm-on-miss).",
           "# TYPE gateway_cache_warms_total counter"] ++
           cache_warm_lines(state.cache_warms) ++ [
@@ -432,6 +500,18 @@ defmodule Gateway.Metrics do
     |> Enum.map(fn {kind, count} -> "gateway_cache_warms_total{kind=\"#{kind}\"} #{count}" end)
   end
 
+  defp sfu_flip_lines(flips) do
+    flips
+    |> Enum.sort()
+    |> Enum.map(fn {direction, count} -> "gateway_sfu_flips_total{direction=\"#{direction}\"} #{count}" end)
+  end
+
+  defp voice_intent_drop_lines(drops) do
+    drops
+    |> Enum.sort()
+    |> Enum.map(fn {reason, count} -> "gateway_voice_intent_drops_total{reason=\"#{reason}\"} #{count}" end)
+  end
+
   defp uptime(state) do
     us = System.convert_time_unit(System.monotonic_time() - state.booted_at, :native, :microsecond)
     Float.round(us / 1_000_000, 3)
@@ -453,6 +533,14 @@ defmodule Gateway.Metrics do
       lease_acquired: 0,
       lease_lost: 0,
       resubscribes: 0,
+      # Phase 7d (Issue #87): pre-seeded so gateway_sfu_flips_total exists
+      # from boot for the Grafana/alerting series.
+      sfu_flips: %{"up" => 0, "down" => 0},
+      sfu_failovers: 0,
+      voice_intent_applies: 0,
+      voice_intent_drops: %{},
+      voice_placement_exclusions: 0,
+      sfu_notifies: 0,
       # Pre-seeded so the series exists from boot (else the Grafana panel
       # shows "no data" until the first cross-node miss — which is exactly
       # the healthy steady state).

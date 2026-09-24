@@ -876,12 +876,26 @@ driven by `sfu/cmd/voice_bench` (`-drill=` modes). Full results in
 
 ## 23. Limits & Honest Non-Goals
 
-Single SFU process today (pooling is issue #87; clustering context in #86):
+Channel-assigned pool of two SFUs (Phase 7d, issue #87; design in
+`docs/sfu-pool.md`, drills in `scripts/chaos/phase7_sfu.sh`):
 
-- **No cross-SFU media.** One channel lives on one SFU; two SFUs on one
-  channel would split-brain (room manager is per-process).
+- **No cross-SFU media.** One channel lives wholly on one SFU
+  (`:erlang.phash2(channel_id)` over the live list); the room manager is
+  per-process, so a split channel would split-brain. Same-channel affinity
+  is the invariant; the pool drill asserts co-location, not just reconnect
+  counts.
 - **No region picker / geo-routing.** Discord has a fleet + picker; here the
-  client gets one `VOICE_ENDPOINT`.
+  gateway hashes onto a static two-entry list with health exclusion. Hash
+  affinity is placement, not latency-optimal.
+- **Voice roster recovery is convergent, not instant.** Guild-actor voice
+  state is RAM-only; after an actor restart the roster rebuilds from the
+  session mirror (Tier 1, survivors) + browser volunteer on READY (Tier 2,
+  dead sessions). Gap: a tab closed mid-outage never re-speaks (correct —
+  nothing to recover).
+- **Null-then-reallocate + stale-null guard.** A dying SFU's channels get
+  `endpoint: null` (tear down, wait) then the fresh allocation. Nulls carry
+  `dead_endpoint`; a client already moved by the confirm fast lane ignores a
+  null naming the SFU it left. Legacy nulls (no field) always park.
 - **VP8-only keyframe intelligence.** `DetectorFor` returns nil for H.264/AV1
   — caching stays safely disabled for those codecs (they still forward; they
   just don't get instant-render replay).

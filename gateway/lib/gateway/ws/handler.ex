@@ -361,7 +361,6 @@ defmodule Gateway.WS.Handler do
     else
       Gateway.Metrics.incr_voice_state_update()
       guild_id = d["guild_id"] || d[:guild_id]
-
       if is_nil(guild_id) or to_string(guild_id) == "" do
         {:ok, state}
       else
@@ -369,6 +368,17 @@ defmodule Gateway.WS.Handler do
 
         case Gateway.Guild.Actor.update_voice_state(gid, state.user_id, state.session_id, d) do
           {:ok, _vs} ->
+            # Phase 7d Step 5a (Tier 1): mirror ACKNOWLEDGED intent into the
+            # session actor (join/move stores, leave clears via nil
+            # channel). Errors cache nothing. Fire-and-forget: the session
+            # may be gone (race with disconnect) — note_voice_intent is a
+            # safe no-op then.
+            Gateway.Session.note_voice_intent(state.session_id, gid, %{
+              channel_id: channel_id_of(d),
+              self_mute: d["self_mute"] == true or d[:self_mute] == true,
+              self_deaf: d["self_deaf"] == true or d[:self_deaf] == true
+            })
+
             {:ok, state}
 
           :ok ->
@@ -387,6 +397,16 @@ defmodule Gateway.WS.Handler do
             {:ok, state}
         end
       end
+    end
+  end
+
+  # Phase 7d Step 5a: normalize the Op 4 channel for intent mirroring.
+  # Empty/missing means leave → nil clears the session's cached intent.
+  defp channel_id_of(d) do
+    case d["channel_id"] || d[:channel_id] do
+      nil -> nil
+      "" -> nil
+      cid -> to_string(cid)
     end
   end
 

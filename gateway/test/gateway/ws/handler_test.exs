@@ -916,6 +916,59 @@ defmodule Gateway.WS.HandlerTest do
     end
   end
 
+  describe "Tier 1 voice intent mirroring (Phase 7d Step 5a)" do
+    test "successful Op 4 mirrors intent into the session; failed Op 4 caches nothing" do
+      {:push, _, state} = Handler.init(heartbeat_interval: 10_000)
+      user_id = 87000000000000001
+      token = Gateway.Auth.JWT.issue(user_id, state.jwt_secret, 3600)
+      id_payload = Jason.encode!(%{"op" => 2, "d" => %{"token" => token}})
+
+      {:push, _, identified_state} = Handler.handle_in({id_payload, opcode: :text}, state)
+      session_id = identified_state.session_id
+      guild_id = "87000000000000100"
+      voice_chan = "87000000000000203"
+      text_chan = "87000000000000201"
+
+      # Failed join first (text channel): caches nothing.
+      bad_msg =
+        Jason.encode!(%{
+          "op" => 4,
+          "d" => %{"guild_id" => guild_id, "channel_id" => text_chan, "self_mute" => false, "self_deaf" => false}
+        })
+
+      assert {:ok, s1} = Handler.handle_in({bad_msg, opcode: :text}, identified_state)
+      session_pid = Gateway.Session.whereis(session_id)
+      assert %{voice_intents: intents} = :sys.get_state(session_pid)
+      assert intents == %{}
+
+      # Successful join: intent mirrored.
+      good_msg =
+        Jason.encode!(%{
+          "op" => 4,
+          "d" => %{"guild_id" => guild_id, "channel_id" => voice_chan, "self_mute" => true, "self_deaf" => false}
+        })
+
+      assert {:ok, s2} = Handler.handle_in({good_msg, opcode: :text}, s1)
+
+      assert %{voice_intents: intents2} = :sys.get_state(Gateway.Session.whereis(session_id))
+      assert intents2[guild_id] == %{channel_id: voice_chan, self_mute: true, self_deaf: false}
+
+      # Leave clears it.
+      leave_msg =
+        Jason.encode!(%{
+          "op" => 4,
+          "d" => %{"guild_id" => guild_id, "channel_id" => nil, "self_mute" => false, "self_deaf" => false}
+        })
+
+      assert {:ok, s3} = Handler.handle_in({leave_msg, opcode: :text}, s2)
+      assert %{voice_intents: intents3} = :sys.get_state(Gateway.Session.whereis(session_id))
+      assert intents3 == %{}
+
+      Handler.terminate(:normal, s3)
+      close_session(session_id)
+    end
+  end
+
   describe "End-to-end WebSocket over Bandit" do
     test "raw client connects to /ws, completes handshake, and receives HELLO frame" do
       port = get_bandit_port()

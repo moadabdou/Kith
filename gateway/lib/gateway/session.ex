@@ -89,6 +89,25 @@ defmodule Gateway.Session do
   end
 
   @doc """
+  Mirrors acknowledged voice intent into the session (Phase 7d Step 5a,
+  Tier 1). Called by the WS handler after `update_voice_state` returns
+  `{:ok, _}`. `intent` carries `channel_id` (`nil` = leave, clears that
+  guild), `self_mute`, `self_deaf`. Fire-and-forget cast; no-op when the
+  session is gone.
+  """
+  def note_voice_intent(session_id, guild_id, intent) do
+    case whereis(session_id) do
+      pid when is_pid(pid) ->
+        GenServer.cast(pid, {:voice_intent, to_string(guild_id), intent})
+
+      nil ->
+        :ok
+    end
+  catch
+    :exit, _ -> :ok
+  end
+
+  @doc """
   Returns diagnostic information about the session actor.
   """
   def info(session_id) do
@@ -195,7 +214,11 @@ defmodule Gateway.Session do
       max_queue_len: max_queue_len,
       ttl_timer: ttl_timer,
       # Phase 7c: %{guild_id => {actor_pid, monitor_ref}} for re-subscribe.
-      actor_monitors: monitor_actors(guild_ids, %{})
+      actor_monitors: monitor_actors(guild_ids, %{}),
+      # Phase 7d Step 5b (Tier 1): %{guild_id => %{channel_id | nil,
+      # self_mute, self_deaf}} — acknowledged voice intent mirrored from
+      # Op 4s, pushed to the guild actor on resubscribe after its restart.
+      voice_intents: %{}
     }
 
     # Phase 7c: Horde registry replicas converge asynchronously (~300ms
@@ -357,6 +380,31 @@ defmodule Gateway.Session do
     {:stop, :normal, :ok, state}
   end
 
+  # Phase 7d Step 5b: cache acknowledged intent; forward to the actor when
+  # already subscribed so a note racing a resubscribe still lands (the
+  # actor's accept-if-absent guard makes the forward idempotent — live
+  # subscriptions already hold the state, resubscribe piggybacks the rest).
+  @impl true
+  def handle_cast({:voice_intent, gid, intent}, state) do
+    gid = to_string(gid)
+    intent = normalize_intent(intent)
+
+    voice_intents =
+      if is_nil(intent.channel_id) do
+        Map.delete(state.voice_intents, gid)
+      else
+        Map.put(state.voice_intents, gid, intent)
+      end
+
+    state = %{state | voice_intents: voice_intents}
+
+    if Map.has_key?(state.actor_monitors, gid) do
+      Gateway.Guild.Actor.push_voice_intent(gid, state.session_id, intent)
+    end
+
+    {:noreply, state}
+  end
+
   @impl true
   def handle_info({:dispatch, event, bus_received_at}, state) do
     # 1. Monotonic seq assigned FIRST per plan/01 §4-5
@@ -404,6 +452,7 @@ defmodule Gateway.Session do
     {:noreply, new_state}
   end
 
+  @impl true
   def handle_info({:DOWN, ref, :process, pid, reason}, %{ws_ref: ref} = state) do
     Logger.debug("Gateway.Session [#{state.session_id}]: socket #{inspect(pid)} down (#{inspect(reason)}); arming disconnect TTL timer")
     timer = Process.send_after(self(), :session_timeout, state.disconnect_ttl_ms)
@@ -433,7 +482,12 @@ defmodule Gateway.Session do
   @resubscribe_delays [1_000, 3_000]
 
   def handle_info({:resubscribe, gid, attempt}, state) do
-    case Gateway.Guild.Actor.subscribe(gid, state.session_id, self(), state.user_id) do
+    # Phase 7d Step 5b: piggyback the cached voice intent (if any) so a
+    # restarted actor rebuilds its roster without waiting on the browser.
+    # The actor applies it under its guards (absent, lease, perms).
+    intent = Map.get(state.voice_intents, to_string(gid))
+
+    case Gateway.Guild.Actor.subscribe(gid, state.session_id, self(), state.user_id, intent) do
       :ok ->
         Gateway.Metrics.incr_resubscribe()
         Logger.info("Gateway.Session [#{state.session_id}]: re-subscribed to guild #{gid}")
@@ -479,6 +533,23 @@ defmodule Gateway.Session do
   end
 
   # ── Internal Helpers ────────────────────────────────────────────────────────
+
+  defp normalize_intent(intent) when is_map(intent) do
+    channel_id =
+      case intent[:channel_id] || intent["channel_id"] do
+        nil -> nil
+        "" -> nil
+        cid -> to_string(cid)
+      end
+
+    %{
+      channel_id: channel_id,
+      self_mute: intent[:self_mute] == true or intent["self_mute"] == true,
+      self_deaf: intent[:self_deaf] == true or intent["self_deaf"] == true
+    }
+  end
+
+  defp normalize_intent(_), do: %{channel_id: nil, self_mute: false, self_deaf: false}
 
   # Phase 7c: monitor the current actor pid for each guild (cluster-wide
   # lookup — the actor may live on another node). Idempotent. Keys are

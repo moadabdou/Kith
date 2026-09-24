@@ -44,6 +44,9 @@ export function resolveSfuWsUrl(endpoint: string): string {
       host === '127.0.0.1' ||
       host === 'localhost' ||
       host === 'sfu' ||
+      // Phase 7d pool members: compose service names, reachable in-container
+      // for the gateway poller; browsers rewrite to the page hostname.
+      host === 'sfu-2' ||
       host === 'sfu.kith.local' ||
       host === '0.0.0.0'
     ) {

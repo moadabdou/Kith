@@ -5,6 +5,11 @@ defmodule Gateway.Application do
 
   @impl true
   def start(_type, _args) do
+    # Phase 7d (Issue #87): :inets for SfuHealth's :httpc /healthz probes.
+    # Started explicitly (not via extra_applications) so mix.exs stays
+    # untouched and the docker deps layer keeps its cache.
+    {:ok, _} = Application.ensure_all_started(:inets)
+
     Supervisor.start_link(
       Enum.map(children(), &report/1),
       strategy: :rest_for_one,
@@ -46,6 +51,10 @@ defmodule Gateway.Application do
       Gateway.Presence.Broadcaster,
       Gateway.Typing.RateLimiter,
       bus_consumer(),
+      # Phase 7d (Issue #87): out-of-band SFU liveness. Placed after the bus
+      # consumer so voice placement has a live list as early as possible, and
+      # before TaskSupervisor/Bandit so neither can serve traffic unobserved.
+      Gateway.Voice.SfuHealth,
       # Supervised streaming tasks (op 8 GUILD_MEMBERS_CHUNK) — after the bus
       # consumer so a bus restart cannot orphan in-flight streams.
       {Task.Supervisor, name: Gateway.TaskSupervisor},

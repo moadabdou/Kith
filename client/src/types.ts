@@ -196,6 +196,9 @@ export type VoiceStateUpdatePayload = VoiceState
 export interface VoiceServerUpdatePayload {
   guild_id: string
   channel_id: string
-  endpoint: string
+  endpoint: string | null
   token: string
+  /** Phase 7d Step 4: which SFU died (null pushes only). Lets a client that
+      already failed over via the confirm fast lane ignore a stale null. */
+  dead_endpoint?: string | null
 }

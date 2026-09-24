@@ -108,5 +108,31 @@ defmodule Gateway.MetricsTest do
     assert out =~ "# HELP gateway_voice_server_updates_total "
     assert out =~ "# TYPE gateway_voice_server_updates_total counter"
     assert out =~ "gateway_voice_server_updates_total "
+
+    Metrics.incr_sfu_flip("down")
+
+    assert Metrics.get_sfu_flips()["down"] >= 1
+
+    out = Metrics.render()
+
+    assert out =~ "# HELP gateway_sfu_flips_total "
+    assert out =~ "# TYPE gateway_sfu_flips_total counter"
+    assert out =~ ~s(gateway_sfu_flips_total{direction="down"} )
+    assert out =~ ~s(gateway_sfu_flips_total{direction="up"} )
+  end
+
+  test "tier 1 voice intent metrics increment and render properly" do
+    Metrics.incr_voice_intent_apply()
+    Metrics.incr_voice_intent_drop("denied")
+
+    out = Metrics.render()
+
+    assert out =~ "# HELP gateway_voice_intent_applies_total "
+    assert out =~ "# TYPE gateway_voice_intent_applies_total counter"
+    assert out =~ "gateway_voice_intent_applies_total "
+
+    assert out =~ "# HELP gateway_voice_intent_drops_total "
+    assert out =~ "# TYPE gateway_voice_intent_drops_total counter"
+    assert out =~ ~s(gateway_voice_intent_drops_total{reason="denied"} )
   end
 end

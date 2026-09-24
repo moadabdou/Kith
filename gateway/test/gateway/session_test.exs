@@ -16,8 +16,7 @@ defmodule Gateway.SessionTest do
     :ok
   end
 
-  describe "Session lifecycle and active event streaming" do
-    test "spawns under ConnSupervisor, registers, and streams events" do
+  describe "Session lifecycle and active event streaming" do    test "spawns under ConnSupervisor, registers, and streams events" do
       {:ok, session_pid} =
         Session.get_or_spawn(
           session_id: @test_session_id,
@@ -224,6 +223,72 @@ defmodule Gateway.SessionTest do
                Session.resume(@test_session_id, self(), 1, 12345)
 
       Session.close(@test_session_id)
+    end
+  end
+
+  describe "Tier 1 voice intent mirror (Phase 7d Step 5b)" do
+    test "note_voice_intent caches join and clears on leave (per-gid)" do
+      {:ok, session_pid} =
+        Session.get_or_spawn(
+          session_id: @test_session_id,
+          user_id: 12345,
+          guild_ids: [@test_guild_id],
+          ws_pid: self()
+        )
+
+      Session.note_voice_intent(@test_session_id, @test_guild_id, %{
+        channel_id: "chan-a",
+        self_mute: true,
+        self_deaf: false
+      })
+
+      Session.note_voice_intent(@test_session_id, "other-guild", %{
+        channel_id: "chan-b",
+        self_mute: false,
+        self_deaf: false
+      })
+
+      # Casts are async — wait for the session to process them.
+      wait_until(fn ->
+        state = :sys.get_state(session_pid)
+        map_size(state.voice_intents) == 2
+      end)
+
+      state = :sys.get_state(session_pid)
+      assert state.voice_intents[@test_guild_id] == %{channel_id: "chan-a", self_mute: true, self_deaf: false}
+      assert state.voice_intents["other-guild"] == %{channel_id: "chan-b", self_mute: false, self_deaf: false}
+
+      # Leave (nil channel) clears only that gid.
+      Session.note_voice_intent(@test_session_id, @test_guild_id, %{channel_id: nil})
+
+      wait_until(fn ->
+        map_size(:sys.get_state(session_pid).voice_intents) == 1
+      end)
+
+      state = :sys.get_state(session_pid)
+      refute Map.has_key?(state.voice_intents, @test_guild_id)
+      assert Map.has_key?(state.voice_intents, "other-guild")
+
+      Session.close(@test_session_id)
+    end
+
+    test "note_voice_intent to a dead session is a safe no-op" do
+      assert :ok = Session.note_voice_intent("no-such-session", @test_guild_id, %{channel_id: "chan-a"})
+    end
+  end
+
+  defp wait_until(fun, timeout_ms \\ 2_000) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait(fun, deadline)
+  end
+
+  defp do_wait(fun, deadline) do
+    if fun.() do
+      :ok
+    else
+      if System.monotonic_time(:millisecond) > deadline, do: flunk("wait timed out")
+      Process.sleep(10)
+      do_wait(fun, deadline)
     end
   end
 

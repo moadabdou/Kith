@@ -35,6 +35,9 @@ describe('resolveSfuWsUrl', () => {
     expect(resolveSfuWsUrl('127.0.0.1:5000')).toBe('ws://192.168.1.50:5000/ws')
     expect(resolveSfuWsUrl('localhost:5000')).toBe('ws://192.168.1.50:5000/ws')
     expect(resolveSfuWsUrl('sfu.kith.local:7000')).toBe('ws://192.168.1.50:7000/ws')
+    // Phase 7d pool members (compose service names).
+    expect(resolveSfuWsUrl('sfu:5000')).toBe('ws://192.168.1.50:5000/ws')
+    expect(resolveSfuWsUrl('sfu-2:5001')).toBe('ws://192.168.1.50:5001/ws')
 
     vi.unstubAllGlobals()
   })

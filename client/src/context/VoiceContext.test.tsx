@@ -522,7 +522,7 @@ describe('VoiceContext Client Integration (Phase 5c / Issue #74)', () => {
     expect(sendVoiceStateUpdateMock).toHaveBeenCalledWith('guild-1', null, false, false)
   })
 
-  it('handles session reset (Opcode 9) by disconnecting SFU and clearing voice state', async () => {
+  it('handles session reset (Opcode 9) by parking SFU transport but preserving voice intent', async () => {
     await act(async () => {
       voiceValue?.joinVoice('guild-1', 'channel-voice-1')
       gatewayListeners.voiceServerUpdates.forEach((cb) =>
@@ -542,10 +542,427 @@ describe('VoiceContext Client Integration (Phase 5c / Issue #74)', () => {
       gatewayListeners.sessionReset.forEach((cb) => cb())
     })
 
+    // Transport torn down…
     expect(sfu.disconnect).toHaveBeenCalled()
+    expect(voiceValue?.speakingUsers.size).toBe(0)
+    // …but intent preserved: still parked on the channel, reconnecting.
+    expect(voiceValue?.activeVoice).toEqual({
+      guildId: 'guild-1',
+      channelId: 'channel-voice-1',
+    })
+    expect(voiceValue?.connectionStatus).toBe('connecting')
+  })
+
+  it('volunteers preserved intent via Op 4 when READY snapshot misses us (actor restart)', async () => {
+    // Join, then suffer a session reset (intent preserved, transport parked)
+    await act(async () => {
+      voiceValue?.joinVoice('guild-1', 'channel-voice-1')
+      gatewayListeners.voiceServerUpdates.forEach((cb) =>
+        cb({
+          guild_id: 'guild-1',
+          channel_id: 'channel-voice-1',
+          endpoint: '127.0.0.1:5000',
+          token: 'token-abc',
+        })
+      )
+    })
+    await act(async () => {
+      gatewayListeners.sessionReset.forEach((cb) => cb())
+    })
+    expect(sendVoiceStateUpdateMock).toHaveBeenCalledTimes(1) // join only
+    sendVoiceStateUpdateMock.mockClear()
+
+    // Fresh READY whose snapshot forgot us (restarted actor, empty map)
+    await act(async () => {
+      gatewayListeners.ready.forEach((cb) =>
+        cb({
+          user: { id: 'user-self' },
+          guilds: [{ id: 'guild-1', voice_states: {} }],
+        })
+      )
+    })
+
+    // Client volunteers its intent — actor treats it as a fresh join.
+    expect(sendVoiceStateUpdateMock).toHaveBeenCalledWith(
+      'guild-1',
+      'channel-voice-1',
+      false,
+      false
+    )
+    expect(voiceValue?.activeVoice).toEqual({
+      guildId: 'guild-1',
+      channelId: 'channel-voice-1',
+    })
+    expect(voiceValue?.connectionStatus).toBe('connecting')
+  })
+
+  it('adopts the READY snapshot when it lists us (no redundant Op 4)', async () => {
+    await act(async () => {
+      voiceValue?.joinVoice('guild-1', 'channel-voice-1')
+    })
+    expect(sendVoiceStateUpdateMock).toHaveBeenCalledTimes(1)
+    sendVoiceStateUpdateMock.mockClear()
+
+    // READY snapshot knows us — adopt, don't re-speak.
+    await act(async () => {
+      gatewayListeners.ready.forEach((cb) =>
+        cb({
+          user: { id: 'user-self' },
+          guilds: [
+            {
+              id: 'guild-1',
+              voice_states: {
+                'user-self': {
+                  guild_id: 'guild-1',
+                  channel_id: 'channel-voice-1',
+                  user_id: 'user-self',
+                  self_mute: true,
+                  self_deaf: false,
+                },
+              },
+            },
+          ],
+        })
+      )
+    })
+
+    // Snapshot-hit path re-confirms via Op 4 (existing restore behavior)…
+    expect(sendVoiceStateUpdateMock).toHaveBeenCalledWith('guild-1', 'channel-voice-1', true, false)
+    expect(voiceValue?.selfMute).toBe(true)
+    expect(voiceValue?.activeVoice).toEqual({
+      guildId: 'guild-1',
+      channelId: 'channel-voice-1',
+    })
+  })
+
+  it('stays silent on READY miss with no intent (explicit leave is not resurrected)', async () => {
+    await act(async () => {
+      voiceValue?.joinVoice('guild-1', 'channel-voice-1')
+      voiceValue?.leaveVoice()
+    })
+    sendVoiceStateUpdateMock.mockClear()
+
+    await act(async () => {
+      gatewayListeners.sessionReset.forEach((cb) => cb())
+    })
+
+    await act(async () => {
+      gatewayListeners.ready.forEach((cb) =>
+        cb({
+          user: { id: 'user-self' },
+          guilds: [{ id: 'guild-1', voice_states: {} }],
+        })
+      )
+    })
+
+    expect(sendVoiceStateUpdateMock).not.toHaveBeenCalled()
     expect(voiceValue?.activeVoice).toBeNull()
     expect(voiceValue?.connectionStatus).toBe('disconnected')
-    expect(voiceValue?.speakingUsers.size).toBe(0)
+  })
+
+  it('re-requests voice server via Op 4 when SFU media fails (failover hint)', async () => {    await act(async () => {
+      voiceValue?.joinVoice('guild-1', 'channel-voice-1')
+      gatewayListeners.voiceServerUpdates.forEach((cb) =>
+        cb({
+          guild_id: 'guild-1',
+          channel_id: 'channel-voice-1',
+          endpoint: '127.0.0.1:5000',
+          token: 'token-abc',
+        })
+      )
+    })
+
+    const sfu = sfuClientInstances[0]
+    expect(sendVoiceStateUpdateMock).toHaveBeenCalledTimes(1) // join only
+    sendVoiceStateUpdateMock.mockClear()
+
+    // SfuClient exhausts recovery and gives up.
+    await act(async () => {
+      sfu.options.onConnectionStateChange?.('failed')
+    })
+
+    // Client solicits fresh placement; parks in connecting, not disconnected.
+    expect(sendVoiceStateUpdateMock).toHaveBeenCalledWith(
+      'guild-1',
+      'channel-voice-1',
+      false,
+      false
+    )
+    expect(voiceValue?.connectionStatus).toBe('connecting')
+  })
+
+  it('caps SFU failover re-requests and surfaces disconnected when exhausted', async () => {    await act(async () => {
+      voiceValue?.joinVoice('guild-1', 'channel-voice-1')
+      gatewayListeners.voiceServerUpdates.forEach((cb) =>
+        cb({
+          guild_id: 'guild-1',
+          channel_id: 'channel-voice-1',
+          endpoint: '127.0.0.1:5000',
+          token: 'token-abc',
+        })
+      )
+    })
+
+    const sfu = sfuClientInstances[0]
+    sendVoiceStateUpdateMock.mockClear()
+
+    // Fail past the budget (5): each failure re-requests until exhausted.
+    for (let i = 0; i < 6; i++) {
+      await act(async () => {
+        sfu.options.onConnectionStateChange?.('failed')
+      })
+    }
+
+    expect(sendVoiceStateUpdateMock).toHaveBeenCalledTimes(5)
+    expect(voiceValue?.connectionStatus).toBe('disconnected')
+  })
+
+  it('resets the failover budget on fresh server update and on connect', async () => {
+    await act(async () => {
+      voiceValue?.joinVoice('guild-1', 'channel-voice-1')
+      gatewayListeners.voiceServerUpdates.forEach((cb) =>
+        cb({
+          guild_id: 'guild-1',
+          channel_id: 'channel-voice-1',
+          endpoint: '127.0.0.1:5000',
+          token: 'token-abc',
+        })
+      )
+    })
+
+    const sfu = sfuClientInstances[0]
+    sendVoiceStateUpdateMock.mockClear()
+
+    // Two failures consume budget…
+    await act(async () => {
+      sfu.options.onConnectionStateChange?.('failed')
+    })
+    await act(async () => {
+      sfu.options.onConnectionStateChange?.('failed')
+    })
+    expect(sendVoiceStateUpdateMock).toHaveBeenCalledTimes(2)
+
+    // …but a fresh allocation resets it: 5 more allowed, not 3.
+    await act(async () => {
+      gatewayListeners.voiceServerUpdates.forEach((cb) =>
+        cb({
+          guild_id: 'guild-1',
+          channel_id: 'channel-voice-1',
+          endpoint: '127.0.0.1:5001',
+          token: 'token-def',
+        })
+      )
+    })
+    sendVoiceStateUpdateMock.mockClear()
+
+    const sfu2 = sfuClientInstances[sfuClientInstances.length - 1]
+    for (let i = 0; i < 5; i++) {
+      await act(async () => {
+        sfu2.options.onConnectionStateChange?.('failed')
+      })
+    }
+    expect(sendVoiceStateUpdateMock).toHaveBeenCalledTimes(5)
+
+    // And a successful connect resets too (no throw on the 6th — budget
+    // was refreshed by the connect before these failures… assert via a
+    // fresh cycle instead: connect, then fail once more → re-requests).
+    await act(async () => {
+      sfu2.options.onConnectionStateChange?.('connected')
+    })
+    sendVoiceStateUpdateMock.mockClear()
+    await act(async () => {
+      sfu2.options.onConnectionStateChange?.('failed')
+    })
+    expect(sendVoiceStateUpdateMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('parks on null endpoint and rebuilds on the fresh allocation (no Op 4 storm)', async () => {
+    await act(async () => {
+      voiceValue?.joinVoice('guild-1', 'channel-voice-1')
+      gatewayListeners.voiceServerUpdates.forEach((cb) =>
+        cb({
+          guild_id: 'guild-1',
+          channel_id: 'channel-voice-1',
+          endpoint: '127.0.0.1:5000',
+          token: 'token-abc',
+        })
+      )
+    })
+
+    const sfu = sfuClientInstances[0]
+    sendVoiceStateUpdateMock.mockClear()
+
+    // Gateway declares the SFU dead: null arrives first.
+    await act(async () => {
+      gatewayListeners.voiceServerUpdates.forEach((cb) =>
+        cb({
+          guild_id: 'guild-1',
+          channel_id: 'channel-voice-1',
+          endpoint: null,
+          token: 'token-null',
+        })
+      )
+    })
+
+    // Transport torn down, parked in connecting, NO Op 4 (reallocation
+    // is coming — soliciting now would just get the same answer).
+    expect(sfu.disconnect).toHaveBeenCalled()
+    expect(voiceValue?.connectionStatus).toBe('connecting')
+    expect(voiceValue?.activeVoice).toEqual({
+      guildId: 'guild-1',
+      channelId: 'channel-voice-1',
+    })
+    expect(sendVoiceStateUpdateMock).not.toHaveBeenCalled()
+
+    // A media failure while parked burns no budget and solicits nothing.
+    await act(async () => {
+      sfu.options.onConnectionStateChange?.('failed')
+    })
+    expect(sendVoiceStateUpdateMock).not.toHaveBeenCalled()
+
+    // Fresh allocation arrives → rebuild on the survivor.
+    await act(async () => {
+      gatewayListeners.voiceServerUpdates.forEach((cb) =>
+        cb({
+          guild_id: 'guild-1',
+          channel_id: 'channel-voice-1',
+          endpoint: '127.0.0.1:5001',
+          token: 'token-def',
+        })
+      )
+    })
+
+    expect(sfuClientInstances.length).toBe(2)
+    const sfu2 = sfuClientInstances[1]
+    expect(sfu2.options.endpoint).toBe('127.0.0.1:5001')
+    expect(voiceValue?.connectionStatus).toBe('connecting')
+  })
+
+  it('ignores a stale null naming an SFU we already left (confirm fast lane won the race)', async () => {
+    await act(async () => {
+      voiceValue?.joinVoice('guild-1', 'channel-voice-1')
+      gatewayListeners.voiceServerUpdates.forEach((cb) =>
+        cb({
+          guild_id: 'guild-1',
+          channel_id: 'channel-voice-1',
+          endpoint: '127.0.0.1:5000',
+          token: 'token-abc',
+        })
+      )
+    })
+
+    const sfu = sfuClientInstances[0]
+
+    // Fast lane: fresh allocation on the survivor arrives FIRST (confirm
+    // path answered before the poller flipped + null-push went out).
+    await act(async () => {
+      gatewayListeners.voiceServerUpdates.forEach((cb) =>
+        cb({
+          guild_id: 'guild-1',
+          channel_id: 'channel-voice-1',
+          endpoint: '127.0.0.1:5001',
+          token: 'token-def',
+        })
+      )
+    })
+    expect(sfuClientInstances.length).toBe(2)
+    // Forget the joinVoice Op 4: from here only failover traffic counts.
+    sendVoiceStateUpdateMock.mockClear()
+
+    // Late null names the OLD endpoint — must not tear down the healthy
+    // session on :5001.
+    await act(async () => {
+      gatewayListeners.voiceServerUpdates.forEach((cb) =>
+        cb({
+          guild_id: 'guild-1',
+          channel_id: 'channel-voice-1',
+          endpoint: null,
+          token: 'token-null',
+          dead_endpoint: '127.0.0.1:5000',
+        })
+      )
+    })
+
+    const survivor = sfuClientInstances[1]
+    expect(survivor.disconnect).not.toHaveBeenCalled()
+    expect(sfuClientInstances.length).toBe(2)
+    expect(sendVoiceStateUpdateMock).not.toHaveBeenCalled()
+  })
+
+  it('parks on a legacy null with no dead_endpoint (fail-closed)', async () => {
+    await act(async () => {
+      voiceValue?.joinVoice('guild-1', 'channel-voice-1')
+      gatewayListeners.voiceServerUpdates.forEach((cb) =>
+        cb({
+          guild_id: 'guild-1',
+          channel_id: 'channel-voice-1',
+          endpoint: '127.0.0.1:5000',
+          token: 'token-abc',
+        })
+      )
+    })
+
+    const sfu = sfuClientInstances[0]
+
+    await act(async () => {
+      gatewayListeners.voiceServerUpdates.forEach((cb) =>
+        cb({
+          guild_id: 'guild-1',
+          channel_id: 'channel-voice-1',
+          endpoint: null,
+          token: 'token-null',
+        })
+      )
+    })
+
+    expect(sfu.disconnect).toHaveBeenCalled()
+    expect(voiceValue?.connectionStatus).toBe('connecting')
+  })
+
+  it('surfaces disconnected (intent kept) when the reallocation never arrives', async () => {
+    vi.useFakeTimers()
+    try {
+      await act(async () => {
+        voiceValue?.joinVoice('guild-1', 'channel-voice-1')
+        gatewayListeners.voiceServerUpdates.forEach((cb) =>
+          cb({
+            guild_id: 'guild-1',
+            channel_id: 'channel-voice-1',
+            endpoint: '127.0.0.1:5000',
+            token: 'token-abc',
+          })
+        )
+      })
+      sendVoiceStateUpdateMock.mockClear()
+
+      await act(async () => {
+        gatewayListeners.voiceServerUpdates.forEach((cb) =>
+          cb({
+            guild_id: 'guild-1',
+            channel_id: 'channel-voice-1',
+            endpoint: null,
+            token: 'token-null',
+          })
+        )
+      })
+      expect(voiceValue?.connectionStatus).toBe('connecting')
+
+      // Let the 15s reallocation window expire.
+      await act(async () => {
+        vi.advanceTimersByTime(16_000)
+      })
+
+      expect(voiceValue?.connectionStatus).toBe('disconnected')
+      // No solicit on timeout (gateway wedged — don't storm it)…
+      expect(sendVoiceStateUpdateMock).not.toHaveBeenCalled()
+      // …but the intent survives for the next READY to volunteer.
+      expect(voiceValue?.activeVoice).toEqual({
+        guildId: 'guild-1',
+        channelId: 'channel-voice-1',
+      })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('populates video devices and reacts to devicechange events', async () => {
@@ -631,6 +1048,9 @@ describe('VoiceContext Client Integration (Phase 5c / Issue #74)', () => {
 
   // Images 4-5: a real connection drop must clear remote media state so a
   // rejoin starts clean instead of rendering the previous session's ghosts.
+  // (Phase 7d: `failed` now parks in `connecting` + re-requests placement
+  // instead of surfacing `disconnected` — the media-clearing contract is
+  // unchanged, only the status transition moved.)
   it('clears remote video and screen maps when the SFU connection drops', async () => {
     await act(async () => {
       voiceValue?.joinVoice('guild-1', 'channel-voice-1')
@@ -660,7 +1080,14 @@ describe('VoiceContext Client Integration (Phase 5c / Issue #74)', () => {
       sfu.options.onConnectionStateChange('failed')
     })
 
-    expect(voiceValue?.connectionStatus).toBe('disconnected')
+    // Parked for failover (re-request sent), media cleared for a clean rejoin.
+    expect(voiceValue?.connectionStatus).toBe('connecting')
+    expect(sendVoiceStateUpdateMock).toHaveBeenCalledWith(
+      'guild-1',
+      'channel-voice-1',
+      false,
+      false
+    )
     expect(voiceValue?.remoteVideoStreams.has('user-2')).toBe(false)
     expect(voiceValue?.remoteScreenStreams.has('user-2')).toBe(false)
   })

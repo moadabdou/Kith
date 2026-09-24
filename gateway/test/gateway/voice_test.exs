@@ -415,6 +415,370 @@ defmodule Gateway.VoiceTest do
     end
   end
 
+  describe "Channel-assigned SFU pool (Phase 7d, Issue #87)" do
+    test "two members joining the same channel get the same pool endpoint" do
+      {:ok, _pid} = Actor.get_or_spawn(@test_guild_id)
+
+      System.put_env("VOICE_SFU_POOL", "127.0.0.1:5000,127.0.0.1:5001")
+
+      try do
+        sess_a = "pool-sess-a"
+        sess_b = "pool-sess-b"
+        assert :ok == Actor.subscribe(@test_guild_id, sess_a, self(), @voice_user_id)
+        assert :ok == Actor.subscribe(@test_guild_id, sess_b, self(), @admin_user_id)
+
+        assert {:ok, _} =
+                 Actor.update_voice_state(@test_guild_id, @voice_user_id, sess_a, %{
+                   "channel_id" => @public_voice_channel
+                 })
+
+        assert {:ok, _} =
+                 Actor.update_voice_state(@test_guild_id, @admin_user_id, sess_b, %{
+                   "channel_id" => @public_voice_channel
+                 })
+
+        assert_receive {:dispatch, %{"type" => "VOICE_SERVER_UPDATE", "payload" => %{"endpoint" => ep_a}}, _}, 1000
+        assert_receive {:dispatch, %{"type" => "VOICE_SERVER_UPDATE", "payload" => %{"endpoint" => ep_b}}, _}, 1000
+
+        assert ep_a == ep_b
+        assert ep_a in ["127.0.0.1:5000", "127.0.0.1:5001"]
+      after
+        System.delete_env("VOICE_SFU_POOL")
+      end
+    end
+
+    test "re-joining the same channel returns the same endpoint (stable affinity)" do
+      {:ok, _pid} = Actor.get_or_spawn(@test_guild_id)
+
+      System.put_env("VOICE_SFU_POOL", "127.0.0.1:5000,127.0.0.1:5001")
+
+      try do
+        # A fresh session id forces a fresh VOICE_SERVER_UPDATE (the actor
+        # only re-emits when the session differs or the channel changed).
+        join = fn sess ->
+          assert :ok == Actor.subscribe(@test_guild_id, sess, self(), @voice_user_id)
+
+          assert {:ok, _} =
+                   Actor.update_voice_state(@test_guild_id, @voice_user_id, sess, %{
+                     "channel_id" => @public_voice_channel
+                   })
+
+          assert_receive {:dispatch, %{"type" => "VOICE_SERVER_UPDATE", "payload" => %{"endpoint" => ep}}, _}, 1000
+          ep
+        end
+
+        first = join.("pool-reaffinity-sess-1")
+        assert first == join.("pool-reaffinity-sess-2")
+      after
+        System.delete_env("VOICE_SFU_POOL")
+      end
+    end
+
+    test "same-session same-channel re-request re-emits (failover needs fresh placement)" do
+      # Phase 7d Step 3b: placement is time-varying, so the old dedupe
+      # (silence on same-session/same-channel) would strand clients whose
+      # SFU died. Every Op 4 join/move gets a fresh VOICE_SERVER_UPDATE.
+      {:ok, _pid} = Actor.get_or_spawn(@test_guild_id)
+
+      sess = "pool-reemit-sess"
+      assert :ok == Actor.subscribe(@test_guild_id, sess, self(), @voice_user_id)
+
+      join = fn ->
+        assert {:ok, _} =
+                 Actor.update_voice_state(@test_guild_id, @voice_user_id, sess, %{
+                   "channel_id" => @public_voice_channel
+                 })
+
+        assert_receive {:dispatch, %{"type" => "VOICE_SERVER_UPDATE", "payload" => %{"endpoint" => ep}}, _}, 1000
+        ep
+      end
+
+      first = join.()
+      assert is_binary(first) and first != ""
+      # Same session, same channel — must STILL re-emit.
+      assert join.() == first
+    end
+
+    test "sfu_down pushes null then reallocation, scoped to affected channel" do
+      # Phase 7d Step 4a: the poller declares an endpoint dead → the actor
+      # null-parks then reallocates ONLY sessions placed on it.
+      {:ok, actor_pid} = Actor.get_or_spawn(@test_guild_id)
+
+      System.put_env("VOICE_SFU_POOL", "127.0.0.1:5000,127.0.0.1:5001")
+
+      try do
+        # The hash decides placement; we need one victim channel (on the
+        # dead endpoint) and one bystander channel (on the survivor), both
+        # real cached voice channels the test users may join. Seed extras
+        # until the pool splits them.
+        pool = ["127.0.0.1:5000", "127.0.0.1:5001"]
+
+        extra =
+          Stream.iterate(1, &(&1 + 1))
+          |> Stream.map(&"8885555555555555#{&1}")
+          |> Enum.take(10)
+
+        for cid <- extra do
+          Cache.put_channel(%{
+            "id" => cid,
+            "guild_id" => @test_guild_id,
+            "type" => 2,
+            "name" => "extra-voice-#{cid}"
+          })
+
+          Cache.put_channel_overwrites(cid, [])
+        end
+
+        candidates = [@public_voice_channel | extra]
+        dead = Gateway.Voice.Placement.select(@public_voice_channel, pool)
+
+        victim_chan = @public_voice_channel
+
+        bystander_chan =
+          Enum.find(extra, &(Gateway.Voice.Placement.select(&1, pool) != dead)) ||
+            raise "pool of 2 never splits 11 channels (impossible with phash2)"
+
+        victim_sess = "failover-victim-sess"
+        bystander_sess = "failover-bystander-sess"
+        assert :ok == Actor.subscribe(@test_guild_id, victim_sess, self(), @voice_user_id)
+        assert :ok == Actor.subscribe(@test_guild_id, bystander_sess, self(), @admin_user_id)
+
+        assert {:ok, _} =
+                 Actor.update_voice_state(@test_guild_id, @voice_user_id, victim_sess, %{
+                   "channel_id" => victim_chan
+                 })
+
+        assert {:ok, _} =
+                 Actor.update_voice_state(@test_guild_id, @admin_user_id, bystander_sess, %{
+                   "channel_id" => bystander_chan
+                 })
+
+        # Drain the two join-time VOICE_SERVER_UPDATEs.
+        assert_receive {:dispatch, %{"type" => "VOICE_SERVER_UPDATE"}, _}, 1000
+        assert_receive {:dispatch, %{"type" => "VOICE_SERVER_UPDATE"}, _}, 1000
+
+        # Kill drill: poller verdict arrives.
+        send(actor_pid, {:sfu_down, dead})
+
+        # Victim gets null FIRST…
+        assert_receive {:dispatch,
+                        %{
+                          "type" => "VOICE_SERVER_UPDATE",
+                          "payload" => %{"channel_id" => ^victim_chan, "endpoint" => nil}
+                        }, _}, 1000
+
+        # …then the reallocation onto the survivor…
+        assert_receive {:dispatch,
+                        %{
+                          "type" => "VOICE_SERVER_UPDATE",
+                          "payload" => %{"channel_id" => ^victim_chan, "endpoint" => new_ep}
+                        }, _}, 1000
+
+        assert new_ep != dead
+        assert is_binary(new_ep)
+
+        # …and the bystander hears NOTHING (unaffected channel).
+        refute_received {:dispatch, %{"type" => "VOICE_SERVER_UPDATE"}, _}
+      after
+        System.delete_env("VOICE_SFU_POOL")
+      end
+    end
+
+    test "sfu_down null carries dead_endpoint; reallocation carries none" do
+      # Phase 7d stale-null guard: clients need the dead endpoint named to
+      # tell a stale null from an actionable one. Victim selection is
+      # computed against the FULL pool (deterministic here); the reallocation
+      # comes from the live list (whatever the supervised poller currently
+      # holds) — so this test pins SHAPES, not which endpoint wins. Live
+      # placement/exclusion is covered by the Step 6c drill.
+      {:ok, actor_pid} = Actor.get_or_spawn(@test_guild_id)
+
+      pool = ["127.0.0.1:5000", "127.0.0.1:5001"]
+      System.put_env("VOICE_SFU_POOL", Enum.join(pool, ","))
+
+      try do
+        sess = "deadep-sess"
+        assert :ok == Actor.subscribe(@test_guild_id, sess, self(), @voice_user_id)
+
+        assert {:ok, _} =
+                 Actor.update_voice_state(@test_guild_id, @voice_user_id, sess, %{
+                   "channel_id" => @public_voice_channel
+                 })
+
+        # Drain both join-time dispatches (order on the wire is
+        # state-update then server-update).
+        assert_receive {:dispatch, %{"type" => "VOICE_STATE_UPDATE"}, _}, 1000
+        assert_receive {:dispatch, %{"type" => "VOICE_SERVER_UPDATE"}, _}, 1000
+
+        dead = Gateway.Voice.Placement.select(@public_voice_channel, pool)
+        send(actor_pid, {:sfu_down, dead})
+
+        assert_receive {:dispatch,
+                        %{
+                          "type" => "VOICE_SERVER_UPDATE",
+                          "payload" => %{"endpoint" => nil, "dead_endpoint" => ^dead}
+                        }, _}, 1000
+
+        assert_receive {:dispatch,
+                        %{
+                          "type" => "VOICE_SERVER_UPDATE",
+                          "payload" => %{"endpoint" => new_ep} = new_payload
+                        }, _}, 1000
+
+        assert is_binary(new_ep)
+        refute Map.has_key?(new_payload, "dead_endpoint")
+      after
+        System.delete_env("VOICE_SFU_POOL")
+      end
+    end
+
+    test "sfu_down for an endpoint with no sessions here pushes nothing" do
+      {:ok, actor_pid} = Actor.get_or_spawn(@test_guild_id)
+
+      System.put_env("VOICE_SFU_POOL", "127.0.0.1:5000,127.0.0.1:5001")
+
+      try do
+        sess = "failover-empty-sess"
+        assert :ok == Actor.subscribe(@test_guild_id, sess, self(), @voice_user_id)
+
+        assert {:ok, _} =
+                 Actor.update_voice_state(@test_guild_id, @voice_user_id, sess, %{
+                   "channel_id" => @public_voice_channel
+                 })
+
+        assert_receive {:dispatch, %{"type" => "VOICE_SERVER_UPDATE"}, _}, 1000
+
+        other = fn ep -> if ep == "127.0.0.1:5000", do: "127.0.0.1:5001", else: "127.0.0.1:5000" end
+
+        placed = Gateway.Voice.Placement.select(@public_voice_channel, ["127.0.0.1:5000", "127.0.0.1:5001"])
+        send(actor_pid, {:sfu_down, other.(placed)})
+
+        refute_received {:dispatch, %{"type" => "VOICE_SERVER_UPDATE"}, _}, 200
+      after
+        System.delete_env("VOICE_SFU_POOL")
+      end
+    end
+  end
+
+  describe "Tier 1 session-cached intent (Phase 7d Step 5c)" do
+    test "subscribe with intent populates roster + dispatches server update (no Op 4 needed)" do
+      {:ok, _pid} = Actor.get_or_spawn(@test_guild_id)
+
+      sess = "tier1-sub-sess"
+      intent = %{channel_id: @public_voice_channel, self_mute: true, self_deaf: false}
+
+      assert :ok == Actor.subscribe(@test_guild_id, sess, self(), @voice_user_id, intent)
+
+      # Roster rebuilt without any Op 4.
+      states = Actor.get_voice_states(@test_guild_id)
+      assert %{} = states[@voice_user_id]
+      assert states[@voice_user_id].channel_id == @public_voice_channel
+      assert states[@voice_user_id].session_id == sess
+      assert states[@voice_user_id].self_mute == true
+
+      # Joining session got its endpoint; fan-out reached observers.
+      assert_receive {:dispatch, %{"type" => "VOICE_SERVER_UPDATE", "payload" => %{"endpoint" => ep}}, _}, 1000
+      assert is_binary(ep) and ep != ""
+      assert_receive {:dispatch, %{"type" => "VOICE_STATE_UPDATE", "payload" => %{"channel_id" => @public_voice_channel}}, _}, 1000
+    end
+
+    test "subscribe with intent is ignored when the actor already has an entry (browser Op 4 wins)" do
+      {:ok, _pid} = Actor.get_or_spawn(@test_guild_id)
+
+      sess = "tier1-absent-sess"
+      assert :ok == Actor.subscribe(@test_guild_id, sess, self(), @voice_user_id)
+
+      # Browser speaks first via Op 4.
+      assert {:ok, _} =
+               Actor.update_voice_state(@test_guild_id, @voice_user_id, sess, %{
+                 "channel_id" => @public_voice_channel,
+                 "self_mute" => false
+               })
+
+      # Drain join dispatches.
+      assert_receive {:dispatch, %{"type" => "VOICE_STATE_UPDATE"}, _}, 1000
+      assert_receive {:dispatch, %{"type" => "VOICE_SERVER_UPDATE"}, _}, 1000
+
+      # Stale push (e.g. older mute state racing in) must NOT overwrite.
+      stale = %{channel_id: @public_voice_channel, self_mute: true, self_deaf: true}
+      Actor.push_voice_intent(@test_guild_id, sess, stale)
+      Process.sleep(100)
+
+      states = Actor.get_voice_states(@test_guild_id)
+      assert states[@voice_user_id].self_mute == false
+      assert states[@voice_user_id].self_deaf == false
+      refute_received {:dispatch, %{"type" => "VOICE_SERVER_UPDATE"}, _}
+    end
+
+    test "subscribe with intent for an unauthorized channel is rejected" do
+      {:ok, _pid} = Actor.get_or_spawn(@test_guild_id)
+
+      sess = "tier1-denied-sess"
+      # @regular_user_id is denied VIEW+CONNECT on the secret channel.
+      intent = %{channel_id: @secret_voice_channel, self_mute: false, self_deaf: false}
+
+      assert :ok == Actor.subscribe(@test_guild_id, sess, self(), @regular_user_id, intent)
+
+      assert Actor.get_voice_states(@test_guild_id) == %{}
+      refute_received {:dispatch, %{"type" => "VOICE_SERVER_UPDATE"}, _}
+    end
+
+    test "nil intent subscribes bare (existing call sites unaffected)" do
+      {:ok, _pid} = Actor.get_or_spawn(@test_guild_id)
+
+      sess = "tier1-nil-sess"
+      assert :ok == Actor.subscribe(@test_guild_id, sess, self(), @voice_user_id, nil)
+      assert Actor.get_voice_states(@test_guild_id) == %{}
+    end
+
+    test "lease-less subscribe stashes intent; lease acquisition flushes it" do
+      {:ok, actor_pid} = Actor.get_or_spawn(@test_guild_id)
+
+      sess = "tier1-pending-sess"
+      intent = %{channel_id: @public_voice_channel, self_mute: false, self_deaf: false}
+
+      # Force lease-less (no Redis in test → normally fail-open held).
+      :sys.replace_state(actor_pid, fn state -> %{state | lease_held: false} end)
+
+      assert :ok == Actor.subscribe(@test_guild_id, sess, self(), @voice_user_id, intent)
+
+      # Stashed, not applied: no roster, no dispatch.
+      assert Actor.get_voice_states(@test_guild_id) == %{}
+      refute_received {:dispatch, %{"type" => "VOICE_SERVER_UPDATE"}, _}, 100
+
+      # Lease renewal fail-opens (no Redis) → flush applies the stash.
+      send(actor_pid, :lease_renew)
+
+      assert_receive {:dispatch, %{"type" => "VOICE_SERVER_UPDATE", "payload" => %{"endpoint" => ep}}, _}, 2000
+      assert is_binary(ep) and ep != ""
+
+      states = Actor.get_voice_states(@test_guild_id)
+      assert states[@voice_user_id].channel_id == @public_voice_channel
+      assert states[@voice_user_id].session_id == sess
+    end
+
+    test "unsubscribed session's stashed intent dies with it" do
+      {:ok, actor_pid} = Actor.get_or_spawn(@test_guild_id)
+
+      sess = "tier1-gone-sess"
+      intent = %{channel_id: @public_voice_channel, self_mute: false, self_deaf: false}
+
+      :sys.replace_state(actor_pid, fn state -> %{state | lease_held: false} end)
+      assert :ok == Actor.subscribe(@test_guild_id, sess, self(), @voice_user_id, intent)
+      assert Actor.get_voice_states(@test_guild_id) == %{}
+
+      # Session leaves before the lease arrives.
+      assert :ok == Actor.unsubscribe(@test_guild_id, sess)
+
+      send(actor_pid, :lease_renew)
+      Process.sleep(200)
+
+      # Nothing applied: roster empty, no dispatch to anyone.
+      assert Actor.get_voice_states(@test_guild_id) == %{}
+      refute_received {:dispatch, %{"type" => "VOICE_SERVER_UPDATE"}, _}
+    end
+  end
+
   describe "SFU & Gateway voice server routing & presence synchronization (Issue #74)" do
     test "VOICE_SERVER_UPDATE issues valid HS256 JWT with sub, guild_id, and channel_id" do
       {:ok, _pid} = Actor.get_or_spawn(@test_guild_id)

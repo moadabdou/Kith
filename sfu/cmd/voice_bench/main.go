@@ -54,7 +54,7 @@ func main() {
 	flag.StringVar(&cfg.GatewayWS, "gateway", "ws://127.0.0.1:4000/ws", "WebSocket URL for Kith Gateway")
 	flag.StringVar(&cfg.SFUWS, "sfu", "ws://127.0.0.1:5000/ws", "WebSocket URL for Pion SFU")
 	flag.StringVar(&cfg.SFUMetrics, "sfu-metrics", "http://127.0.0.1:5000/metrics", "Prometheus metrics URL for SFU")
-	flag.StringVar(&cfg.Drill, "drill", "clap", "Drill to execute: clap | impairment | failover | partition | pli_storm | layer_throttle | screen_detail | video_failover | resource | all")
+	flag.StringVar(&cfg.Drill, "drill", "clap", "Drill to execute: clap | impairment | failover | partition | pli_storm | layer_throttle | screen_detail | video_failover | pool_failover | resource | all")
 	flag.IntVar(&cfg.Samples, "samples", 100, "Number of clap impulse samples")
 	flag.DurationVar(&cfg.Duration, "duration", 5*time.Second, "Duration for continuous streaming drills")
 	flag.StringVar(&cfg.Label, "label", "", "Label for resource snapshot rows (resource drill)")
@@ -87,6 +87,8 @@ func main() {
 		err = runScreenDetailDrill(cfg)
 	case "video_failover":
 		err = runVideoFailoverDrill(cfg)
+	case "pool_failover":
+		err = runPoolFailoverDrill(cfg)
 	case "resource":
 		err = runResourceSnapshot(cfg, cfg.Label, cfg.SnapshotFile, cfg.SFUContainer)
 	case "all":
@@ -126,10 +128,11 @@ type TestUser struct {
 }
 
 type VoiceServerInfo struct {
-	Token     string
-	GuildID   string
-	ChannelID string
-	Endpoint  string
+	Token        string
+	GuildID      string
+	ChannelID    string
+	Endpoint     string
+	DeadEndpoint string
 }
 
 func registerAndLogin(apiBase, username, password string) (*TestUser, error) {
@@ -320,12 +323,14 @@ func connectGatewayAndJoinVoice(ctx context.Context, gatewayWS string, user *Tes
 						gid, _ := d["guild_id"].(string)
 						cid, _ := d["channel_id"].(string)
 						endpoint, _ := d["endpoint"].(string)
+						deadEndpoint, _ := d["dead_endpoint"].(string)
 
 						sess.VoiceServerChan <- VoiceServerInfo{
-							Token:     tok,
-							GuildID:   gid,
-							ChannelID: cid,
-							Endpoint:  endpoint,
+							Token:        tok,
+							GuildID:      gid,
+							ChannelID:    cid,
+							Endpoint:     endpoint,
+							DeadEndpoint: deadEndpoint,
 						}
 					}
 				}

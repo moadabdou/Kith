@@ -129,16 +129,23 @@ defmodule Gateway.Bus.NatsConsumer do
         # Immediately synchronize permissions & entities in local ETS cache
         Gateway.Guild.Cache.handle_event(event)
 
-        # Route by guild_id -> dispatch to Guild Actor
+        # Route by guild_id -> dispatch to the hosting node only.
+        # Local-only bus dispatch: every node consumes every event (cache
+        # convergence), but only the actor's host dispatches. The mirror
+        # copy is dropped before crossing distribution.
         if guild_id != "" do
-          Gateway.Guild.Actor.dispatch_event(to_string(guild_id), event, bus_received_at)
+          Gateway.Guild.Actor.dispatch_bus_event(to_string(guild_id), event, bus_received_at,
+            bus_seq: meta.stream_seq
+          )
         end
 
         # Discord-correct: GUILD_MEMBER_ADD is always accompanied by a
         # companion PRESENCE_UPDATE so old members learn the joining user's
         # live status.  The REST API has no presence data, so the gateway
         # enriches the event here from the node-local ETS presence store.
-        maybe_emit_member_presence(type, guild_id, event, bus_received_at)
+        # The companion inherits the parent's bus_seq: same seq, different
+        # type, so cross-node dedup still matches exactly (Phase 7c).
+        maybe_emit_member_presence(type, guild_id, event, bus_received_at, meta.stream_seq)
 
         actor_pid =
           if guild_id != "", do: Gateway.Guild.Actor.whereis(guild_id), else: nil
@@ -166,7 +173,7 @@ defmodule Gateway.Bus.NatsConsumer do
   # Emits a companion PRESENCE_UPDATE when a GUILD_MEMBER_ADD arrives, so
   # existing guild subscribers immediately see the joining user's live status
   # (online/idle/dnd) instead of defaulting to offline.
-  defp maybe_emit_member_presence("GUILD_MEMBER_ADD", guild_id, event, bus_received_at)
+  defp maybe_emit_member_presence("GUILD_MEMBER_ADD", guild_id, event, bus_received_at, bus_seq)
        when guild_id != "" do
     with %{"payload" => %{"user" => %{"id" => uid}}} <- event,
          {:ok, presence} <- Gateway.Presence.Store.get_presence(uid) do
@@ -185,13 +192,15 @@ defmodule Gateway.Bus.NatsConsumer do
         }
       }
 
-      Gateway.Guild.Actor.dispatch_event(guild_id, presence_event, bus_received_at)
+      Gateway.Guild.Actor.dispatch_bus_event(guild_id, presence_event, bus_received_at,
+        bus_seq: bus_seq
+      )
     end
 
     :ok
   end
 
-  defp maybe_emit_member_presence(_type, _guild_id, _event, _bus_received_at), do: :ok
+  defp maybe_emit_member_presence(_type, _guild_id, _event, _bus_received_at, _bus_seq), do: :ok
 
   defp ack_message(_gnat, nil), do: :ok
   defp ack_message(_gnat, ""), do: :ok

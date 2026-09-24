@@ -193,8 +193,18 @@ defmodule Gateway.Session do
       replay: Gateway.RingBuffer.new(ring_capacity),
       disconnect_ttl_ms: disconnect_ttl_ms,
       max_queue_len: max_queue_len,
-      ttl_timer: ttl_timer
+      ttl_timer: ttl_timer,
+      # Phase 7c: %{guild_id => {actor_pid, monitor_ref}} for re-subscribe.
+      actor_monitors: monitor_actors(guild_ids, %{})
     }
+
+    # Phase 7c: Horde registry replicas converge asynchronously (~300ms
+    # CRDT sync). Any guild with no monitor yet (actor just created on
+    # another node) is rechecked through the resubscribe path, which
+    # subscribes (idempotent) and monitors once visible.
+    for gid <- guild_ids, not Map.has_key?(state.actor_monitors, to_string(gid)) do
+      Process.send_after(self(), {:resubscribe, to_string(gid), 0}, 1_000)
+    end
 
     Logger.debug("Gateway.Session [#{session_id}] started with #{length(guild_ids)} guilds")
     {:ok, state}
@@ -405,6 +415,43 @@ defmodule Gateway.Session do
     {:noreply, %{state | ws_pid: nil, ws_ref: nil, ttl_timer: timer}}
   end
 
+  # Phase 7c: a subscribed guild actor died (its node may be gone; Horde
+  # restarts it elsewhere). Re-subscribe with backoff so this live session
+  # keeps receiving events with seq continuity intact.
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
+    case Enum.find(state.actor_monitors, fn {_gid, {_p, r}} -> r == ref end) do
+      {gid, _} ->
+        Logger.info("Gateway.Session [#{state.session_id}]: guild actor for #{gid} down; scheduling re-subscribe")
+        Process.send_after(self(), {:resubscribe, gid, 0}, 500)
+        {:noreply, %{state | actor_monitors: Map.delete(state.actor_monitors, gid)}}
+
+      nil ->
+        {:noreply, state}
+    end
+  end
+
+  @resubscribe_delays [1_000, 3_000]
+
+  def handle_info({:resubscribe, gid, attempt}, state) do
+    case Gateway.Guild.Actor.subscribe(gid, state.session_id, self(), state.user_id) do
+      :ok ->
+        Gateway.Metrics.incr_resubscribe()
+        Logger.info("Gateway.Session [#{state.session_id}]: re-subscribed to guild #{gid}")
+        {:noreply, %{state | actor_monitors: monitor_actors([gid], state.actor_monitors)}}
+
+      {:error, reason} ->
+        case Enum.at(@resubscribe_delays, attempt) do
+          nil ->
+            Logger.warning("Gateway.Session [#{state.session_id}]: giving up re-subscribe to #{gid} (#{inspect(reason)}); client reconnect will heal")
+            {:noreply, state}
+
+          delay ->
+            Process.send_after(self(), {:resubscribe, gid, attempt + 1}, delay)
+            {:noreply, state}
+        end
+    end
+  end
+
   def handle_info(:session_timeout, state) do
     Logger.info("Gateway.Session [#{state.session_id}]: expired after disconnect timeout; stopping")
     {:stop, :normal, state}
@@ -432,6 +479,32 @@ defmodule Gateway.Session do
   end
 
   # ── Internal Helpers ────────────────────────────────────────────────────────
+
+  # Phase 7c: monitor the current actor pid for each guild (cluster-wide
+  # lookup — the actor may live on another node). Idempotent. Keys are
+  # strings; missing entries mean "not visible yet", never "absent".
+  # NOTE: Process.alive?/1 raises on remote pids; remote entries are
+  # trusted to Horde lifecycle (see Actor.whereis/1).
+  defp monitor_actors(guild_ids, monitors) do
+    Enum.reduce(guild_ids, monitors, fn gid, acc ->
+      key = to_string(gid)
+
+      case Map.get(acc, key) do
+        {pid, _ref} when is_pid(pid) ->
+          if node(pid) == node() do
+            if Process.alive?(pid), do: acc, else: Map.delete(acc, key)
+          else
+            acc
+          end
+
+        nil ->
+          case Gateway.Guild.Actor.whereis(key) do
+            pid when is_pid(pid) -> Map.put(acc, key, {pid, Process.monitor(pid)})
+            nil -> acc
+          end
+      end
+    end)
+  end
 
   defp cancel_timer(nil), do: :ok
 

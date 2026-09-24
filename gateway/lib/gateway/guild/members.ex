@@ -165,12 +165,14 @@ defmodule Gateway.Guild.Members do
   # Soft backpressure between chunks: the session actor must keep draining.
   # A dead session or a wedged one past the stream deadline aborts the stream;
   # the session's own queue-depth check (close 4008) remains the hard cap.
+  # NOTE (Phase 7c): the session may live on another node; Process.alive?/1
+  # raises on remote pids, so remote liveness falls back to Process.info/2.
   defp throttle(session_pid, deadline) do
     cond do
       System.monotonic_time(:millisecond) > deadline ->
         {:error, :deadline_exceeded}
 
-      not Process.alive?(session_pid) ->
+      session_gone?(session_pid) ->
         {:error, :session_gone}
 
       true ->
@@ -182,6 +184,14 @@ defmodule Gateway.Guild.Members do
           _other ->
             :ok
         end
+    end
+  end
+
+  defp session_gone?(pid) do
+    if node(pid) == node() do
+      not Process.alive?(pid)
+    else
+      is_nil(Process.info(pid))
     end
   end
 

@@ -51,7 +51,9 @@ defmodule Gateway.MetricsTest do
   test "render lists a series per supervised child" do
     out = Metrics.render()
 
-    for child <- ["Gateway.Metrics", "Gateway.Health", "Gateway.GuildSupervisor", "Gateway.ConnSupervisor"] do
+    # Phase 7c: GuildSupervisor moved under ClusterFoundation (nested
+    # supervisor children are reported as their top-level group).
+    for child <- ["Gateway.Metrics", "Gateway.Health", "Gateway.ClusterFoundation", "Gateway.ConnSupervisor"] do
       assert out =~ ~r{gateway_supervisor_child_starts_total\{child="#{child}"\} \d+}
     end
   end

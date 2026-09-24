@@ -17,11 +17,14 @@ defmodule Gateway.Guild.Actor do
   end
 
   def via_tuple(guild_id) do
-    {:via, Registry, {Gateway.Registry, to_string(guild_id)}}
+    # Phase 7c (Issue #86): cluster-wide registry. The actor for a guild
+    # lives on exactly one node; Horde routes lookups and calls there.
+    {:via, Horde.Registry, {Gateway.HordeRegistry, to_string(guild_id)}}
   end
 
   @doc """
-  Finds existing guild actor in Registry or lazily spawns a new one under Gateway.GuildSupervisor.
+  Finds existing guild actor in the cluster or lazily spawns one via the
+  distributed supervisor (Horde places it on some node).
   """
   def get_or_spawn(guild_id, opts \\ []) do
     gid = to_string(guild_id)
@@ -33,7 +36,7 @@ defmodule Gateway.Guild.Actor do
       nil ->
         child_opts = Keyword.merge(opts, [guild_id: gid])
 
-        case DynamicSupervisor.start_child(Gateway.GuildSupervisor, {__MODULE__, child_opts}) do
+        case Horde.DynamicSupervisor.start_child(Gateway.GuildSupervisor, {__MODULE__, child_opts}) do
           {:ok, pid} ->
             {:ok, pid}
 
@@ -41,18 +44,33 @@ defmodule Gateway.Guild.Actor do
             {:ok, pid}
 
           {:error, reason} ->
-            {:error, reason}
+            # Lost a placement race or the cluster is settling: one fresh
+            # lookup before giving up.
+            case whereis(gid) do
+              pid when is_pid(pid) -> {:ok, pid}
+              nil -> {:error, reason}
+            end
         end
     end
   end
 
   @doc """
-  Returns the PID of the guild actor if registered and alive, else nil.
+  Returns the PID of the guild actor if registered and alive anywhere in
+  the cluster, else nil.
+
+  NOTE: `Process.alive?/1` raises on remote pids, so liveness is only
+  checked locally. For remote entries, Horde owns lifecycle: entries from
+  departed nodes are removed on re-sync, and a stale pid fails safe
+  (casts drop; `get_or_spawn` retries via lookup).
   """
   def whereis(guild_id) do
-    case Registry.lookup(Gateway.Registry, to_string(guild_id)) do
-      [{pid, _}] ->
-        if Process.alive?(pid), do: pid, else: nil
+    case Horde.Registry.lookup(Gateway.HordeRegistry, to_string(guild_id)) do
+      [{pid, _}] when is_pid(pid) ->
+        if node(pid) == node() do
+          if Process.alive?(pid), do: pid, else: nil
+        else
+          pid
+        end
 
       [] ->
         nil
@@ -115,11 +133,44 @@ defmodule Gateway.Guild.Actor do
 
   @doc """
   Dispatches an event asynchronously to all subscriber processes of the guild.
+
+  `opts[:bus_seq]` carries the NATS JetStream stream sequence for cross-node
+  duplicate suppression (Phase 7c). Callers without a bus position (legacy
+  Redis bus, synthesized events) pass none and always dispatch.
   """
-  def dispatch_event(guild_id, event, bus_received_at \\ nil) do
+  def dispatch_event(guild_id, event, bus_received_at \\ nil, opts \\ []) do
     case whereis(guild_id) do
       pid when is_pid(pid) ->
-        GenServer.cast(pid, {:dispatch_event, event, bus_received_at})
+        GenServer.cast(pid, {:dispatch_event, event, bus_received_at, opts})
+
+      nil ->
+        :ok
+    end
+  end
+
+  @doc """
+  Bus-only dispatch: like `dispatch_event/4`, but only when the actor lives
+  on THIS node (Phase 7c follow-up).
+
+  Every gateway node consumes every NATS event; without this gate, each
+  node's consumer casts a full copy across distribution to the actor's node,
+  and the receiving actor drops it in dedup. That doubles actor mailbox
+  traffic and distribution chatter per event. With the gate, exactly the
+  hosting node dispatches — the mirror copy is dropped before crossing the
+  wire. `Cache.handle_event` still runs on every node (cache convergence).
+
+  Dedup and the lease stay as safety nets: split-brain (each node sees a
+  local actor) and handover windows are unaffected by this gate.
+  """
+  def dispatch_bus_event(guild_id, event, bus_received_at \\ nil, opts \\ []) do
+    case whereis(guild_id) do
+      pid when is_pid(pid) ->
+        if node(pid) == node() do
+          GenServer.cast(pid, {:dispatch_event, event, bus_received_at, opts})
+        else
+          Gateway.Metrics.incr_dedup_drop()
+          :ok
+        end
 
       nil ->
         :ok
@@ -177,16 +228,24 @@ defmodule Gateway.Guild.Actor do
     # Start TTL timer since initial subscriber count is 0
     ttl_timer = Process.send_after(self(), :ttl_check, ttl_ms)
 
+    # Phase 7c: claim the dispatch lease immediately so a fresh actor can
+    # serve without waiting for the first renewal tick.
+    {lease_held, lease_timer} = refresh_lease(guild_id, false)
+    if lease_held, do: Gateway.Metrics.incr_lease_acquired()
+
     state = %{
       guild_id: guild_id,
       subscribers: %{},
       subscriber_refs: %{},
       ttl_ms: ttl_ms,
       ttl_timer: ttl_timer,
-      voice_states: %{}
+      voice_states: %{},
+      last_bus_event: nil,
+      lease_held: lease_held,
+      lease_timer: lease_timer
     }
 
-    Logger.debug("Gateway.Guild.Actor [#{guild_id}] started")
+    Logger.info("Gateway.Guild.Actor [#{guild_id}] started on #{node()}")
     {:ok, state}
   end
 
@@ -219,6 +278,20 @@ defmodule Gateway.Guild.Actor do
           _ -> nil
         end
       end
+
+    # Phase 7c warm-on-miss: this actor may live on a node whose cache never
+    # saw this user's IDENTIFY (which warms only the IDENTIFY node). The bus
+    # carries mutations, never baselines, so load the snapshot from PG here.
+    # Best-effort: on warm failure we proceed with cached data (old behavior).
+    if uid do
+      case Gateway.Guild.Cache.ensure_member_view(uid, state.guild_id) do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          Logger.debug("Gateway.Guild.Actor [#{state.guild_id}] cache warm missed for #{uid}: #{inspect(reason)}")
+      end
+    end
 
     sub_info = %{
       pid: pid,
@@ -282,6 +355,10 @@ defmodule Gateway.Guild.Actor do
 
     old_vs = Map.get(state.voice_states, uid)
     old_cid = if old_vs, do: old_vs.channel_id, else: nil
+
+    # Phase 7c warm-on-miss (same rationale as subscribe above): voice joins
+    # validate against this node's cache, which may never have seen IDENTIFY.
+    _ = Gateway.Guild.Cache.ensure_member_view(uid, state.guild_id)
 
     cond do
       cid != nil ->
@@ -369,6 +446,47 @@ defmodule Gateway.Guild.Actor do
 
   @impl true
   def handle_cast({:dispatch_event, event, bus_received_at}, state) do
+    handle_cast({:dispatch_event, event, bus_received_at, []}, state)
+  end
+
+  # Phase 7c: every node consumes every bus event, but only one actor per
+  # guild may fan out. Exact {bus_seq, type} match = the other node's copy
+  # of the same stream message → drop. Then the lease gate: a non-holder
+  # (e.g. a SIGSTOPped node's stale actor) stays silent.
+  def handle_cast({:dispatch_event, event, bus_received_at, opts}, state) do
+    bus_seq = Keyword.get(opts, :bus_seq)
+    type = event["type"] || "UNKNOWN"
+    {state, duplicate?} = track_bus_event(state, bus_seq, type)
+
+    cond do
+      duplicate? ->
+        Gateway.Metrics.incr_dedup_drop()
+        {:noreply, state}
+
+      not state.lease_held ->
+        Gateway.Metrics.incr_lease_drop()
+        {:noreply, state}
+
+      true ->
+        route_dispatch(event, bus_received_at, state)
+    end
+  end
+
+  # Exact {seq, type} match against the last routed event. Stream sequences
+  # are unique per message, so only a true cross-node duplicate matches.
+  # Events without a bus position (legacy bus, synthesized) always route.
+  defp track_bus_event(state, nil, _type), do: {state, false}
+
+  defp track_bus_event(state, bus_seq, type) do
+    if state.last_bus_event == {bus_seq, type} do
+      {state, true}
+    else
+      {%{state | last_bus_event: {bus_seq, type}}, false}
+    end
+  end
+
+  # Original broadcast/channel routing, unchanged.
+  defp route_dispatch(event, bus_received_at, state) do
     type = event["type"] || "UNKNOWN"
 
     state =
@@ -903,6 +1021,22 @@ defmodule Gateway.Guild.Actor do
     end
   end
 
+  def handle_info(:lease_renew, state) do
+    {lease_held, lease_timer} = refresh_lease(state.guild_id, state.lease_held)
+
+    if lease_held != state.lease_held do
+      if lease_held do
+        Gateway.Metrics.incr_lease_acquired()
+        Logger.info("Gateway.Guild.Actor [#{state.guild_id}] acquired dispatch lease")
+      else
+        Gateway.Metrics.incr_lease_lost()
+        Logger.warning("Gateway.Guild.Actor [#{state.guild_id}] lost dispatch lease; dispatch paused")
+      end
+    end
+
+    {:noreply, %{state | lease_held: lease_held, lease_timer: lease_timer}}
+  end
+
   def handle_info(:ttl_check, state) do
     if map_size(state.subscribers) == 0 do
       Logger.debug("Gateway.Guild.Actor [#{state.guild_id}] stopping: 0 subscribers after TTL")
@@ -924,8 +1058,47 @@ defmodule Gateway.Guild.Actor do
       Gateway.Metrics.decr_voice_connection(active_voice_count)
     end
     cancel_timer(state.ttl_timer)
+    if state[:lease_timer], do: cancel_timer(state.lease_timer)
+    # Best-effort: let the next holder claim immediately instead of
+    # waiting out the TTL.
+    Gateway.Guild.Lease.release(state.guild_id)
     Logger.debug("Gateway.Guild.Actor [#{state.guild_id}] terminated")
     :ok
+  end
+
+  # ── Lease lifecycle (Phase 7c) ─────────────────────────────────────────
+
+  @lease_renew_ms 3_000
+
+  # Try renew-then-acquire so both fresh actors and losers converge.
+  # Redis unreachable → hold (fail-open): duplicates during a joint
+  # Redis+split-brain outage beat a silent guild; logged loudly.
+  defp refresh_lease(guild_id, _previously_held) do
+    held =
+      case Gateway.Guild.Lease.renew(guild_id) do
+        :ok ->
+          true
+
+        {:error, :lost} ->
+          case Gateway.Guild.Lease.acquire(guild_id) do
+            :ok ->
+              true
+
+            {:error, :taken} ->
+              Logger.debug("Gateway.Guild.Actor [#{guild_id}] lease held elsewhere; waiting")
+              false
+
+            {:error, :unavailable} ->
+              Logger.warning("Gateway.Guild.Actor [#{guild_id}] lease store unavailable; dispatching fail-open")
+              true
+          end
+
+        {:error, :unavailable} ->
+          Logger.warning("Gateway.Guild.Actor [#{guild_id}] lease store unavailable; dispatching fail-open")
+          true
+      end
+
+    {held, Process.send_after(self(), :lease_renew, @lease_renew_ms)}
   end
 
   # ── Internal Helpers ────────────────────────────────────────────────────────

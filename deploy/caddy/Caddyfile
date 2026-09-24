@@ -3,7 +3,7 @@
 		reverse_proxy api:8080 api-2:8080
 	}
 	handle /ws {
-		reverse_proxy gateway:4000
+		reverse_proxy gateway:4000 gateway-2:4000
 	}
 	handle {
 		reverse_proxy client:5173

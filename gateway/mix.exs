@@ -29,7 +29,9 @@ defmodule Gateway.MixProject do
       {:jason, "~> 1.4"},
       {:redix, "~> 1.5"},
       {:postgrex, "~> 0.20"},
-      {:gnat, "~> 1.16"}
+      {:gnat, "~> 1.16"},
+      {:horde, "~> 0.9"},
+      {:libcluster, "~> 3.3"}
     ]
   end
 end

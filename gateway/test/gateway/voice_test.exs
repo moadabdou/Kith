@@ -20,7 +20,7 @@ defmodule Gateway.VoiceTest do
     # Terminate any lingering actor for test guild
     case Actor.whereis(@test_guild_id) do
       pid when is_pid(pid) ->
-        DynamicSupervisor.terminate_child(Gateway.GuildSupervisor, pid)
+        Horde.DynamicSupervisor.terminate_child(Gateway.GuildSupervisor, pid)
 
       nil ->
         :ok

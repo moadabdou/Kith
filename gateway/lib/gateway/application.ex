@@ -35,9 +35,11 @@ defmodule Gateway.Application do
     [
       Gateway.Metrics,
       Gateway.Health,
+      # Bounded shutdown: a nested supervisor defaults to :infinity, which
+      # would wedge the whole tree if a Horde child ever hung in terminate.
+      Supervisor.child_spec({Gateway.ClusterFoundation, []}, shutdown: 10_000),
       {Registry, keys: :unique, name: Gateway.Registry},
       {Gateway.Presence.Store, [idle_threshold_ms: idle_threshold_ms()]},
-      Gateway.GuildSupervisor,
       Gateway.ConnSupervisor,
       Gateway.Guild.Cache,
       Supervisor.child_spec({Postgrex, parse_db_url(database_url())}, id: Gateway.DB),

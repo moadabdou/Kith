@@ -14,7 +14,7 @@ FROM base AS test
 ENV MIX_ENV=test
 
 COPY mix.exs mix.lock ./
-COPY deps deps
+RUN mix deps.get
 RUN mix deps.compile
 
 COPY lib lib
@@ -28,7 +28,7 @@ FROM base AS prod
 ENV MIX_ENV=prod
 
 COPY mix.exs mix.lock ./
-COPY deps deps
+RUN mix deps.get
 RUN mix deps.compile
 
 COPY lib lib
@@ -36,4 +36,9 @@ RUN mix compile
 
 EXPOSE 4000
 
-CMD ["mix", "run", "--no-halt"]
+# Phase 7c (Issue #86): run distributed so libcluster/Horde can form a
+# cluster. The node name MUST be gateway@<container-ip>: libcluster DNSPoll
+# dials "<basename>@<resolved-ip>". Cookie shared via ERLANG_COOKIE env.
+# net_ticktime 10s: node-failure detection in ~10s instead of OTP's 60s
+# default — the kill/SIGSTOP drills (and any real failover) need it.
+CMD ["sh", "-c", "exec elixir --name \"gateway@$(hostname -i)\" --cookie \"${ERLANG_COOKIE:-dev-cluster-cookie}\" --erl \"-kernel net_ticktime 10\" -S mix run --no-halt"]

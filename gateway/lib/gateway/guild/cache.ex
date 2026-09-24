@@ -416,6 +416,180 @@ defmodule Gateway.Guild.Cache do
   end
 
   @doc """
+  Warm-on-miss for the permission path (Phase 7c, Issue #86).
+
+  After clustering, a guild actor may serve a subscriber whose IDENTIFY
+  warmed a DIFFERENT node's cache. The bus only carries mutations, never
+  baselines, so a fresh node cannot fill these keys by listening. On ETS
+  miss this loads the guild shape (guild row, roles, channels, overwrites)
+  and the member's role list from Postgres, then serves from memory.
+
+  Best-effort by contract: `:ok` when everything needed is cached or was
+  loaded, `{:error, reason}` otherwise. Callers proceed with whatever is
+  cached (the pre-7c behavior) — a warm failure must never break dispatch.
+  """
+  def ensure_member_view(user_id, guild_id) do
+    uid = to_string(user_id)
+    gid = to_string(guild_id)
+
+    with :ok <- ensure_guild_shape(gid),
+         :ok <- ensure_member_roles(uid, gid) do
+      :ok
+    end
+  end
+
+  defp ensure_guild_shape(gid) do
+    case get_guild(gid) do
+      {:ok, _} -> :ok
+      :error -> load_guild_shape(gid)
+    end
+  end
+
+  defp ensure_member_roles(uid, gid) do
+    case get_member_roles(uid, gid) do
+      {:ok, _} -> :ok
+      :error -> load_member_roles(uid, gid)
+    end
+  end
+
+  defp load_guild_shape(gid) do
+    with {gid_int, ""} <- Integer.parse(gid),
+         {:ok, guild} <- fetch_guild_row(gid_int),
+         {:ok, roles} <- fetch_guild_role_rows(gid_int),
+         {:ok, channels} <- fetch_guild_channel_rows(gid_int),
+         {:ok, overwrites} <- fetch_guild_overwrite_rows(gid_int) do
+      put_guild(%{
+        "id" => gid,
+        "name" => guild["name"],
+        "owner_id" => guild["owner_id"],
+        "channels" => channels
+      })
+
+      put_guild_roles(gid, roles)
+
+      Enum.each(overwrites, fn {cid, ows} -> put_channel_overwrites(cid, ows) end)
+      Gateway.Metrics.incr_cache_warm("guild_shape")
+      :ok
+    else
+      :error -> {:error, :bad_id}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp load_member_roles(uid, gid) do
+    with {gid_int, ""} <- Integer.parse(gid),
+         {uid_int, ""} <- Integer.parse(uid),
+         {:ok, %Postgrex.Result{rows: rows}} <-
+           Postgrex.query(
+             Gateway.DB,
+             "SELECT role_id FROM member_roles WHERE guild_id = $1 AND user_id = $2",
+             [gid_int, uid_int]
+           ) do
+      put_member_roles(uid, gid, Enum.map(rows, fn [rid] -> to_string(rid) end))
+      Gateway.Metrics.incr_cache_warm("member_roles")
+      :ok
+    else
+      :error ->
+        {:error, :bad_id}
+
+      {:error, reason} ->
+        Logger.error("Gateway.Guild.Cache: failed to warm member_roles for #{uid} in #{gid}: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  defp fetch_guild_row(gid_int) do
+    case Postgrex.query(Gateway.DB, "SELECT id, name, owner_id FROM guilds WHERE id = $1", [gid_int]) do
+      {:ok, %Postgrex.Result{rows: [[id, name, owner_id]]}} ->
+        {:ok, %{"id" => to_string(id), "name" => name, "owner_id" => to_string(owner_id)}}
+
+      {:ok, %Postgrex.Result{rows: []}} ->
+        {:error, :guild_not_found}
+
+      {:error, reason} ->
+        Logger.error("Gateway.Guild.Cache: failed to warm guild #{gid_int}: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  defp fetch_guild_role_rows(gid_int) do
+    query = "SELECT id, guild_id, name, position, permissions FROM roles WHERE guild_id = $1 ORDER BY position ASC"
+
+    case Postgrex.query(Gateway.DB, query, [gid_int]) do
+      {:ok, %Postgrex.Result{rows: rows}} ->
+        {:ok,
+         Enum.map(rows, fn [id, gid, name, pos, perms] ->
+           %{
+             "id" => to_string(id),
+             "guild_id" => to_string(gid),
+             "name" => name,
+             "position" => pos,
+             "permissions" => perms
+           }
+         end)}
+
+      {:error, reason} ->
+        Logger.error("Gateway.Guild.Cache: failed to warm roles for guild #{gid_int}: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  defp fetch_guild_channel_rows(gid_int) do
+    query = "SELECT id, guild_id, type, name, position FROM channels WHERE guild_id = $1 ORDER BY position ASC, id ASC"
+
+    case Postgrex.query(Gateway.DB, query, [gid_int]) do
+      {:ok, %Postgrex.Result{rows: rows}} ->
+        {:ok,
+         Enum.map(rows, fn [cid, gid, type, name, pos] ->
+           %{
+             "id" => to_string(cid),
+             "guild_id" => to_string(gid),
+             "type" => type,
+             "name" => name,
+             "position" => pos
+           }
+         end)}
+
+      {:error, reason} ->
+        Logger.error("Gateway.Guild.Cache: failed to warm channels for guild #{gid_int}: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  defp fetch_guild_overwrite_rows(gid_int) do
+    query = """
+    SELECT co.channel_id, co.target_id, co.target_type, co.allow, co.deny
+    FROM channel_overwrites co
+    INNER JOIN channels c ON c.id = co.channel_id
+    WHERE c.guild_id = $1
+    """
+
+    case Postgrex.query(Gateway.DB, query, [gid_int]) do
+      {:ok, %Postgrex.Result{rows: rows}} ->
+        grouped =
+          Enum.group_by(
+            rows,
+            fn [cid, _tid, _type, _allow, _deny] -> to_string(cid) end,
+            fn [cid, tid, type, allow, deny] ->
+              %{
+                "channel_id" => to_string(cid),
+                "target_id" => to_string(tid),
+                "target_type" => type,
+                "allow" => allow,
+                "deny" => deny
+              }
+            end
+          )
+
+        {:ok, grouped}
+
+      {:error, reason} ->
+        Logger.error("Gateway.Guild.Cache: failed to warm overwrites for guild #{gid_int}: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  @doc """
   Maps a session ID to its authenticated user ID in ETS cache.
   """
   def put_session_user(session_id, user_id) do

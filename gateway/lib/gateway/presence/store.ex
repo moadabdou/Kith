@@ -240,9 +240,12 @@ defmodule Gateway.Presence.Store do
     now = System.system_time(:millisecond)
     norm_status = to_status_atom(status)
 
-    # Manage process monitor if session_pid is supplied and alive
+    # Manage process monitor if session_pid is supplied and alive.
+    # NOTE (Phase 7c): sessions may live on another node; Process.alive?/1
+    # raises on remote pids, so remote sessions are monitored directly
+    # (a disconnected node yields an immediate DOWN, handled as disconnect).
     state =
-      if is_pid(session_pid) and Process.alive?(session_pid) do
+      if is_pid(session_pid) and session_reachable?(session_pid) do
         # Demonitor previous ref for this session if existing
         state = demonitor_session(state, uid, sid)
         ref = Process.monitor(session_pid)
@@ -513,8 +516,15 @@ defmodule Gateway.Presence.Store do
 
   defp extract_activities(_), do: []
 
-  defp demonitor_session(state, uid, sid) do
-    case Map.pop(state.session_monitors, {uid, sid}) do
+  defp session_reachable?(pid) do
+    if node(pid) == node() do
+      Process.alive?(pid)
+    else
+      node(pid) in Node.list()
+    end
+  end
+
+  defp demonitor_session(state, uid, sid) do    case Map.pop(state.session_monitors, {uid, sid}) do
       {nil, _} ->
         state
 

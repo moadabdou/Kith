@@ -12,8 +12,8 @@ defmodule Gateway.Presence.BroadcasterTest do
       DynamicSupervisor.terminate_child(Gateway.ConnSupervisor, pid)
     end
 
-    for {_, pid, _, _} <- DynamicSupervisor.which_children(Gateway.GuildSupervisor) do
-      DynamicSupervisor.terminate_child(Gateway.GuildSupervisor, pid)
+    for {_, pid, _, _} <- Horde.DynamicSupervisor.which_children(Gateway.GuildSupervisor) do
+      Horde.DynamicSupervisor.terminate_child(Gateway.GuildSupervisor, pid)
     end
 
     if :ets.whereis(:gateway_presence_store) != :undefined do

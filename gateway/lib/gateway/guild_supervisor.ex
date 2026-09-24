@@ -1,12 +1,21 @@
 defmodule Gateway.GuildSupervisor do
-  use DynamicSupervisor
+  # Phase 7c (Issue #86): distributed supervisor for guild actors.
+  # Horde places each actor on some cluster node and restarts it on a
+  # survivor when the holding node dies. Same name as before so existing
+  # call sites (get_or_spawn, tests) keep working; only the backend changed.
+  use Horde.DynamicSupervisor
 
-  def start_link(_opts) do
-    DynamicSupervisor.start_link(__MODULE__, :ok, name: __MODULE__)
+  def start_link(opts) do
+    # NOTE: name goes in the THIRD arg (opts). The outer supervisor then
+    # registers as "<name>.Supervisor" and the impl as <name> itself.
+    Horde.DynamicSupervisor.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
   @impl true
-  def init(:ok) do
-    DynamicSupervisor.init(strategy: :one_for_one)
+  def init(opts) do
+    opts
+    |> Keyword.put_new(:strategy, :one_for_one)
+    |> Keyword.put_new(:members, :auto)
+    |> Horde.DynamicSupervisor.init()
   end
 end

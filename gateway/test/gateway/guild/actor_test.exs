@@ -13,7 +13,7 @@ defmodule Gateway.Guild.ActorTest do
     Enum.each([@test_guild_id, @test_guild_id_2, @test_guild_id_3], fn gid ->
       case Actor.whereis(gid) do
         pid when is_pid(pid) ->
-          DynamicSupervisor.terminate_child(Gateway.GuildSupervisor, pid)
+          Horde.DynamicSupervisor.terminate_child(Gateway.GuildSupervisor, pid)
         nil ->
           :ok
       end
@@ -23,15 +23,15 @@ defmodule Gateway.Guild.ActorTest do
   end
 
   describe "Actor lifecycle and registry" do
-    test "get_or_spawn spawns actor under GuildSupervisor and registers in Gateway.Registry" do
+    test "get_or_spawn spawns actor under GuildSupervisor and registers in HordeRegistry" do
       assert Actor.whereis(@test_guild_id) == nil
 
       assert {:ok, pid1} = Actor.get_or_spawn(@test_guild_id)
       assert is_pid(pid1)
       assert Process.alive?(pid1)
 
-      # In Registry with unique key
-      assert [{^pid1, nil}] = Registry.lookup(Gateway.Registry, @test_guild_id)
+      # In Horde registry under unique key
+      assert [{^pid1, _}] = Horde.Registry.lookup(Gateway.HordeRegistry, @test_guild_id)
       assert Actor.whereis(@test_guild_id) == pid1
 
       # Second call returns the same PID

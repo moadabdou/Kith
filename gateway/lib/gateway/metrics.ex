@@ -128,6 +128,45 @@ defmodule Gateway.Metrics do
     end)
   end
 
+  # Phase 7c (Issue #86): clustering counters.
+  def incr_dedup_drop do
+    Agent.update(__MODULE__, fn state ->
+      %{state | dedup_drops: state.dedup_drops + 1}
+    end)
+  end
+
+  def incr_lease_drop do
+    Agent.update(__MODULE__, fn state ->
+      %{state | lease_drops: state.lease_drops + 1}
+    end)
+  end
+
+  def incr_lease_acquired do
+    Agent.update(__MODULE__, fn state ->
+      %{state | lease_acquired: state.lease_acquired + 1}
+    end)
+  end
+
+  def incr_lease_lost do
+    Agent.update(__MODULE__, fn state ->
+      %{state | lease_lost: state.lease_lost + 1}
+    end)
+  end
+
+  def incr_resubscribe do
+    Agent.update(__MODULE__, fn state ->
+      %{state | resubscribes: state.resubscribes + 1}
+    end)
+  end
+
+  # Phase 7c cache-warm fix: counts actual Postgres loads (not hits), by
+  # key type. The rate of these IS the cross-node miss rate.
+  def incr_cache_warm(kind) when is_binary(kind) do
+    Agent.update(__MODULE__, fn state ->
+      %{state | cache_warms: Map.update(state.cache_warms, kind, 1, &(&1 + 1))}
+    end)
+  end
+
   def get_slow_consumer_drops do
     Agent.get(__MODULE__, fn state -> state.slow_consumer_drops end)
   end
@@ -277,6 +316,24 @@ defmodule Gateway.Metrics do
           "# HELP gateway_slow_consumer_drops_total Total connections dropped due to excessive outbound queue backlog.",
           "# TYPE gateway_slow_consumer_drops_total counter",
           "gateway_slow_consumer_drops_total #{state.slow_consumer_drops}",
+          "# HELP gateway_guild_dedup_drops_total Mirror bus events dropped before dispatch: non-host copies (local-only dispatch) + stream-seq duplicates (split-brain/handover safety net).",
+          "# TYPE gateway_guild_dedup_drops_total counter",
+          "gateway_guild_dedup_drops_total #{state.dedup_drops}",
+          "# HELP gateway_guild_lease_drops_total Events dropped because this actor does not hold the guild lease (Phase 7c).",
+          "# TYPE gateway_guild_lease_drops_total counter",
+          "gateway_guild_lease_drops_total #{state.lease_drops}",
+          "# HELP gateway_guild_lease_acquisitions_total Guild lease acquisitions (Phase 7c).",
+          "# TYPE gateway_guild_lease_acquisitions_total counter",
+          "gateway_guild_lease_acquisitions_total #{state.lease_acquired}",
+          "# HELP gateway_guild_lease_losses_total Guild lease losses (renewal failed or taken elsewhere) (Phase 7c).",
+          "# TYPE gateway_guild_lease_losses_total counter",
+          "gateway_guild_lease_losses_total #{state.lease_lost}",
+          "# HELP gateway_session_resubscribes_total Sessions re-subscribed to a restarted guild actor (Phase 7c).",
+          "# TYPE gateway_session_resubscribes_total counter",
+          "gateway_session_resubscribes_total #{state.resubscribes}",
+          "# HELP gateway_cache_warms_total Postgres loads on cache miss by key type (Phase 7c warm-on-miss).",
+          "# TYPE gateway_cache_warms_total counter"] ++
+          cache_warm_lines(state.cache_warms) ++ [
           "# HELP gateway_identifies_total Total IDENTIFY payloads received.",
           "# TYPE gateway_identifies_total counter",
           "gateway_identifies_total #{state.identifies}",
@@ -369,6 +426,12 @@ defmodule Gateway.Metrics do
     |> Enum.map(fn {label, value} -> "#{name}#{label} #{value}" end)
   end
 
+  defp cache_warm_lines(warms) do
+    warms
+    |> Enum.sort()
+    |> Enum.map(fn {kind, count} -> "gateway_cache_warms_total{kind=\"#{kind}\"} #{count}" end)
+  end
+
   defp uptime(state) do
     us = System.convert_time_unit(System.monotonic_time() - state.booted_at, :native, :microsecond)
     Float.round(us / 1_000_000, 3)
@@ -385,6 +448,15 @@ defmodule Gateway.Metrics do
       sessions_active: 0,
       guild_actors_active: 0,
       slow_consumer_drops: 0,
+      dedup_drops: 0,
+      lease_drops: 0,
+      lease_acquired: 0,
+      lease_lost: 0,
+      resubscribes: 0,
+      # Pre-seeded so the series exists from boot (else the Grafana panel
+      # shows "no data" until the first cross-node miss — which is exactly
+      # the healthy steady state).
+      cache_warms: %{"guild_shape" => 0, "member_roles" => 0},
       identifies: 0,
       resumes: 0,
       typing_broadcasts: 0,

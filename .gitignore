@@ -21,3 +21,7 @@ erl_crash.dump
 /scripts/bench/results/
 /scripts/bench/bench_config.json
 *.pprof
+
+# WS army run outputs (Issue #88 Step 3): per-run JSONs, not evidence.
+# (phase7_d*.json stay tracked as drill evidence by precedent.)
+/scripts/chaos/results/ws_idle_*.json

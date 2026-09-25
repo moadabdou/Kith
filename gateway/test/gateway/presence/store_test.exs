@@ -13,6 +13,14 @@ defmodule Gateway.Presence.StoreTest do
     :ok
   end
 
+  # Casts don't synchronize: force the Store to drain its mailbox by
+  # round-tripping a synchronous call through it. Any assertion on state
+  # written by a cast must sync first.
+  defp sync_store(timeout \\ 2_000) do
+    :sys.get_state(Gateway.Presence.Store, timeout)
+    :ok
+  end
+
   test "ETS table is configured with read_concurrency and write_concurrency" do
     info = :ets.info(@table)
     assert info != :undefined
@@ -92,17 +100,22 @@ defmodule Gateway.Presence.StoreTest do
     assert p3.status == :dnd
 
     # 4. Drop dnd session -> aggregate falls back to online
+    # (drop_session is a fire-and-forget cast since the #88 teardown-flood
+    # fix: sync on the GenServer mailbox before asserting state).
     Store.drop_session(user_id, "s_web")
+    sync_store()
     {:ok, p4} = Store.get_presence(user_id)
     assert p4.status == :online
 
     # 5. Drop online session -> aggregate falls back to idle
     Store.drop_session(user_id, "s_desktop")
+    sync_store()
     {:ok, p5} = Store.get_presence(user_id)
     assert p5.status == :idle
 
     # 6. Drop final idle session -> transitions to offline
     Store.drop_session(user_id, "s_mobile")
+    sync_store()
     {:ok, p6} = Store.get_presence(user_id)
     assert p6.status == :offline
     assert p6.sessions == %{}
@@ -201,14 +214,16 @@ defmodule Gateway.Presence.StoreTest do
       assert map_size(p2.sessions) == 2
 
       # 3. First session disconnects -> user remains online!
-      assert :ok = Store.session_disconnected(user_id, s1)
+      Store.session_disconnected(user_id, s1)
+      sync_store()
       {:ok, p3} = Store.get_presence(user_id)
       assert p3.status == :online
       assert map_size(p3.sessions) == 1
       assert Map.has_key?(p3.sessions, s2)
 
       # 4. Final session disconnects -> user transitions to offline
-      assert :ok = Store.session_disconnected(user_id, s2)
+      Store.session_disconnected(user_id, s2)
+      sync_store()
       {:ok, p4} = Store.get_presence(user_id)
       assert p4.status == :offline
       assert map_size(p4.sessions) == 0
@@ -352,9 +367,37 @@ defmodule Gateway.Presence.StoreTest do
 
       # Drop online session -> aggregate becomes offline, but s1 remains tracked
       Store.drop_session(user_id, s2)
+      sync_store()
       {:ok, p2} = Store.get_presence(user_id)
       assert p2.status == :offline
       assert Map.has_key?(p2.sessions, s1)
+    end
+
+    test "mass teardown backlog never crashes callers (Issue #88 flood)" do
+      user_id = "user_flood_1"
+
+      # 200 live sessions on one user (each monitored, like real sockets).
+      for i <- 1..200 do
+        sid = "flood_sess_#{i}"
+        Store.put_presence(user_id, :online, %{}, sid, self())
+      end
+
+      {:ok, before} = Store.get_presence(user_id)
+      assert map_size(before.sessions) == 200
+
+      # Tear them all down at once — the exact shape of a mass disconnect.
+      # drop_session is a cast: every call returns immediately, nothing can
+      # time out no matter how deep the mailbox gets.
+      for i <- 1..200 do
+        Store.drop_session(user_id, "flood_sess_#{i}")
+      end
+
+      # Callers survived (we got here with no exits); state converges after
+      # the mailbox drains.
+      sync_store(5_000)
+      {:ok, finished} = Store.get_presence(user_id)
+      assert finished.status == :offline
+      assert finished.sessions == %{}
     end
 
     test "manual idle declaration is not reverted to online by heartbeat touch" do
@@ -427,8 +470,10 @@ defmodule Gateway.Presence.StoreTest do
       refute_receive {:send_frame, _, _, _}, 100
 
       # 5. session_disconnected -> broadcasts :offline
+      # (cast since the #88 fix: the broadcast arrives after the mailbox
+      # drains, still well within the window).
       Store.session_disconnected(user_id, session_id)
-      assert_receive {:send_frame, e_off, 5, _}, 1000
+      assert_receive {:send_frame, e_off, 5, _}, 2000
       assert e_off["payload"]["status"] == "offline"
 
       Gateway.Session.close(listener_id)

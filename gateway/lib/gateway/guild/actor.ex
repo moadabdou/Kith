@@ -99,6 +99,10 @@ defmodule Gateway.Guild.Actor do
 
   @doc """
   Unsubscribes a session from the guild actor.
+
+  Synchronous: the caller needs to know the unsubscribe landed (explicit
+  user leave, tests). For the session-termination path, which must never
+  block or crash under mass-disconnect backlogs, use `unsubscribe_async/2`.
   """
   def unsubscribe(guild_id, session_id) do
     case whereis(guild_id) do
@@ -108,6 +112,26 @@ defmodule Gateway.Guild.Actor do
       nil ->
         :ok
     end
+  end
+
+  @doc """
+  Fire-and-forget unsubscribe for the session-termination path (Issue #88
+  teardown flood): thousands of simultaneous session deaths queue on this
+  single actor; a synchronous call would time out the terminating sessions
+  and crash them. The actor's `:DOWN` monitor path converges to the same
+  cleanup, so a dropped cast under extreme load degrades to a briefly
+  stale subscriber entry, never a crashed teardown.
+  """
+  def unsubscribe_async(guild_id, session_id) do
+    case whereis(guild_id) do
+      pid when is_pid(pid) ->
+        GenServer.cast(pid, {:unsubscribe, session_id})
+
+      nil ->
+        :ok
+    end
+  catch
+    :exit, _ -> :ok
   end
 
   @doc """
@@ -342,36 +366,12 @@ defmodule Gateway.Guild.Actor do
     {:reply, :ok, state}
   end
 
+  # Sync explicit-leave path (Issue #88 flood keeps this call: the caller
+  # needs to know the unsubscribe landed). Terminate path uses the
+  # handle_cast grouped with the other casts below — same shared
+  # implementation (do_unsubscribe/2, in Internal Helpers).
   def handle_call({:unsubscribe, session_id}, _from, state) do
-    # Demonitor existing ref for this session
-    subscriber_refs =
-      case Enum.find(state.subscriber_refs, fn {_ref, sid} -> sid == session_id end) do
-        {ref, _} ->
-          Process.demonitor(ref, [:flush])
-          Map.delete(state.subscriber_refs, ref)
-
-        nil ->
-          state.subscriber_refs
-      end
-
-    subscribers = Map.delete(state.subscribers, session_id)
-    state = cleanup_voice_state_for_session(session_id, %{state | subscribers: subscribers, subscriber_refs: subscriber_refs})
-
-    # Phase 7d Step 5c: a gone session's stashed intent dies with it —
-    # never apply placement for a socket that no longer exists.
-    pending_voice_intents =
-      Map.reject(state.pending_voice_intents, fn {_uid, {sid, _}} -> sid == session_id end)
-
-    state = %{state | pending_voice_intents: pending_voice_intents}
-
-    ttl_timer =
-      if map_size(subscribers) == 0 do
-        Process.send_after(self(), :ttl_check, state.ttl_ms)
-      else
-        nil
-      end
-
-    {:reply, :ok, %{state | ttl_timer: ttl_timer}}
+    {:reply, :ok, do_unsubscribe(session_id, state)}
   end
 
   def handle_call(:subscribers, _from, state) do
@@ -539,6 +539,14 @@ defmodule Gateway.Guild.Actor do
       end
 
     {:noreply, apply_voice_intent(state, session_id, uid, intent)}
+  end
+
+  # Issue #88 teardown flood: async terminate path. Lives with the other
+  # casts (grouping) and delegates to the shared implementation so cleanup
+  # semantics cannot drift from the sync explicit-leave path.
+  @impl true
+  def handle_cast({:unsubscribe, session_id}, state) do
+    {:noreply, do_unsubscribe(session_id, state)}
   end
 
   # Exact {seq, type} match against the last routed event. Stream sequences
@@ -1220,6 +1228,41 @@ defmodule Gateway.Guild.Actor do
   end
 
   # ── Internal Helpers ────────────────────────────────────────────────────────
+
+  # Shared unsubscribe implementation (sync call + async cast delegate here
+  # so cleanup semantics cannot drift between the explicit-leave and
+  # terminate paths).
+  defp do_unsubscribe(session_id, state) do
+    # Demonitor existing ref for this session
+    subscriber_refs =
+      case Enum.find(state.subscriber_refs, fn {_ref, sid} -> sid == session_id end) do
+        {ref, _} ->
+          Process.demonitor(ref, [:flush])
+          Map.delete(state.subscriber_refs, ref)
+
+        nil ->
+          state.subscriber_refs
+      end
+
+    subscribers = Map.delete(state.subscribers, session_id)
+    state = cleanup_voice_state_for_session(session_id, %{state | subscribers: subscribers, subscriber_refs: subscriber_refs})
+
+    # Phase 7d Step 5c: a gone session's stashed intent dies with it —
+    # never apply placement for a socket that no longer exists.
+    pending_voice_intents =
+      Map.reject(state.pending_voice_intents, fn {_uid, {sid, _}} -> sid == session_id end)
+
+    state = %{state | pending_voice_intents: pending_voice_intents}
+
+    ttl_timer =
+      if map_size(subscribers) == 0 do
+        Process.send_after(self(), :ttl_check, state.ttl_ms)
+      else
+        nil
+      end
+
+    %{state | ttl_timer: ttl_timer}
+  end
 
   # Phase 7d Step 5c (Tier 1): guarded voice-intent apply. Rules:
   #

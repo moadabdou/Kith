@@ -58,9 +58,10 @@ defmodule Gateway.Presence.SessionPresenceTest do
       assert map_size(presence2.sessions) == 2
 
       # 3. Terminate first session (Session.close invokes terminate/2 -> session_disconnected)
+      # (cast since the #88 fix: sleep covers the mailbox drain).
       Session.close(@session_1)
       # Wait briefly for GenServer teardown
-      :timer.sleep(50)
+      :timer.sleep(100)
 
       {:ok, presence3} = Store.get_presence(@user_id)
       # User must still be online because session 2 is active!
@@ -71,7 +72,7 @@ defmodule Gateway.Presence.SessionPresenceTest do
 
       # 4. Terminate second session -> transitions user to offline
       Session.close(@session_2)
-      :timer.sleep(50)
+      :timer.sleep(100)
 
       {:ok, presence4} = Store.get_presence(@user_id)
       assert presence4.status == :offline

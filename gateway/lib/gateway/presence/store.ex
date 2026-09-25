@@ -161,17 +161,26 @@ defmodule Gateway.Presence.Store do
   @doc """
   Explicitly removes a session from a user's active session map.
   If no sessions remain, user status transitions to `:offline`.
+
+  Fire-and-forget cast (Issue #88 teardown flood): mass disconnects queue
+  thousands of drops on this single process; a synchronous call would time
+  out the callers and crash the teardown path itself. Cleanup is idempotent
+  (the :DOWN monitor path converges to the same state), so a dropped cast
+  under extreme load degrades to a briefly stale presence entry, never a
+  crashed session.
   """
   def drop_session(user_id, session_id) do
     case GenServer.whereis(__MODULE__) do
       pid when is_pid(pid) ->
         uid = to_string(user_id)
         sid = to_string(session_id)
-        GenServer.call(__MODULE__, {:drop_session, uid, sid})
+        GenServer.cast(__MODULE__, {:drop_session, uid, sid})
 
       nil ->
         :ok
     end
+  catch
+    :exit, _ -> :ok
   end
 
   @doc """
@@ -391,10 +400,10 @@ defmodule Gateway.Presence.Store do
   end
 
   @impl true
-  def handle_call({:drop_session, uid, sid}, _from, state) do
+  def handle_cast({:drop_session, uid, sid}, state) do
     state = demonitor_session(state, uid, sid)
     do_drop_session(uid, sid)
-    {:reply, :ok, state}
+    {:noreply, state}
   end
 
   @impl true

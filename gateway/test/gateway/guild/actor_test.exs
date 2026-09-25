@@ -457,4 +457,53 @@ defmodule Gateway.Guild.ActorTest do
         reraise e, __STACKTRACE__
       end
   end
+
+  describe "Issue #88 teardown flood: async unsubscribe" do
+    test "unsubscribe_async converges without blocking under backlog" do
+      gid = @test_guild_id
+      {:ok, actor_pid} = Actor.get_or_spawn(gid)
+
+      # 300 subscribers (spawned holders so monitors are real).
+      holders =
+        for i <- 1..300 do
+          sid = "flood_async_#{i}"
+          holder = spawn(fn -> receive do: (:stop -> :ok) end)
+          :ok = Actor.subscribe(gid, sid, holder)
+          {sid, holder}
+        end
+
+      assert Actor.subscriber_count(gid) == 300
+
+      # Tear them all down via the async path (what terminate/2 uses).
+      # Every call must return immediately — no timeouts possible.
+      for {sid, _} <- holders do
+        :ok = Actor.unsubscribe_async(gid, sid)
+      end
+
+      # Convergence: actor drains the cast backlog on its own time.
+      eventually(
+        fn ->
+          assert Actor.subscriber_count(gid) == 0
+          assert Actor.subscribers(gid) == []
+        end,
+        200,
+        25
+      )
+
+      for {_, holder} <- holders do
+        Process.exit(holder, :kill)
+      end
+
+      _ = actor_pid
+      :ok
+    end
+
+    test "sync unsubscribe still replies :ok (explicit-leave path)" do
+      gid = @test_guild_id
+      {:ok, _} = Actor.get_or_spawn(gid)
+      assert :ok == Actor.subscribe(gid, "sync_leave_sess", self())
+      assert :ok == Actor.unsubscribe(gid, "sync_leave_sess")
+      assert Actor.subscriber_count(gid) == 0
+    end
+  end
 end

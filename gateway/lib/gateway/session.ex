@@ -520,8 +520,11 @@ defmodule Gateway.Session do
     Gateway.Metrics.decr_session()
     cancel_timer(state.ttl_timer)
 
+    # Fire-and-forget (Issue #88 teardown flood): terminate must never
+    # block on a backlogged guild actor — the :DOWN monitor path converges
+    # to the same cleanup.
     Enum.each(state.guild_ids, fn gid ->
-      Gateway.Guild.Actor.unsubscribe(gid, state.session_id)
+      Gateway.Guild.Actor.unsubscribe_async(gid, state.session_id)
     end)
 
     if state.user_id do

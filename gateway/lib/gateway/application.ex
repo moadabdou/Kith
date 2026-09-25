@@ -121,7 +121,11 @@ defmodule Gateway.Application do
       name: Gateway.DB,
       hostname: uri.host || "127.0.0.1",
       port: uri.port || 5432,
-      database: database
+      database: database,
+      # Issue #88 birth bottleneck: default pool_size is 10; 6 sequential
+      # warm queries per IDENTIFY need headroom under birth bursts.
+      # Overridable via PG_POOL_SIZE (tests default it lower if needed).
+      pool_size: pg_pool_size()
     ]
 
     opts = if username, do: Keyword.put(opts, :username, username), else: opts
@@ -131,5 +135,15 @@ defmodule Gateway.Application do
 
   defp port do
     System.get_env("PORT", "4000") |> String.to_integer()
+  end
+
+  defp pg_pool_size do
+    case System.get_env("PG_POOL_SIZE") do
+      nil -> 50
+      raw -> case Integer.parse(raw) do
+        {n, ""} when n > 0 -> n
+        _ -> 50
+      end
+    end
   end
 end

@@ -20,12 +20,68 @@ defmodule Gateway.Guild.Cache do
   end
 
   @doc """
-  Queries Postgres for the user, member's guilds, and channels,
-  warms the local ETS cache, and returns `{:ok, user_map, guilds_list}`.
+  Returns `{:ok, user_map, guilds_list}`, warming the local ETS cache from
+  Postgres on miss.
+
+  ETS-first (Issue #88 birth bottleneck): repeat IDENTIFYs for an already
+  warmed user rebuild the return from cached rows with zero PG queries.
+  Previously every call ran 6 sequential queries even seconds after the
+  last warm — at 200 births/s that is 1200 q/s against a 10-conn pool.
+  Staleness is bounded by the bus: mutations arrive as events and update
+  these same rows (plan/01 §7).
   """
   def warm_member(user_id) when is_integer(user_id) or is_binary(user_id) do
     uid = if is_binary(user_id), do: String.to_integer(user_id), else: user_id
 
+    case cached_member_view(uid) do
+      {:ok, _user, _guilds} = hit ->
+        Gateway.Metrics.incr_cache_warm("identify_hit")
+        hit
+
+      :miss ->
+        Gateway.Metrics.incr_cache_warm("identify_miss")
+        warm_member_from_db(uid)
+    end
+  end
+
+  # Rebuilds the warm_member return shape purely from ETS rows written by a
+  # previous warm: user row + per-guild rows (which embed channels) +
+  # nicknames. Missing any piece (or zero guilds — a user always has at
+  # least one row when warmed) falls through to :miss.
+  defp cached_member_view(uid) do
+    with {:ok, user} <- get_user(uid),
+         {:ok, guild_ids} <- lookup_member_guilds(uid),
+         true <- guild_ids != [],
+         {:ok, guilds} <- cached_guild_views(uid, guild_ids) do
+      {:ok, user, guilds}
+    else
+      _ -> :miss
+    end
+  end
+
+  defp cached_guild_views(uid, guild_ids) do
+    Enum.reduce_while(guild_ids, {:ok, []}, fn gid, {:ok, acc} ->
+      gid_str = to_string(gid)
+
+      with {:ok, guild} <- get_guild(gid_str) do
+        nick =
+          case get_member_nick(uid, gid_str) do
+            {:ok, n} -> n
+            :error -> nil
+          end
+
+        {:cont, {:ok, [Map.put(guild, "nickname", nick) | acc]}}
+      else
+        _ -> {:halt, :miss}
+      end
+    end)
+    |> case do
+      {:ok, guilds} -> {:ok, Enum.reverse(guilds)}
+      :miss -> :miss
+    end
+  end
+
+  defp warm_member_from_db(uid) do
     case fetch_from_db(uid) do
       {:ok, user, guilds, roles, member_roles, overwrites} ->
         # Cache in ETS

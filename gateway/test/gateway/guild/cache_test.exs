@@ -60,6 +60,58 @@ defmodule Gateway.Guild.CacheTest do
     end
   end
 
+  describe "warm_member ETS-first (Issue #88 birth bottleneck)" do
+    test "repeat warm for a cached user hits ETS with zero PG queries" do
+      uid = 88000000000000101
+
+      # Seed exactly what a DB warm writes: user row, member_guilds rows,
+      # guild row (embedding channels), nickname row.
+      :ets.insert(:gateway_guild_cache, {{:user, to_string(uid)}, %{
+        "id" => to_string(uid), "username" => "w", "discriminator" => "0001"
+      }})
+      :ets.insert(:gateway_guild_cache, {{:member_guilds, uid}, [@guild_id]})
+      :ets.insert(:gateway_guild_cache, {{:member_guilds, to_string(uid)}, [@guild_id]})
+      :ets.insert(:gateway_guild_cache, {{:member_nick, to_string(uid), @guild_id}, nil})
+
+      assert {:ok, user, guilds} = Cache.warm_member(uid)
+      assert user["id"] == to_string(uid)
+      assert Enum.map(guilds, & &1["id"]) == [@guild_id]
+      assert hd(guilds)["channels"] != []
+
+      # Second call: same result, and the hit counter (not miss) moves —
+      # zero PG on the repeat.
+      before = read_identify_counters()
+      assert {:ok, ^user, ^guilds} = Cache.warm_member(to_string(uid))
+      after_counters = read_identify_counters()
+      assert after_counters.hit == before.hit + 1
+      assert after_counters.miss == before.miss
+    end
+
+    test "uncached user falls through to PG miss path" do
+      # No ETS rows for this uid anywhere: must attempt DB (fails here —
+      # no such user — but the miss counter moves, proving the branch).
+      before = read_identify_counters()
+      assert {:error, _} = Cache.warm_member(88000000000000999)
+      after_counters = read_identify_counters()
+      assert after_counters.miss == before.miss + 1
+      assert after_counters.hit == before.hit
+    end
+  end
+
+  defp read_identify_counters do
+    out = Gateway.Metrics.render()
+    hit = parse_counter(out, "identify_hit")
+    miss = parse_counter(out, "identify_miss")
+    %{hit: hit, miss: miss}
+  end
+
+  defp parse_counter(out, kind) do
+    case Regex.run(~r/gateway_cache_warms_total\{kind="#{kind}"\} (\d+)/, out) do
+      [_, n] -> String.to_integer(n)
+      _ -> 0
+    end
+  end
+
   describe "handle_event/1 real-time cache mutations" do
     test "GUILD_ROLE_CREATE and GUILD_ROLE_UPDATE upsert role in cache" do
       create_event = %{

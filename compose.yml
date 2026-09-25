@@ -207,6 +207,13 @@ services:
         HTTP_PROXY: ${HTTP_PROXY:-}
         HTTPS_PROXY: ${HTTPS_PROXY:-}
         NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
+    # Issue #88 Step 3: BEAM needs FD headroom per connection (socket +
+    # session + monitors). Docker default here is 2048, which emfile-crashed
+    # Bandit acceptors at ~2k conns/node. 65536 covers the 50k army with margin.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     environment:
       PORT: ${GATEWAY_PORT:-4000}
       CHAOS_ENABLED: ${CHAOS_ENABLED:-true}
@@ -254,6 +261,11 @@ services:
         HTTP_PROXY: ${HTTP_PROXY:-}
         HTTPS_PROXY: ${HTTPS_PROXY:-}
         NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
+    # Same FD headroom as gateway (see above): emfile wall at ~2k conns/node.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     environment:
       PORT: 4000
       CHAOS_ENABLED: ${CHAOS_ENABLED:-true}

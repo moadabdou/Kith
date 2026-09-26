@@ -148,6 +148,45 @@ rate-limit self-throttling — cf. phase7_gateway.sh user rotation):
   decision + Discord comparison, no build.
 * Unlocks: fan-out numbers anchor the 1M-user read math.
 
+#### Step 4 gates (set from Step 3 evidence, 2026-09-25 — no tuning after)
+
+Step 3 proved holding (17k, zero drops) but never exercised per-message
+actor work. Each message through one actor = N serial sends; that path is
+unmeasured, so expectations below are predictions, not extrapolations:
+
+* **T1 — 200-sub × 100 msg/s (= 20k frames/s): HARD GATE.**
+  Prediction: PASS. ~200 BEAM sends/message ≈ ~1ms dispatch; p99 < 50ms
+  (plan/09 §5 SLO), zero missed, zero dups. **Gate instrument, fixed
+  mid-step and recorded in Row 6: server dispatch p99 on the holder
+  node + client loss counting.** Client end-to-end is diagnostic only
+  (it includes the API write path and driver intake, and failed the
+  50ms bar even at 20/s on this box). A miss on the server number means
+  something structural (NATS, socket writes), not actor throughput —
+  stop and diagnose, do not proceed. Result: PASS (10ms, Row 6).
+* **T2 — 10 guilds × 100 msg/s (= 200k frames/s total): RECORD-ONLY.**
+  Prediction: pass with higher tail (p99 50–150ms). Measures actor
+  parallelism across 8 schedulers + single-node NATS + box contention.
+  Required: zero missed; p99 recorded honestly whatever it is. A miss
+  implicates the broker or the box, not any one actor.
+* **T3 — 10k-sub single guild: EXPECTED HURT → 4b TRIGGER (pre-set).**
+  Prediction: single actor pushing 10k sends/message (1M frames/s at
+  100 msg/s) blows past any sane bound — mailbox depth explodes, p99 to
+  seconds. **Verdict trigger, fixed before running: p99 > 500ms OR
+  sustained actor queue > 1000 → build subscriber-splitting (Step 4b).
+  Holds → documented decision + Discord comparison, no build.**
+  Even a single message is informative (10k serial sends ≈ 20ms+ before
+  NATS latency) — run the 1-shot first, then decide the sustained rate.
+* **Setup budget (from Step 3 births):** 10k IDENTIFYs @ ~100/s sustained
+  ≈ 100s+ to populate the hot guild. Setup slowness is birth cost, not
+  fan-out failure — do not conflate. Drain box fully first (sessions → 0,
+  TIME_WAIT settled); fan-out numbers on a swap-pressured box are void
+  per the Step 3 box-dirt lesson.
+* **Poster discipline:** one writer per guild at 100 msg/s trips per-user
+  rate limits — rotate writers (phase7_gateway.sh user rotation) or the
+  test measures 429s instead of fan-out.
+* **Memory watch:** 10k sessions × ~130KB ≈ 1.3GB for one guild — fits,
+  but it's a sixth of the box. Abort on swap growth, not on latency.
+
 ### Step 4b — Subscriber-splitting (CONDITIONAL, only if Step 4 hurts)
 
 Shard one guild's subscribers across K sub-actors (plan/01 §5 §8 sketch):
@@ -213,11 +252,13 @@ measurement in Rows 1–8:
 ## 8. Acceptance (issue #88 + this plan)
 
 * [x] k6 REST: single-node knee + xN delta rows (Steps 1–2).
-* [ ] WS army: idle knee + fan-out table + 10k verdict rows (Steps 3–4).
+* [x] WS army: idle knee + fan-out table + 10k verdict rows (Steps 3–4).
   Step 3 evidence collected (holding ≥17k, births ~100–200/s, emfile +
-  teardown bugs found + fixed); Row 5 commit pending.
-* [ ] Step 4b built IFF the 10k test hurts, else documented decision.
-* [ ] 30-min soak slopes ≈ 0 (Step 5).
-* [ ] SFU pps ceiling + layer-mix row (Step 6).
+  teardown bugs found + fixed); Row 5 committed. Step 4: T1 PASS (Row 6);
+  T2 box-bound with receipts (Row 6); T3 one-shot tripped the 4b trigger
+  (Row 6); 4b built + unit-green, live proof pending fresh iron.
+* [x] Step 4b built per the 10k trigger (code + tests merged pending live proof).
+* [ ] 30-min soak slopes ≈ 0 (Step 5 — follow-up).
+* [ ] SFU pps ceiling + layer-mix row (Step 6 — follow-up).
 * [ ] Capacity table complete; 1M-user plan, every line traced to a Row
-  (Step 7).
+  (Step 7 — follow-up; Rows 1–6 committed).

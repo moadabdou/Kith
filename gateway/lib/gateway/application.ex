@@ -123,8 +123,12 @@ defmodule Gateway.Application do
       port: uri.port || 5432,
       database: database,
       # Issue #88 birth bottleneck: default pool_size is 10; 6 sequential
-      # warm queries per IDENTIFY need headroom under birth bursts.
-      # Overridable via PG_POOL_SIZE (tests default it lower if needed).
+      # warm queries per IDENTIFY need headroom under birth bursts. Kept
+      # at 25 (not 50): 2 gateways + 2 APIs (25 each) must share the
+      # server's max_connections=200 with room for admin/psql/migrations.
+      # The ETS-first warm (cache.ex) already cut ~99% of birth queries,
+      # so pool depth matters far less than before. Overridable via
+      # PG_POOL_SIZE.
       pool_size: pg_pool_size()
     ]
 
@@ -139,10 +143,10 @@ defmodule Gateway.Application do
 
   defp pg_pool_size do
     case System.get_env("PG_POOL_SIZE") do
-      nil -> 50
+      nil -> 25
       raw -> case Integer.parse(raw) do
         {n, ""} when n > 0 -> n
-        _ -> 50
+        _ -> 25
       end
     end
   end

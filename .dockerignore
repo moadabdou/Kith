@@ -1,0 +1,5 @@
+# Keep gateway build contexts lean: only what its Dockerfile copies.
+*
+!gateway/
+!testvectors/
+!gateway/vendor/

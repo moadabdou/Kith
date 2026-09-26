@@ -254,9 +254,10 @@ defmodule Gateway.Bus.Consumer do
           # Immediately synchronize permissions & entities in local ETS cache
           Gateway.Guild.Cache.handle_event(event)
 
-          # Route by guild_id -> dispatch to Guild Actor
+          # Route by guild_id -> dispatch to Guild Actor.
+          # Step 4b: MESSAGE-family events on split guilds fan out to lanes.
           if guild_id != "" do
-            Gateway.Guild.Actor.dispatch_event(guild_id, event, bus_received_at)
+            Gateway.Guild.Actor.route_fanout(guild_id, event, bus_received_at)
           end
 
           actor_pid =

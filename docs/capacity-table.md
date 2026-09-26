@@ -143,7 +143,59 @@ honestly with the suspected blocker.
   failures are birth-side timeouts under swap pressure while held stays
   perfect. Bigger iron (or fewer co-located tiers) needed past this.
 
-## Rows to come (#88)
+## Row 6 — WS fan-out: T1 pass, T2/T3 stall map, 4b split (Issue #88 Step 4, 2026-09-25/26)
 
-- Single-node knees per tier (gateway FD/memory, SFU pps) before trusting xN.
-- 1M-user paper plan, each line checked against one measurement here.
+- Topology: 2× gateway (pool: router + 8 workers/node; ETS metrics),
+  api-1 write path (indexer off for isolation), single box 8c/7.7GB.
+  Gate redefined mid-step and recorded here: **server dispatch p99
+  (holder node) + client loss counting**. Client end-to-end kept as
+  diagnostic only (it includes the API write path and driver intake).
+- **T1 — 200 subs × 100 msg/s × 60s: PASS.** Posted 5998-5999, 0×429/err.
+  Delivery 1,199,600/1,199,600 = 100%, 0 missed/dups/closed. Server
+  dispatch p99 10ms (holder buckets; Prometheus 25–32ms) vs 50ms SLO —
+  5x headroom. One actor pushes 20k frames/s in SLO. Prediction confirmed.
+- **T2 — 10 guilds × 100 msg/s: MISSED (box-bound, mapped).** Offered
+  1000 writes/s; single API accepted ~770/s with 2s median POST tails;
+  35k events sat unread (consumer lag), redelivery storms followed, box
+  load 55–59. Delivery ~15% in-window, zero corruption anywhere.
+  Pre-registered call holds: implicates box/broker, not any one actor.
+  Write path cleared by isolation (997/s at 14ms with no subscribers).
+- **T2-lite (10 × 30/s) and full-scale repeats: same fixed-rate signature**
+  at 3x different offered rates → serial funnel, not capacity. Probe
+  caught it: NatsConsumer mailbox 3–5k deep, Metrics agent 1.6k deep,
+  actors/sessions shallow. Fixed: ETS lock-free metrics (agent gone from
+  queues), router + guild-partitioned workers, sampled logging.
+  Consumer backlog fell 10x, box load 60 → 28.
+- **T3 one-shot — 4 msgs into 10,000 subs: 100% delivery (40,000/40,000),
+  server tail >1s, e2e ~1–2.4s.** Pre-set 4b trigger (p99 > 500ms)
+  TRIPPED → subscriber-splitting built (Step 4b): threshold-gated lanes
+  (32 lanes past 1000 subs), control keeps voice/presence/typing,
+  same lease+dedup per lane, per-session seq untouched (ordering
+  impact: timing only). Unit-green (7 split tests), full suite 222
+  green (testvectors packaging gap fixed: gateway builds from repo root
+  so the shared golden file ships in the test stage). Live 10k
+  re-run pending fresh iron.
+- **Instruments hardened along the way:** server-p99 gate (holder-node
+  buckets; mirror samples carry a VM-clock offset), collect-late
+  driver (no per-frame parse; accounting identical), poster
+  Little's-law cap (50 in-flight), write/dispatch/observer clocks split.
+- **Why 500-concurrent births fail (measured 2026-09-26).** Sustained
+  ceiling is ~100–200 births/s (Step 3); 10k births were thrown at
+  400–500 concurrent. Per-subscribe service is 113–246µs with an empty
+  mailbox (measured, not the 50ms first guessed) — the freeze is
+  congestion collapse, not slow service: every birth fans into 22
+  synchronous calls (11 subscribes + 11 voice checks), bursts pile them
+  thousands deep, 15s timeouts convert waiting work into waste, and
+  resubscribe timers + NATS redeliveries reschedule the waste back into
+  the same queues. Pushing 5x over yields near-zero, not full speed.
+  Fix direction: pace under the ceiling (procedural, free), per-user
+  channel cache (needs TOCTOU care), parallelize the pure permission
+  math with one writer (same split pattern as 4b lanes).
+- **Open, named:** single-actor dispatch tail (only ~15% ≤50ms at
+  100/s on this box; prime suspect: per-subscriber permission walk,
+  never profiled); multi-guild rate ceiling; soak; SFU pps; 1M plan.
+
+## Rows to come (#88 follow-ups)
+
+- Fresh-iron re-runs (200-sub regression, 10k lanes, multi-guild).
+- 30-min soak slopes, SFU pps ceiling + layer mix, 1M-user paper plan.

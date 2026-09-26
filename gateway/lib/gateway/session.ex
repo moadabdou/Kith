@@ -178,10 +178,13 @@ defmodule Gateway.Session do
       end)
     end
 
-    # Subscribe self to all member guilds
-    Enum.each(guild_ids, fn gid ->
-      Gateway.Guild.Actor.subscribe(gid, session_id, self(), user_id)
-    end)
+    # Subscribe self to all member guilds (+ their message lane when split;
+    # Step 4b join-then-flag: lane join confirmed before control skips).
+    lane_monitors =
+      Enum.reduce(guild_ids, %{}, fn gid, acc ->
+        Gateway.Guild.Actor.subscribe(gid, session_id, self(), user_id)
+        join_and_monitor_lane(to_string(gid), session_id, user_id, acc)
+      end)
 
     # Register presence in Gateway.Presence.Store if user_id is provided (plan/05 §1 & #31)
     if user_id do
@@ -215,6 +218,9 @@ defmodule Gateway.Session do
       ttl_timer: ttl_timer,
       # Phase 7c: %{guild_id => {actor_pid, monitor_ref}} for re-subscribe.
       actor_monitors: monitor_actors(guild_ids, %{}),
+      # Step 4b: %{guild_id => {lane_key, lane_pid, monitor_ref}} for the
+      # message lane (empty while the guild is single).
+      lane_monitors: lane_monitors,
       # Phase 7d Step 5b (Tier 1): %{guild_id => %{channel_id | nil,
       # self_mute, self_deaf}} — acknowledged voice intent mirrored from
       # Op 4s, pushed to the guild actor on resubscribe after its restart.
@@ -475,7 +481,16 @@ defmodule Gateway.Session do
         {:noreply, %{state | actor_monitors: Map.delete(state.actor_monitors, gid)}}
 
       nil ->
-        {:noreply, state}
+        # Step 4b: a message lane died; same backoff, lane-only path.
+        case Enum.find(state.lane_monitors, fn {_gid, {_k, _p, r}} -> r == ref end) do
+          {gid, {key, _p, _r}} ->
+            Logger.info("Gateway.Session [#{state.session_id}]: message lane for #{gid} down; scheduling lane re-subscribe")
+            Process.send_after(self(), {:resubscribe_lane, gid, key, 0}, 500)
+            {:noreply, %{state | lane_monitors: Map.delete(state.lane_monitors, gid)}}
+
+          nil ->
+            {:noreply, state}
+        end
     end
   end
 
@@ -491,7 +506,12 @@ defmodule Gateway.Session do
       :ok ->
         Gateway.Metrics.incr_resubscribe()
         Logger.info("Gateway.Session [#{state.session_id}]: re-subscribed to guild #{gid}")
-        {:noreply, %{state | actor_monitors: monitor_actors([gid], state.actor_monitors)}}
+        # Step 4b: re-join the lane too (idempotent). Covers a restarted
+        # control whose migrated set was lost: the lane join re-flags it.
+        lane_monitors = join_and_monitor_lane(to_string(gid), state.session_id, state.user_id, state.lane_monitors)
+
+        {:noreply,
+         %{state | actor_monitors: monitor_actors([gid], state.actor_monitors), lane_monitors: lane_monitors}}
 
       {:error, reason} ->
         case Enum.at(@resubscribe_delays, attempt) do
@@ -504,6 +524,40 @@ defmodule Gateway.Session do
             {:noreply, state}
         end
     end
+  end
+
+  # Step 4b: lane-only re-subscribe with the same backoff. get_or_spawn
+  # inside subscribe revives a dead lane; order per guild is preserved
+  # because the lane key (and its FIFO mailbox) never changes.
+  def handle_info({:resubscribe_lane, gid, key, attempt}, state) do
+    case Gateway.Guild.Actor.subscribe(key, state.session_id, self(), state.user_id) do
+      :ok ->
+        Logger.info("Gateway.Session [#{state.session_id}]: re-subscribed to lane #{key}")
+
+        {:noreply,
+         %{state | lane_monitors: monitor_lane_key(to_string(gid), key, state.lane_monitors)}}
+
+      {:error, reason} ->
+        case Enum.at(@resubscribe_delays, attempt) do
+          nil ->
+            Logger.warning("Gateway.Session [#{state.session_id}]: giving up lane re-subscribe to #{key} (#{inspect(reason)}); client reconnect will heal")
+            {:noreply, state}
+
+          delay ->
+            Process.send_after(self(), {:resubscribe_lane, gid, key, attempt + 1}, delay)
+            {:noreply, state}
+        end
+    end
+  end
+
+  # Step 4b: control announces chat moved to lanes; join ours (idempotent
+  # with the post-subscribe join — whichever lands first wins, the other
+  # is a no-op re-subscribe).
+  def handle_info({:guild_split, gid}, state) do
+    lane_monitors =
+      join_and_monitor_lane(to_string(gid), state.session_id, state.user_id, state.lane_monitors)
+
+    {:noreply, %{state | lane_monitors: lane_monitors}}
   end
 
   def handle_info(:session_timeout, state) do
@@ -525,6 +579,11 @@ defmodule Gateway.Session do
     # to the same cleanup.
     Enum.each(state.guild_ids, fn gid ->
       Gateway.Guild.Actor.unsubscribe_async(gid, state.session_id)
+    end)
+
+    # Step 4b: leave message lanes too (same fire-and-forget discipline).
+    Enum.each(state.lane_monitors, fn {_gid, {key, _p, _r}} ->
+      Gateway.Guild.Actor.unsubscribe_async(key, state.session_id)
     end)
 
     if state.user_id do
@@ -553,6 +612,37 @@ defmodule Gateway.Session do
   end
 
   defp normalize_intent(_), do: %{channel_id: nil, self_mute: false, self_deaf: false}
+
+  # Step 4b: join the message lane when the guild is split (sync call,
+  # confirmed), then flag migrated on control (join-then-flag: zero-loss
+  # cutover). Idempotent: safe to run on every (re)subscribe and on the
+  # control's split announcement.
+  defp join_and_monitor_lane(gid, session_id, user_id, lane_monitors) do
+    case Gateway.Guild.Actor.message_lane(gid, session_id) do
+      {:lane, key} ->
+        Gateway.Guild.Actor.subscribe(key, session_id, self(), user_id)
+        Gateway.Guild.Actor.note_migrated(gid, session_id)
+        monitor_lane_key(gid, key, lane_monitors)
+
+      :single ->
+        lane_monitors
+    end
+  end
+
+  defp monitor_lane_key(gid, key, lane_monitors) do
+    case Gateway.Guild.Actor.whereis(key) do
+      pid when is_pid(pid) ->
+        case Map.get(lane_monitors, to_string(gid)) do
+          {_k, _old_pid, old_ref} -> Process.demonitor(old_ref, [:flush])
+          nil -> :ok
+        end
+
+        Map.put(lane_monitors, to_string(gid), {key, pid, Process.monitor(pid)})
+
+      nil ->
+        lane_monitors
+    end
+  end
 
   # Phase 7c: monitor the current actor pid for each guild (cluster-wide
   # lookup — the actor may live on another node). Idempotent. Keys are

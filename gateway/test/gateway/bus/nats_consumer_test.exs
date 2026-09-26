@@ -30,6 +30,37 @@ defmodule Gateway.Bus.NatsConsumerTest do
     end
   end
 
+  describe "worker_for/2 routing (ordering guarantee)" do
+    test "same guild always maps to the same worker" do
+      for count <- [1, 2, 4, 8] do
+        first = Gateway.Bus.NatsConsumer.worker_for("99900120000000001", count)
+
+        for _ <- 1..50 do
+          assert Gateway.Bus.NatsConsumer.worker_for("99900120000000001", count) == first
+        end
+      end
+    end
+
+    test "index stays inside the pool for many guilds" do
+      for count <- [1, 2, 4, 8] do
+        for i <- 1..200 do
+          w = Gateway.Bus.NatsConsumer.worker_for("guild_#{i}", count)
+          assert w >= 0 and w < count
+        end
+      end
+    end
+
+    test "guilds spread across workers (parallelism actually happens)" do
+      seen =
+        for i <- 1..50 do
+          Gateway.Bus.NatsConsumer.worker_for("guild_#{i}", 4)
+        end
+        |> Enum.uniq()
+
+      assert length(seen) > 1
+    end
+  end
+
   describe "JetStream Integration" do
     setup do
       uri = URI.parse(@nats_url)
@@ -123,6 +154,78 @@ defmodule Gateway.Bus.NatsConsumerTest do
       {:ok, info} = Jason.decode(body)
       assert info["num_ack_pending"] == 0
       assert info["delivered"]["consumer_seq"] >= 1
+    end
+
+    test "router fans 20 same-guild messages through workers with zero loss and full ack", %{gnat: gnat} do
+      test_id = System.unique_integer([:positive])
+      stream = "TEST_JS_FLOW_#{test_id}"
+      durable = "test-flow-#{test_id}"
+      filter_subject = "kith_flow.#{test_id}.>"
+      deliver_subject = "flow.inbox.#{test_id}"
+      guild_id = "flow_guild_#{test_id}"
+      pub_subject = "kith_flow.#{test_id}.#{guild_id}"
+
+      on_exit(fn ->
+        uri = URI.parse(@nats_url)
+        case Gnat.start_link(%{host: uri.host || "127.0.0.1", port: uri.port || 4222}) do
+          {:ok, cleanup_gnat} ->
+            _ = Gnat.request(cleanup_gnat, "$JS.API.STREAM.DELETE.#{stream}", "")
+            Gnat.stop(cleanup_gnat)
+
+          _ ->
+            :ok
+        end
+      end)
+
+      {:ok, consumer_pid} =
+        Gateway.Bus.NatsConsumer.start_link(
+          nats_url: @nats_url,
+          stream: stream,
+          durable_name: durable,
+          filter_subject: filter_subject,
+          deliver_subject: deliver_subject,
+          name: :"nats_flow_#{test_id}"
+        )
+
+      on_exit(fn ->
+        if Process.alive?(consumer_pid), do: GenServer.stop(consumer_pid)
+      end)
+
+      Process.sleep(100)
+
+      for n <- 1..20 do
+        event = %{
+          "type" => "MESSAGE_CREATE",
+          "version" => 1,
+          "guild_id" => guild_id,
+          "payload" => %{"id" => "flow_#{test_id}_#{n}", "content" => "flow #{n}", "guild_id" => guild_id}
+        }
+
+        :ok = Gnat.pub(gnat, pub_subject, Jason.encode!(event))
+      end
+
+      # All 20 flow router -> same worker -> processed -> acked: no loss,
+      # no backlog left behind.
+      wait_until(fn ->
+        case Gnat.request(gnat, "$JS.API.CONSUMER.INFO.#{stream}.#{durable}", "") do
+          {:ok, %{body: body}} ->
+            case Jason.decode(body) do
+              {:ok, %{"num_ack_pending" => 0, "delivered" => %{"consumer_seq" => seq}}} when seq >= 20 ->
+                true
+
+              _ ->
+                false
+            end
+
+          _ ->
+            false
+        end
+      end, 10_000)
+
+      {:ok, %{body: body}} = Gnat.request(gnat, "$JS.API.CONSUMER.INFO.#{stream}.#{durable}", "")
+      {:ok, info} = Jason.decode(body)
+      assert info["num_ack_pending"] == 0
+      assert info["delivered"]["consumer_seq"] >= 20
     end
   end
 end

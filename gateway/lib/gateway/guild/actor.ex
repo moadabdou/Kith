@@ -206,6 +206,158 @@ defmodule Gateway.Guild.Actor do
     end
   end
 
+  # ── Subscriber-splitting (Issue #88 Step 4b) ─────────────────────────────
+  #
+  # Guilds past @split_threshold subscribers shard MESSAGE fan-out across
+  # K message-only lanes (same module, role flag). The control actor keeps
+  # everything else (voice, presence, typing, membership, leases for
+  # control). Sessions dual-subscribe: control frames from control, chat
+  # from exactly one lane. Per-session seq is assigned in the session, so
+  # splitting changes timing only — ordering, resume, and dedup semantics
+  # are identical (plan/01 §4-5, 09 §3: clients sort by snowflake id).
+  #
+  # Cutover is loss-free per session: a session joins its lane (sync call,
+  # confirmed) and only then flags itself migrated on control; control
+  # skips migrated sessions for lane-family events. New subscribes while
+  # split go straight to their lane. Collapse only happens at zero
+  # subscribers, so there is no flapping.
+
+  @doc "Subscriber count above which a guild splits MESSAGE fan-out into lanes."
+  def split_threshold do
+    Application.get_env(:gateway, :split_threshold, 1000)
+  end
+
+  @doc "Lane count for a split guild. Fixed cluster-wide: sessions and the consumer hash identically without discovery."
+  def split_lane_count do
+    Application.get_env(:gateway, :split_lanes, 32)
+  end
+
+  @doc "Registry key for a guild's lane."
+  def lane_key(guild_id, index) do
+    "#{to_string(guild_id)}:lane:#{index}"
+  end
+
+  @doc "Stable lane assignment: same session always lands on the same lane."
+  def lane_assignment(session_id, lane_count) when lane_count > 0 do
+    :erlang.phash2(to_string(session_id), lane_count)
+  end
+
+  @doc "Event types served by lanes (chat traffic). Everything else stays on control."
+  def lane_family do
+    ["MESSAGE_CREATE", "MESSAGE_UPDATE", "MESSAGE_DELETE",
+     "MESSAGE_REACTION_ADD", "MESSAGE_REACTION_REMOVE",
+     "MESSAGE_REACTION_REMOVE_ALL", "MESSAGE_REACTION_REMOVE_EMOJI"]
+  end
+
+  @doc ":single or {:split, k}. Presence in persistent_term = split (rare writes, lock-free hot reads)."
+  def split_state(guild_id) do
+    :persistent_term.get({__MODULE__, :split, to_string(guild_id)}, :single)
+  end
+
+  defp mark_split(guild_id, lane_count) do
+    :persistent_term.put({__MODULE__, :split, to_string(guild_id)}, {:split, lane_count})
+  end
+
+  defp clear_split(guild_id) do
+    :persistent_term.erase({__MODULE__, :split, to_string(guild_id)})
+  rescue
+    _ -> :ok
+  end
+
+  @doc """
+  Lane assignment for a session. Returns `:single` (control serves
+  messages, pre-split behavior) or `{:lane, lane_key}` (lane ensured
+  alive). Control-side; sessions call this right after subscribing.
+  """
+  def message_lane(guild_id, session_id) do
+    gid = to_string(guild_id)
+
+    case split_state(gid) do
+      {:split, k} ->
+        key = lane_key(gid, lane_assignment(session_id, k))
+        ensure_lane(gid, key)
+        {:lane, key}
+
+      :single ->
+        :single
+    end
+  end
+
+  defp ensure_lane(gid, key) do
+    case whereis(key) do
+      pid when is_pid(pid) ->
+        {:ok, pid}
+
+      nil ->
+        index = lane_index(key)
+        get_or_spawn(key, role: {:lane, index}, real_guild_id: gid)
+    end
+  end
+
+  defp lane_index(key) do
+    case String.split(to_string(key), ":lane:") do
+      [_, raw] ->
+        case Integer.parse(raw) do
+          {n, ""} -> n
+          _ -> 0
+        end
+
+      _ ->
+        0
+    end
+  end
+
+  @doc """
+  Fan-out entry point for bus events. MESSAGE-family events on a split
+  guild fan out to every live lane (each with the local-only mirror
+  gate); everything else — and unsplit guilds — goes to control exactly
+  as before. Live-lane lookup is one ETS/persistent-term read plus
+  registry lookups; sessions on a briefly dead lane revive it through
+  resubscribe within the existing backoff.
+  """
+  def route_fanout(guild_id, event, bus_received_at \\ nil, opts \\ []) do
+    gid = to_string(guild_id)
+    type = event["type"] || "UNKNOWN"
+
+    if type in lane_family() do
+      case split_state(gid) do
+        {:split, k} ->
+          dispatched =
+            Enum.reduce(0..(k - 1), false, fn i, acc ->
+              key = lane_key(gid, i)
+
+              case whereis(key) do
+                pid when is_pid(pid) ->
+                  if node(pid) == node() do
+                    GenServer.cast(pid, {:dispatch_event, event, bus_received_at, opts})
+                    true
+                  else
+                    Gateway.Metrics.incr_dedup_drop()
+                    acc
+                  end
+
+                nil ->
+                  acc
+              end
+            end)
+
+          # All lanes momentarily gone (mass restart): fall back to
+          # control rather than dropping. Control serves messages while
+          # unsplit; the split mark is reconciled on next subscribe.
+          unless dispatched do
+            dispatch_bus_event(gid, event, bus_received_at, opts)
+          end
+
+          :ok
+
+        :single ->
+          dispatch_bus_event(gid, event, bus_received_at, opts)
+      end
+    else
+      dispatch_bus_event(gid, event, bus_received_at, opts)
+    end
+  end
+
   @doc """
   Pushes a session's cached voice intent to the guild actor outside of
   subscribe (Phase 7d Step 5c). Used by sessions forwarding notes that raced
@@ -269,6 +421,11 @@ defmodule Gateway.Guild.Actor do
   def init(opts) do
     guild_id = Keyword.fetch!(opts, :guild_id) |> to_string()
     ttl_ms = Keyword.get(opts, :ttl_ms, @default_ttl_ms)
+    # Step 4b: :control serves everything (default, unchanged); {:lane, i}
+    # serves MESSAGE-family fan-out only. Lanes address the real guild for
+    # cache/permission reads; the suffixed key is registry + lease identity.
+    role = Keyword.get(opts, :role, :control)
+    real_guild_id = Keyword.get(opts, :real_guild_id, guild_id) |> to_string()
 
     Gateway.Metrics.incr_guild_actor()
 
@@ -282,6 +439,8 @@ defmodule Gateway.Guild.Actor do
 
     state = %{
       guild_id: guild_id,
+      real_guild_id: real_guild_id,
+      role: role,
       subscribers: %{},
       subscriber_refs: %{},
       ttl_ms: ttl_ms,
@@ -292,11 +451,32 @@ defmodule Gateway.Guild.Actor do
       pending_voice_intents: %{},
       last_bus_event: nil,
       lease_held: lease_held,
-      lease_timer: lease_timer
+      lease_timer: lease_timer,
+      # Step 4b (control only): sessions already serving chat from lanes.
+      # Control skips them for lane-family events (zero-loss cutover).
+      migrated: MapSet.new()
     }
+
+    # Step 4b: a fresh control re-marks split when lanes outlived it
+    # (rolling restart with live lane subscribers), so the consumer keeps
+    # fanning out and control keeps skipping. Otherwise stale lanes would
+    # double-dispatch against a control that thinks it is single.
+    state =
+      if role == :control do
+        if any_lane_alive?(guild_id), do: mark_split(guild_id, split_lane_count())
+        state
+      else
+        state
+      end
 
     Logger.info("Gateway.Guild.Actor [#{guild_id}] started on #{node()}")
     {:ok, state}
+  end
+
+  defp any_lane_alive?(guild_id) do
+    Enum.any?(0..(split_lane_count() - 1), fn i ->
+      is_pid(whereis(lane_key(guild_id, i)))
+    end)
   end
 
   @impl true
@@ -309,6 +489,10 @@ defmodule Gateway.Guild.Actor do
   end
 
   def handle_call({:subscribe, session_id, pid, user_id, voice_intent}, _from, state) do
+    # Subscribe timing (Issue #88 Step 4 diagnosis): service time inside
+    # the call (excludes mailbox wait), averaged over 500-sub windows and
+    # logged with current mailbox depth. No ETS, no calls.
+    sub_t0 = System.monotonic_time(:microsecond)
     cancel_timer(state.ttl_timer)
 
     subscriber_refs =
@@ -337,8 +521,9 @@ defmodule Gateway.Guild.Actor do
     # saw this user's IDENTIFY (which warms only the IDENTIFY node). The bus
     # carries mutations, never baselines, so load the snapshot from PG here.
     # Best-effort: on warm failure we proceed with cached data (old behavior).
+    # Step 4b: lanes read the REAL guild (their key is suffixed).
     if uid do
-      case Gateway.Guild.Cache.ensure_member_view(uid, state.guild_id) do
+      case Gateway.Guild.Cache.ensure_member_view(uid, state.real_guild_id) do
         :ok ->
           :ok
 
@@ -350,7 +535,7 @@ defmodule Gateway.Guild.Actor do
     sub_info = %{
       pid: pid,
       user_id: uid,
-      channels: if(uid, do: compute_visible_channels(uid, state.guild_id), else: nil)
+      channels: if(uid, do: compute_visible_channels(uid, state.real_guild_id), else: nil)
     }
 
     subscribers = Map.put(state.subscribers, session_id, sub_info)
@@ -361,9 +546,83 @@ defmodule Gateway.Guild.Actor do
     # Phase 7d Step 5c (Tier 1): apply the session's cached voice intent
     # under the guarded rules (absent, lease, perms, stamp). The subscriber
     # is registered first so the resulting VOICE_SERVER_UPDATE routes.
-    state = apply_voice_intent(state, to_string(session_id), uid, voice_intent)
+    # Step 4b: lanes skip intents (control owns voice state).
+    state =
+      if state.role == :control do
+        apply_voice_intent(state, to_string(session_id), uid, voice_intent)
+      else
+        state
+      end
 
-    {:reply, :ok, state}
+    # Step 4b: split trigger on crossing, direct-to-lane flag otherwise.
+    # The triggering subscribe absorbs one fan-out of migration notices
+    # (~20ms once per guild crossing); measurement windows start after.
+    state =
+      if state.role == :control do
+        case split_state(state.real_guild_id) do
+          :single ->
+            if map_size(subscribers) >= split_threshold() do
+              split_guild(state)
+            else
+              state
+            end
+
+          {:split, _} ->
+            %{state | migrated: MapSet.put(state.migrated, to_string(session_id))}
+        end
+      else
+        state
+      end
+
+    # Subscribe timing (Issue #88 Step 4 diagnosis): service time inside
+    # the call (excludes mailbox wait), averaged over 500-sub windows with
+    # mailbox depth, logged. No ETS, no calls.
+    sub_dt = System.monotonic_time(:microsecond) - sub_t0
+    sub_n = Map.get(state, :sub_timed, 0) + 1
+    sub_us = Map.get(state, :sub_timed_us, 0) + sub_dt
+    state = Map.merge(state, %{sub_timed: sub_n, sub_timed_us: sub_us})
+
+    if rem(sub_n, 500) == 0 do
+      {:message_queue_len, mql} = Process.info(self(), :message_queue_len)
+
+      Logger.info(
+        "Actor subscribe timing: n=#{sub_n} service_avg_us=#{div(sub_us, sub_n)} mbox=#{mql} subs=#{map_size(subscribers)}"
+      )
+
+      {:reply, :ok, %{state | sub_timed: 0, sub_timed_us: 0}}
+    else
+      {:reply, :ok, state}
+    end
+  end
+
+  # Step 4b: spawn lanes, mark split, notify existing subscribers to join.
+  # Control keeps serving everyone until each session flags migrated
+  # (join-then-flag: a microsecond dup race beats any loss window, and it
+  # only runs during setup, never inside measurement).
+  defp split_guild(state) do
+    gid = state.real_guild_id
+    k = split_lane_count()
+
+    for i <- 0..(k - 1) do
+      ensure_lane(gid, lane_key(gid, i))
+    end
+
+    mark_split(gid, k)
+
+    for {_sid, sub} <- state.subscribers do
+      pid =
+        case sub do
+          %{pid: p} -> p
+          {p, _uid} -> p
+          p when is_pid(p) -> p
+          _ -> nil
+        end
+
+      if is_pid(pid), do: send(pid, {:guild_split, gid})
+    end
+
+    Logger.info("Gateway.Guild.Actor [#{gid}] split MESSAGE fan-out across #{k} lanes")
+    state
   end
 
   # Sync explicit-leave path (Issue #88 flood keeps this call: the caller
@@ -390,6 +649,11 @@ defmodule Gateway.Guild.Actor do
   end
 
   def handle_call({:update_voice_state, user_id, session_id, params}, _from, state) do
+    # Step 4b: lanes own no voice state (control serves voice); sessions
+    # address control only, so this is a defensive refusal, not a path.
+    if state.role != :control do
+      {:reply, {:error, :not_control}, state}
+    else
     uid = to_string(user_id)
     sid = to_string(session_id)
     channel_id = params["channel_id"] || params[:channel_id]
@@ -478,10 +742,15 @@ defmodule Gateway.Guild.Actor do
           {:reply, {:ok, nil}, state}
         end
     end
+    end
   end
 
   def handle_call(:get_voice_states, _from, state) do
-    {:reply, state.voice_states, state}
+    if state.role != :control do
+      {:reply, %{}, state}
+    else
+      {:reply, state.voice_states, state}
+    end
   end
 
 
@@ -513,6 +782,7 @@ defmodule Gateway.Guild.Actor do
     bus_seq = Keyword.get(opts, :bus_seq)
     type = event["type"] || "UNKNOWN"
     {state, duplicate?} = track_bus_event(state, bus_seq, type)
+    in_lane_family = type in lane_family()
 
     cond do
       duplicate? ->
@@ -521,6 +791,22 @@ defmodule Gateway.Guild.Actor do
 
       not state.lease_held ->
         Gateway.Metrics.incr_lease_drop()
+        {:noreply, state}
+
+      # Step 4b: lanes serve lane-family fan-out only; control serves
+      # lane-family only while unsplit (lanes own it once split, and
+      # control skips migrated sessions that lanes already serve).
+      in_lane_family and state.role != :control ->
+        route_dispatch(event, bus_received_at, state)
+
+      in_lane_family ->
+        if split_state(state.real_guild_id) == :single do
+          route_dispatch(event, bus_received_at, state)
+        else
+          {:noreply, state}
+        end
+
+      state.role != :control ->
         {:noreply, state}
 
       true ->
@@ -532,6 +818,10 @@ defmodule Gateway.Guild.Actor do
   # that raced its resubscribe). The subscribing session id rides along —
   # the actor verifies it is still registered before applying (liveness).
   def handle_cast({:push_voice_intent, session_id, intent}, state) do
+    # Step 4b: lanes own no voice state; sessions push to control only.
+    if state.role != :control do
+      {:noreply, state}
+    else
     uid =
       case Map.get(state.subscribers, session_id) do
         %{user_id: found} when not is_nil(found) -> found
@@ -539,6 +829,7 @@ defmodule Gateway.Guild.Actor do
       end
 
     {:noreply, apply_voice_intent(state, session_id, uid, intent)}
+    end
   end
 
   # Issue #88 teardown flood: async terminate path. Lives with the other
@@ -547,6 +838,29 @@ defmodule Gateway.Guild.Actor do
   @impl true
   def handle_cast({:unsubscribe, session_id}, state) do
     {:noreply, do_unsubscribe(session_id, state)}
+  end
+
+  @doc """
+  Step 4b: flags a session as lane-served for chat (fire-and-forget).
+  Sent by the session after it confirmed its lane subscription
+  (join-then-flag: zero-loss cutover). Control skips flagged sessions
+  for lane-family events.
+  """
+  def note_migrated(guild_id, session_id) do
+    case whereis(guild_id) do
+      pid when is_pid(pid) ->
+        GenServer.cast(pid, {:note_migrated, to_string(session_id)})
+
+      nil ->
+        :ok
+    end
+  catch
+    :exit, _ -> :ok
+  end
+
+  @impl true
+  def handle_cast({:note_migrated, session_id}, state) do
+    {:noreply, %{state | migrated: MapSet.put(state.migrated, session_id)}}
   end
 
   # Exact {seq, type} match against the last routed event. Stream sequences
@@ -922,11 +1236,16 @@ defmodule Gateway.Guild.Actor do
 
   defp handle_channel_scoped_dispatch(event, bus_received_at, state) do
     channel_id = extract_channel_id(event)
+    # Step 4b: control skips lane-migrated sessions for lane-family
+    # events (their lane serves them); lanes hold no migrated entries.
+    skip_migrated? =
+      state.role == :control and (event["type"] || "") in lane_family()
 
     Enum.each(state.subscribers, fn {session_id, sub} ->
-      {pid, user_id, _visible_channels} = normalize_subscriber(session_id, sub, state.guild_id)
+      {pid, user_id, _visible_channels} = normalize_subscriber(session_id, sub, state.real_guild_id)
 
-      if can_subscriber_view?(user_id, channel_id, state.guild_id) do
+      if can_subscriber_view?(user_id, channel_id, state.real_guild_id) and
+           not (skip_migrated? and MapSet.member?(state.migrated, to_string(session_id))) do
         send(pid, {:dispatch, event, bus_received_at})
       end
     end)
@@ -1156,11 +1475,16 @@ defmodule Gateway.Guild.Actor do
   def handle_info({:sfu_down, endpoint}, state) do
     Logger.info("Gateway.Guild.Actor [#{state.guild_id}] received :sfu_down for #{endpoint} (lease_held=#{state.lease_held}, voice_sessions=#{map_size(state.voice_states)})")
 
+    # Step 4b: lanes hold no voice sessions; only control fails over.
+    if state.role != :control do
+      {:noreply, state}
+    else
     if state.lease_held do
       {:noreply, failover_sfu(state, endpoint)}
     else
       Gateway.Metrics.incr_lease_drop()
       {:noreply, state}
+    end
     end
   end
 
@@ -1188,6 +1512,12 @@ defmodule Gateway.Guild.Actor do
     # Best-effort: let the next holder claim immediately instead of
     # waiting out the TTL.
     Gateway.Guild.Lease.release(state.guild_id)
+    # Step 4b: a control dying with no live lane leaves a stale split
+    # mark; clear it so the next control starts single. Lanes alive keep
+    # the mark (fresh control re-marks on init either way).
+    if state.role == :control and not any_lane_alive?(state.real_guild_id) do
+      clear_split(state.real_guild_id)
+    end
     Logger.debug("Gateway.Guild.Actor [#{state.guild_id}] terminated")
     :ok
   end
@@ -1245,7 +1575,8 @@ defmodule Gateway.Guild.Actor do
       end
 
     subscribers = Map.delete(state.subscribers, session_id)
-    state = cleanup_voice_state_for_session(session_id, %{state | subscribers: subscribers, subscriber_refs: subscriber_refs})
+    migrated = MapSet.delete(state.migrated, to_string(session_id))
+    state = cleanup_voice_state_for_session(session_id, %{state | subscribers: subscribers, subscriber_refs: subscriber_refs, migrated: migrated})
 
     # Phase 7d Step 5c: a gone session's stashed intent dies with it —
     # never apply placement for a socket that no longer exists.

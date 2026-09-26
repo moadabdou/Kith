@@ -31,11 +31,44 @@ defmodule Gateway.Bus.NatsConsumer do
       filter_subject: filter_subject,
       deliver_subject: deliver_subject,
       sub_ref: nil,
-      shutting_down: false
+      shutting_down: false,
+      workers: start_workers(nats_url)
     }
 
     send(self(), :connect)
     {:ok, state}
+  end
+
+  # Worker pool (Issue #88 Step 4): the router below must stay under
+  # ~50µs/message, so full processing fans out to N lanes. Routing is a
+  # pure function of guild_id (worker_for/2): one guild always lands on
+  # the same worker, keeping per-guild dispatch order FIFO by
+  # construction — the single-consumer ordering guarantee, parallelized.
+  defp start_workers(nats_url) do
+    count = worker_count()
+
+    Enum.map(1..count, fn _ ->
+      {:ok, pid} = Gateway.Bus.ConsumerWorker.start_link(nats_url: nats_url)
+      pid
+    end)
+  end
+
+  defp worker_count do
+    case System.get_env("GATEWAY_CONSUMER_WORKERS") do
+      nil -> System.schedulers_online()
+      raw -> case Integer.parse(raw) do
+        {n, ""} when n > 0 -> n
+        _ -> System.schedulers_online()
+      end
+    end
+  end
+
+  @doc """
+  Pure routing: which worker owns this guild. Same guild always maps to
+  the same index, so per-guild order is FIFO regardless of pool size.
+  """
+  def worker_for(guild_id, count) when count > 0 do
+    :erlang.phash2(to_string(guild_id), count)
   end
 
   @impl true
@@ -103,7 +136,12 @@ defmodule Gateway.Bus.NatsConsumer do
     :ok
   end
 
-  # ── Message Processing & Dispatch ──────────────────────────────────────────
+  # ── Message Routing (hot path: decode + hash + cast only) ──────────────
+  #
+  # Everything synchronous is gone from this loop: metrics are lock-free
+  # ETS ops, logging is sampled in the workers, and full processing runs
+  # in guild-partitioned worker lanes. The router must stay at decode +
+  # hash + cast (~50µs) so intake never caps below ~10k events/s.
 
   defp handle_jetstream_msg(body, reply_to, state) do
     bus_received_at = System.monotonic_time(:microsecond)
@@ -124,44 +162,14 @@ defmodule Gateway.Bus.NatsConsumer do
             (is_map(event["payload"]) && event["payload"]["guild_id"]) ||
             ""
 
-        type = event["type"] || "UNKNOWN"
+        worker =
+          Enum.at(state.workers, worker_for(guild_id, length(state.workers)))
 
-        # Immediately synchronize permissions & entities in local ETS cache
-        Gateway.Guild.Cache.handle_event(event)
-
-        # Route by guild_id -> dispatch to the hosting node only.
-        # Local-only bus dispatch: every node consumes every event (cache
-        # convergence), but only the actor's host dispatches. The mirror
-        # copy is dropped before crossing distribution.
-        if guild_id != "" do
-          Gateway.Guild.Actor.dispatch_bus_event(to_string(guild_id), event, bus_received_at,
-            bus_seq: meta.stream_seq
-          )
+        if worker do
+          GenServer.cast(worker, {:process, event, reply_to, bus_received_at})
+        else
+          Logger.error("Gateway.Bus.NatsConsumer: no workers available; dropping event")
         end
-
-        # Discord-correct: GUILD_MEMBER_ADD is always accompanied by a
-        # companion PRESENCE_UPDATE so old members learn the joining user's
-        # live status.  The REST API has no presence data, so the gateway
-        # enriches the event here from the node-local ETS presence store.
-        # The companion inherits the parent's bus_seq: same seq, different
-        # type, so cross-node dedup still matches exactly (Phase 7c).
-        maybe_emit_member_presence(type, guild_id, event, bus_received_at, meta.stream_seq)
-
-        actor_pid =
-          if guild_id != "", do: Gateway.Guild.Actor.whereis(guild_id), else: nil
-
-        sub_count =
-          if actor_pid, do: Gateway.Guild.Actor.subscriber_count(guild_id), else: 0
-
-        seq_str = if meta.stream_seq, do: to_string(meta.stream_seq), else: "0"
-        Logger.info(
-          "Event consumed [#{seq_str}] type=#{type} guild_id=#{guild_id} (actor=#{inspect(actor_pid)}, #{sub_count} subscribers)"
-        )
-
-        Gateway.Metrics.incr_event_consumed()
-
-        # Explicit JetStream ACK: +ACK sent back to reply_to subject
-        ack_message(state.gnat, reply_to)
 
       {:error, decode_err} ->
         Logger.error("Failed to decode JSON event from NATS message: #{inspect(decode_err)}")
@@ -169,38 +177,6 @@ defmodule Gateway.Bus.NatsConsumer do
         ack_message(state.gnat, reply_to)
     end
   end
-
-  # Emits a companion PRESENCE_UPDATE when a GUILD_MEMBER_ADD arrives, so
-  # existing guild subscribers immediately see the joining user's live status
-  # (online/idle/dnd) instead of defaulting to offline.
-  defp maybe_emit_member_presence("GUILD_MEMBER_ADD", guild_id, event, bus_received_at, bus_seq)
-       when guild_id != "" do
-    with %{"payload" => %{"user" => %{"id" => uid}}} <- event,
-         {:ok, presence} <- Gateway.Presence.Store.get_presence(uid) do
-      status = to_string(presence.status)
-
-      presence_event = %{
-        "type" => "PRESENCE_UPDATE",
-        "version" => 1,
-        "guild_id" => guild_id,
-        "payload" => %{
-          "user" => %{"id" => uid},
-          "guild_id" => guild_id,
-          "status" => status,
-          "activities" => presence.activities || [],
-          "client_status" => presence.client_status || %{}
-        }
-      }
-
-      Gateway.Guild.Actor.dispatch_bus_event(guild_id, presence_event, bus_received_at,
-        bus_seq: bus_seq
-      )
-    end
-
-    :ok
-  end
-
-  defp maybe_emit_member_presence(_type, _guild_id, _event, _bus_received_at, _bus_seq), do: :ok
 
   defp ack_message(_gnat, nil), do: :ok
   defp ack_message(_gnat, ""), do: :ok

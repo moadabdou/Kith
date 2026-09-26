@@ -3,6 +3,10 @@ name: kith
 services:
   postgres:
     image: postgres:17-alpine
+    # Issue #88: default max_connections=100 is smaller than our pools
+    # (2× gateway + 2× API×25). 200 headroom for pools + admin/psql +
+    # migrations. Data persists in pgdata across the restart this needs.
+    command: postgres -c max_connections=200
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-discord}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-discord}
@@ -201,7 +205,8 @@ services:
 
   gateway:
     build:
-      context: ./gateway
+      context: .
+      dockerfile: ./gateway/Dockerfile
       network: host
       args:
         HTTP_PROXY: ${HTTP_PROXY:-}
@@ -255,7 +260,8 @@ services:
 
   gateway-2:
     build:
-      context: ./gateway
+      context: .
+      dockerfile: ./gateway/Dockerfile
       network: host
       args:
         HTTP_PROXY: ${HTTP_PROXY:-}

@@ -1,327 +1,348 @@
 defmodule Gateway.Metrics do
+  # Lock-free counters (Issue #88 Step 4): this module used to be a plain
+  # Agent, and every increment / histogram sample was a synchronous call
+  # into that one process. Past ~100k updates/s (each fan-out delivery
+  # records two) its mailbox became the gateway-wide funnel: the NATS
+  # consumer blocked behind it, backlog crossed the 30s AckWait, and
+  # redelivery storms followed — while actors sat idle.
+  #
+  # Storage is now a public ETS table with :write_concurrency: updates are
+  # atomic CPU ops with no process, no mailbox, nobody waits. The Agent
+  # remains only as the table owner (supervision tree unchanged); no
+  # traffic goes through it. Public API and /metrics output are identical
+  # (histogram sums kept as integer microseconds, rendered back to
+  # seconds). Gauge floors (max(0, …)) moved to the readers.
   use Agent
 
+  @table __MODULE__
+
   def start_link(_opts) do
-    Agent.start_link(fn -> init() end, name: __MODULE__)
+    Agent.start_link(fn ->
+      case :ets.whereis(@table) do
+        :undefined ->
+          :ets.new(@table, [:named_table, :public, :set, write_concurrency: true])
+
+        _ ->
+          @table
+      end
+
+      :ets.insert(@table, {{:sys, :booted_at}, System.monotonic_time(:native)})
+      :ok
+    end, name: __MODULE__)
+  end
+
+  # ── lock-free primitives (no process, callers never wait) ──
+
+  defp bump(field, by \\ 1) when is_atom(field) and is_integer(by) do
+    :ets.update_counter(@table, {:c, field}, {2, by}, {{:c, field}, 0})
+    :ok
+  end
+
+  defp bump_label(field, label, by \\ 1) when is_atom(field) and is_integer(by) do
+    :ets.update_counter(@table, {:c, field, label}, {2, by}, {{:c, field, label}, 0})
+    :ok
+  end
+
+  defp drop_gauge(field, by \\ 1) when is_atom(field) and is_integer(by) do
+    :ets.update_counter(@table, {:c, field}, {2, -by}, {{:c, field}, 0})
+    :ok
+  end
+
+  defp put_gauge(field, value) when is_atom(field) do
+    :ets.insert(@table, {{:c, field}, value})
+    :ok
+  end
+
+  defp get_counter(field, default \\ 0) when is_atom(field) do
+    case :ets.lookup(@table, {:c, field}) do
+      [{_, v}] -> v
+      [] -> default
+    end
+  end
+
+  defp get_gauge(field, default \\ 0) when is_atom(field) do
+    case :ets.lookup(@table, {:c, field}) do
+      [{_, v}] when is_number(v) -> max(v, 0)
+      _ -> default
+    end
+  end
+
+  defp get_labeled(field) when is_atom(field) do
+    :ets.match(@table, {{:c, field, :"$1"}, :"$2"})
+    |> Map.new(fn [k, v] -> {k, v} end)
+  end
+
+  defp record_hist(field, buckets, value, micros?)
+       when is_atom(field) and is_list(buckets) and is_number(value) do
+    sum_incr = if micros?, do: round(value * 1_000_000), else: value
+    :ets.update_counter(@table, {:h, field, :count}, {2, 1}, {{:h, field, :count}, 0})
+    :ets.update_counter(@table, {:h, field, :sum}, {2, sum_incr}, {{:h, field, :sum}, 0})
+
+    for b <- buckets, value <= b do
+      :ets.update_counter(@table, {:h, field, b}, {2, 1}, {{:h, field, b}, 0})
+    end
+
+    :ok
+  end
+
+  # Rebuilds the render-state map from ETS (same shape as init/0, which
+  # stays as the template with defaults for anything never written).
+  defp snapshot do
+    :ets.foldl(&fold_entry/2, init(), @table)
+  end
+
+  defp fold_entry({{:c, field}, v}, acc) when is_atom(field) do
+    if Map.has_key?(acc, field), do: Map.put(acc, field, v), else: acc
+  end
+
+  defp fold_entry({{:c, field, label}, v}, acc) when is_atom(field) do
+    case Map.fetch(acc, field) do
+      {:ok, m} when is_map(m) -> Map.put(acc, field, Map.put(m, label, v))
+      _ -> acc
+    end
+  end
+
+  defp fold_entry({{:h, field, :count}, v}, acc) do
+    put_hist(acc, field, {:count, v})
+  end
+
+  defp fold_entry({{:h, :fanout_latency, :sum}, v}, acc) do
+    put_hist(acc, :fanout_latency, {:sum, v / 1_000_000})
+  end
+
+  defp fold_entry({{:h, field, :sum}, v}, acc) do
+    put_hist(acc, field, {:sum, v})
+  end
+
+  defp fold_entry({{:h, field, b}, v}, acc) when is_number(b) do
+    put_hist(acc, field, {:bucket, b, v})
+  end
+
+  defp fold_entry({{:sys, :booted_at}, v}, acc) do
+    Map.put(acc, :booted_at, v)
+  end
+
+  defp fold_entry(_, acc), do: acc
+
+  defp put_hist(acc, field, part) do
+    case Map.fetch(acc, field) do
+      {:ok, hist} when is_map(hist) ->
+        hist =
+          case part do
+            {:count, v} -> %{hist | count: v}
+            {:sum, s} -> %{hist | sum: s}
+            {:bucket, b, v} -> %{hist | buckets: Map.put(hist.buckets, b, v)}
+          end
+
+        Map.put(acc, field, hist)
+
+      _ ->
+        acc
+    end
   end
 
   def incr_request(method, route) do
-    Agent.update(__MODULE__, fn state ->
-      %{state | requests: Map.update(state.requests, {method, route}, 1, &(&1 + 1))}
-    end)
+    bump_label(:requests, {method, route})
   end
 
   def child_started(child) do
-    Agent.update(__MODULE__, fn state ->
-      child = Gateway.Application.child_label(child)
-      %{state | child_starts: Map.update(state.child_starts, child, 1, &(&1 + 1))}
-    end)
+    bump_label(:child_starts, Gateway.Application.child_label(child))
   end
 
   def incr_event_consumed do
-    Agent.update(__MODULE__, fn state ->
-      %{state | events_consumed: state.events_consumed + 1}
-    end)
+    bump(:events_consumed)
   end
 
   def incr_event_redelivered do
-    Agent.update(__MODULE__, fn state ->
-      %{state | event_redeliveries: state.event_redeliveries + 1}
-    end)
+    bump(:event_redeliveries)
   end
 
   def set_consumer_lag(lag) when is_integer(lag) do
-    Agent.update(__MODULE__, fn state ->
-      %{state | consumer_lag: lag}
-    end)
+    put_gauge(:consumer_lag, lag)
   end
 
   def incr_connection do
-    Agent.update(__MODULE__, fn state ->
-      %{state | connections_active: state.connections_active + 1}
-    end)
+    bump(:connections_active)
   end
 
   def decr_connection do
-    Agent.update(__MODULE__, fn state ->
-      %{state | connections_active: max(0, state.connections_active - 1)}
-    end)
+    drop_gauge(:connections_active)
   end
 
   def incr_identify do
-    Agent.update(__MODULE__, fn state ->
-      %{state | identifies: state.identifies + 1}
-    end)
+    bump(:identifies)
   end
 
   def incr_resume do
-    Agent.update(__MODULE__, fn state ->
-      %{state | resumes: state.resumes + 1}
-    end)
+    bump(:resumes)
   end
 
   def incr_typing_broadcast do
-    Agent.update(__MODULE__, fn state ->
-      %{state | typing_broadcasts: state.typing_broadcasts + 1}
-    end)
+    bump(:typing_broadcasts)
   end
 
   def incr_members_request do
-    Agent.update(__MODULE__, fn state ->
-      %{state | members_requests: state.members_requests + 1}
-    end)
+    bump(:members_requests)
   end
 
   def incr_members_chunk do
-    Agent.update(__MODULE__, fn state ->
-      %{state | members_chunks: state.members_chunks + 1}
-    end)
+    bump(:members_chunks)
   end
 
   def get_resumes do
-    Agent.get(__MODULE__, fn state -> state.resumes end)
+    get_counter(:resumes)
   end
 
   def incr_close_code(code) do
-    code_str = to_string(code)
-
-    Agent.update(__MODULE__, fn state ->
-      %{state | close_codes: Map.update(state.close_codes, code_str, 1, &(&1 + 1))}
-    end)
+    bump_label(:close_codes, to_string(code))
   end
 
   def incr_guild_actor do
-    Agent.update(__MODULE__, fn state ->
-      %{state | guild_actors_active: state.guild_actors_active + 1}
-    end)
+    bump(:guild_actors_active)
   end
 
   def decr_guild_actor do
-    Agent.update(__MODULE__, fn state ->
-      %{state | guild_actors_active: max(0, state.guild_actors_active - 1)}
-    end)
+    drop_gauge(:guild_actors_active)
   end
 
   def get_guild_actors_active do
-    Agent.get(__MODULE__, fn state -> state.guild_actors_active end)
+    get_gauge(:guild_actors_active)
   end
 
   def incr_session do
-    Agent.update(__MODULE__, fn state ->
-      %{state | sessions_active: state.sessions_active + 1}
-    end)
+    bump(:sessions_active)
   end
 
   def decr_session do
-    Agent.update(__MODULE__, fn state ->
-      %{state | sessions_active: max(0, state.sessions_active - 1)}
-    end)
+    drop_gauge(:sessions_active)
   end
 
   def get_sessions_active do
-    Agent.get(__MODULE__, fn state -> state.sessions_active end)
+    get_gauge(:sessions_active)
   end
 
   def incr_slow_consumer_drop do
-    Agent.update(__MODULE__, fn state ->
-      %{state | slow_consumer_drops: state.slow_consumer_drops + 1}
-    end)
+    bump(:slow_consumer_drops)
   end
 
   # Phase 7c (Issue #86): clustering counters.
   def incr_dedup_drop do
-    Agent.update(__MODULE__, fn state ->
-      %{state | dedup_drops: state.dedup_drops + 1}
-    end)
+    bump(:dedup_drops)
   end
 
   def incr_lease_drop do
-    Agent.update(__MODULE__, fn state ->
-      %{state | lease_drops: state.lease_drops + 1}
-    end)
+    bump(:lease_drops)
   end
 
   def incr_lease_acquired do
-    Agent.update(__MODULE__, fn state ->
-      %{state | lease_acquired: state.lease_acquired + 1}
-    end)
+    bump(:lease_acquired)
   end
 
   def incr_lease_lost do
-    Agent.update(__MODULE__, fn state ->
-      %{state | lease_lost: state.lease_lost + 1}
-    end)
+    bump(:lease_lost)
   end
 
   def incr_resubscribe do
-    Agent.update(__MODULE__, fn state ->
-      %{state | resubscribes: state.resubscribes + 1}
-    end)
+    bump(:resubscribes)
   end
 
   # Phase 7d (Issue #87): SFU liveness transitions, by direction.
   def incr_sfu_flip(direction) when direction in ["up", "down"] do
-    Agent.update(__MODULE__, fn state ->
-      %{state | sfu_flips: Map.update(state.sfu_flips, direction, 1, &(&1 + 1))}
-    end)
+    bump_label(:sfu_flips, direction)
   end
 
   def get_sfu_flips do
-    Agent.get(__MODULE__, fn state -> state.sfu_flips end)
+    flips = get_labeled(:sfu_flips)
+    %{"up" => Map.get(flips, "up", 0), "down" => Map.get(flips, "down", 0)}
   end
 
   # Phase 7d Step 4: voice sessions moved off a dead SFU (null-then-reallocate).
   def incr_sfu_failover(count \\ 1) do
-    Agent.update(__MODULE__, fn state ->
-      %{state | sfu_failovers: state.sfu_failovers + count}
-    end)
+    bump(:sfu_failovers, count)
   end
 
   def get_sfu_failovers do
-    Agent.get(__MODULE__, fn state -> state.sfu_failovers end)
+    get_counter(:sfu_failovers)
   end
 
   # Phase 7d Step 5c (Tier 1): session-cached intent applies + guarded drops.
   def incr_voice_intent_apply do
-    Agent.update(__MODULE__, fn state ->
-      %{state | voice_intent_applies: state.voice_intent_applies + 1}
-    end)
+    bump(:voice_intent_applies)
   end
 
   def incr_voice_intent_drop(reason) when is_binary(reason) do
-    Agent.update(__MODULE__, fn state ->
-      %{state | voice_intent_drops: Map.update(state.voice_intent_drops, reason, 1, &(&1 + 1))}
-    end)
+    bump_label(:voice_intent_drops, reason)
   end
 
   # Phase 7d Step 6a: demand-path confirmations that excluded a dead
   # candidate for the answerer.
   def incr_voice_placement_exclusion do
-    Agent.update(__MODULE__, fn state ->
-      %{state | voice_placement_exclusions: state.voice_placement_exclusions + 1}
-    end)
+    bump(:voice_placement_exclusions)
   end
 
   # Phase 7d Step 4 diagnosis: local actors notified per liveness transition.
   def incr_sfu_notify(count) do
-    Agent.update(__MODULE__, fn state ->
-      %{state | sfu_notifies: state.sfu_notifies + count}
-    end)
+    bump(:sfu_notifies, count)
   end
 
   # Phase 7c cache-warm fix: counts actual Postgres loads (not hits), by
   # key type. The rate of these IS the cross-node miss rate.
   def incr_cache_warm(kind) when is_binary(kind) do
-    Agent.update(__MODULE__, fn state ->
-      %{state | cache_warms: Map.update(state.cache_warms, kind, 1, &(&1 + 1))}
-    end)
+    bump_label(:cache_warms, kind)
   end
 
   def get_slow_consumer_drops do
-    Agent.get(__MODULE__, fn state -> state.slow_consumer_drops end)
+    get_counter(:slow_consumer_drops)
   end
 
   def incr_voice_state_update do
-    Agent.update(__MODULE__, fn state ->
-      %{state | voice_state_updates: state.voice_state_updates + 1}
-    end)
+    bump(:voice_state_updates)
   end
 
   def incr_voice_server_update do
-    Agent.update(__MODULE__, fn state ->
-      %{state | voice_server_updates: state.voice_server_updates + 1}
-    end)
+    bump(:voice_server_updates)
   end
 
   def incr_voice_connection do
-    Agent.update(__MODULE__, fn state ->
-      %{state | voice_connections_active: state.voice_connections_active + 1}
-    end)
+    bump(:voice_connections_active)
   end
 
   def decr_voice_connection(count \\ 1) do
-    Agent.update(__MODULE__, fn state ->
-      %{state | voice_connections_active: max(0, state.voice_connections_active - count)}
-    end)
+    drop_gauge(:voice_connections_active, count)
   end
 
   def get_voice_connections_active do
-    Agent.get(__MODULE__, fn state -> state.voice_connections_active end)
+    get_gauge(:voice_connections_active)
   end
 
   def get_voice_state_updates do
-    Agent.get(__MODULE__, fn state -> state.voice_state_updates end)
+    get_counter(:voice_state_updates)
   end
 
   def get_voice_server_updates do
-    Agent.get(__MODULE__, fn state -> state.voice_server_updates end)
+    get_counter(:voice_server_updates)
   end
 
   @fanout_buckets [0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0]
 
   def record_fanout_latency(seconds) when is_number(seconds) do
-    Agent.update(__MODULE__, fn state ->
-      hist = state.fanout_latency
-      new_sum = hist.sum + seconds
-      new_count = hist.count + 1
-
-      new_buckets =
-        Enum.reduce(@fanout_buckets, hist.buckets, fn b, acc ->
-          if seconds <= b do
-            Map.update(acc, b, 1, &(&1 + 1))
-          else
-            acc
-          end
-        end)
-
-      %{state | fanout_latency: %{hist | sum: new_sum, count: new_count, buckets: new_buckets}}
-    end)
+    record_hist(:fanout_latency, @fanout_buckets, seconds, true)
   end
 
   @queue_buckets [0, 1, 5, 10, 50, 100, 250, 500, 1000, 2048]
 
   def record_send_queue_depth(depth) when is_integer(depth) do
-    Agent.update(__MODULE__, fn state ->
-      hist = state.send_queue_depth
-      new_sum = hist.sum + depth
-      new_count = hist.count + 1
-
-      new_buckets =
-        Enum.reduce(@queue_buckets, hist.buckets, fn b, acc ->
-          if depth <= b do
-            Map.update(acc, b, 1, &(&1 + 1))
-          else
-            acc
-          end
-        end)
-
-      %{state | send_queue_depth: %{hist | sum: new_sum, count: new_count, buckets: new_buckets}}
-    end)
+    record_hist(:send_queue_depth, @queue_buckets, depth, false)
   end
 
   @resume_replay_buckets [0, 1, 5, 10, 25, 50, 100, 250, 500, 1000]
 
   def record_resume_replay_size(count) when is_integer(count) do
-    Agent.update(__MODULE__, fn state ->
-      hist = state.resume_replay_size
-      new_sum = hist.sum + count
-      new_count = hist.count + 1
-
-      new_buckets =
-        Enum.reduce(@resume_replay_buckets, hist.buckets, fn b, acc ->
-          if count <= b do
-            Map.update(acc, b, 1, &(&1 + 1))
-          else
-            acc
-          end
-        end)
-
-      %{state | resume_replay_size: %{hist | sum: new_sum, count: new_count, buckets: new_buckets}}
-    end)
+    record_hist(:resume_replay_size, @resume_replay_buckets, count, false)
   end
 
   def render do
-    state = Agent.get(__MODULE__, & &1)
+    state = snapshot()
 
     request_lines =
       counter_lines("gateway_http_requests_total", state.requests, fn {method, route} ->

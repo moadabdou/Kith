@@ -440,6 +440,9 @@ defmodule Gateway.Presence.StoreTest do
           ws_pid: self()
         )
 
+      # Issue #90: listener subscription converges async — wait.
+      wait_subscribed(guild_id, 1)
+
       # 1. session_connected -> broadcasts :online
       Store.session_connected(user_id, session_id, self(), :online)
       assert_receive {:send_frame, e1, 1, _}, 1000
@@ -477,6 +480,21 @@ defmodule Gateway.Presence.StoreTest do
       assert e_off["payload"]["status"] == "offline"
 
       Gateway.Session.close(listener_id)
+    end
+  end
+
+  defp wait_subscribed(guild_id, expected, timeout_ms \\ 2_000) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait(guild_id, expected, deadline)
+  end
+
+  defp do_wait(guild_id, expected, deadline) do
+    if Gateway.Guild.Actor.subscriber_count(guild_id) == expected do
+      :ok
+    else
+      if System.monotonic_time(:millisecond) > deadline,
+        do: flunk("subscription to #{guild_id} did not converge"),
+        else: (Process.sleep(10); do_wait(guild_id, expected, deadline))
     end
   end
 end

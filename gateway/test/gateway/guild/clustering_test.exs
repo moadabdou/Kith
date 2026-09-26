@@ -190,7 +190,8 @@ defmodule Gateway.Guild.ClusteringTest do
           ws_pid: nil
         )
 
-      assert Actor.subscriber_count(@guild) == 1
+      # Issue #90: initial subscribe converges async via handle_continue.
+      assert_eventually(fn -> Actor.subscriber_count(@guild) == 1 end, 5_000)
 
       {:ok, actor_pid} = Actor.get_or_spawn(@guild)
       :ok = Horde.DynamicSupervisor.terminate_child(Gateway.GuildSupervisor, actor_pid)

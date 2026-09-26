@@ -35,6 +35,8 @@ defmodule Gateway.Presence.SessionPresenceTest do
 
       assert is_pid(pid1)
 
+      # Issue #90: presence registration converges async via handle_continue.
+      wait_presence(@user_id, @session_1, 1)
       {:ok, presence1} = Store.get_presence(@user_id)
       assert presence1.status == :online
       assert Map.has_key?(presence1.sessions, @session_1)
@@ -51,6 +53,7 @@ defmodule Gateway.Presence.SessionPresenceTest do
 
       assert is_pid(pid2)
 
+      wait_presence(@user_id, @session_2, 2)
       {:ok, presence2} = Store.get_presence(@user_id)
       assert presence2.status == :online
       assert Map.has_key?(presence2.sessions, @session_1)
@@ -93,6 +96,7 @@ defmodule Gateway.Presence.SessionPresenceTest do
 
       Process.unlink(pid)
 
+      wait_presence(user_id, session_crash_id, 1)
       {:ok, p_before} = Store.get_presence(user_id)
       assert p_before.status == :online
       assert Map.has_key?(p_before.sessions, session_crash_id)
@@ -120,6 +124,10 @@ defmodule Gateway.Presence.SessionPresenceTest do
         )
 
       on_exit(fn -> Session.close(session_id) end)
+
+      # Wait for async initial registration before overwriting (else the
+      # async :online cast could land after our :dnd and flake).
+      wait_presence(user_id, session_id, 1)
 
       # Explicitly set status to :dnd
       Store.put_presence(user_id, :dnd, %{"desktop" => "dnd"}, session_id, ws_dummy)
@@ -153,7 +161,8 @@ defmodule Gateway.Presence.SessionPresenceTest do
 
       on_exit(fn -> Session.close(session_id) end)
 
-      # 1. Connected: user is :online
+      # 1. Connected: user is :online (async converge)
+      wait_presence(user_id, session_id, 1)
       {:ok, p1} = Store.get_presence(user_id)
       assert p1.status == :online
 
@@ -176,6 +185,29 @@ defmodule Gateway.Presence.SessionPresenceTest do
       {:ok, p3} = Store.get_presence(user_id)
       assert p3.status == :online
       assert p3.sessions[session_id].status == :online
+    end
+  end
+
+  defp wait_presence(user_id, session_id, count \\ 1, timeout_ms \\ 2_000) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait(user_id, session_id, count, deadline)
+  end
+
+  defp do_wait(user_id, session_id, count, deadline) do
+    case Store.get_presence(user_id) do
+      {:ok, p} ->
+        if Map.has_key?(p.sessions, session_id) and map_size(p.sessions) >= count do
+          :ok
+        else
+          if System.monotonic_time(:millisecond) > deadline,
+            do: flunk("presence for #{user_id}/#{session_id} did not converge"),
+            else: (Process.sleep(10); do_wait(user_id, session_id, count, deadline))
+        end
+
+      {:error, :not_found} ->
+        if System.monotonic_time(:millisecond) > deadline,
+          do: flunk("presence for #{user_id} not found"),
+          else: (Process.sleep(10); do_wait(user_id, session_id, count, deadline))
     end
   end
 end

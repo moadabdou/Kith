@@ -7,8 +7,8 @@ defmodule Gateway.Typing.BroadcasterTest do
 
   setup do
     # Clear ETS caches and lingering sessions/guild actors between tests
-    for {_, pid, _, _} <- DynamicSupervisor.which_children(Gateway.ConnSupervisor) do
-      DynamicSupervisor.terminate_child(Gateway.ConnSupervisor, pid)
+    for {_part, pid} <- Gateway.ConnSupervisor.each_child() do
+      Gateway.ConnSupervisor.terminate_child(pid)
     end
 
     for {_, pid, _, _} <- Horde.DynamicSupervisor.which_children(Gateway.GuildSupervisor) do
@@ -86,6 +86,10 @@ defmodule Gateway.Typing.BroadcasterTest do
         ws_pid: self()
       )
 
+    # Issue #90: subscriptions converge async via handle_continue — wait.
+    wait_subscribed(guild_id, 1)
+    wait_subscribed("guild_unrelated", 1)
+
     before_ts = System.system_time(:second)
     assert :ok = Broadcaster.broadcast(typer_id, channel_id)
     after_ts = System.system_time(:second)
@@ -131,6 +135,8 @@ defmodule Gateway.Typing.BroadcasterTest do
                guild_ids: [guild_id],
                ws_pid: self()
              )
+
+    wait_subscribed(guild_id, 1)
 
     assert :ok = Broadcaster.broadcast(typer_id, channel_id)
     assert_receive {:send_frame, event, _, _}, 1000
@@ -188,5 +194,20 @@ defmodule Gateway.Typing.BroadcasterTest do
     Cache.put_member_guilds(owner_id, [guild_id])
     Cache.put_member_roles(owner_id, guild_id, [])
     assert :ok = Broadcaster.broadcast(owner_id, channel_id)
+  end
+
+  defp wait_subscribed(guild_id, expected, timeout_ms \\ 2_000) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait(guild_id, expected, deadline)
+  end
+
+  defp do_wait(guild_id, expected, deadline) do
+    if Gateway.Guild.Actor.subscriber_count(guild_id) == expected do
+      :ok
+    else
+      if System.monotonic_time(:millisecond) > deadline,
+        do: flunk("subscription to #{guild_id} did not converge to #{expected}"),
+        else: (Process.sleep(10); do_wait(guild_id, expected, deadline))
+    end
   end
 end

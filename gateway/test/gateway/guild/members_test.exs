@@ -18,8 +18,8 @@ defmodule Gateway.Guild.MembersTest do
 
   setup do
     # Clear lingering sessions/guild actors/presence between tests
-    for {_, pid, _, _} <- DynamicSupervisor.which_children(Gateway.ConnSupervisor) do
-      DynamicSupervisor.terminate_child(Gateway.ConnSupervisor, pid)
+    for {_part, pid} <- Gateway.ConnSupervisor.each_child() do
+      Gateway.ConnSupervisor.terminate_child(pid)
     end
 
     for {_, pid, _, _} <- Horde.DynamicSupervisor.which_children(Gateway.GuildSupervisor) do

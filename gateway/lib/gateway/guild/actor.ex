@@ -691,6 +691,7 @@ defmodule Gateway.Guild.Actor do
                 })
 
               new_voice_states = Map.put(state.voice_states, uid, new_vs)
+              Gateway.Guild.VoiceCache.put(state.guild_id, uid, new_vs)
               fan_out_voice_state_update(new_vs, old_cid, state)
 
               # Phase 7d (Issue #87): ALWAYS re-emit on join/move. Placement
@@ -737,6 +738,7 @@ defmodule Gateway.Guild.Actor do
           }
 
           fan_out_voice_state_update(leave_vs, old_cid, state)
+          Gateway.Guild.VoiceCache.delete(state.guild_id, uid)
           {:reply, {:ok, leave_vs}, %{state | voice_states: new_voice_states}}
         else
           {:reply, {:ok, nil}, state}
@@ -1195,6 +1197,7 @@ defmodule Gateway.Guild.Actor do
           }
 
           fan_out_voice_state_update(leave_vs, vs.channel_id, state)
+          Gateway.Guild.VoiceCache.delete(state.guild_id, uid)
           %{state | voice_states: new_voice_states}
         else
           state
@@ -1227,6 +1230,7 @@ defmodule Gateway.Guild.Actor do
         })
 
       new_voice_states = Map.put(state.voice_states, uid, new_vs)
+      Gateway.Guild.VoiceCache.put(state.guild_id, uid, new_vs)
       fan_out_voice_state_update(new_vs, old_cid, state)
       %{state | voice_states: new_voice_states}
     else
@@ -1512,6 +1516,12 @@ defmodule Gateway.Guild.Actor do
     # Best-effort: let the next holder claim immediately instead of
     # waiting out the TTL.
     Gateway.Guild.Lease.release(state.guild_id)
+    # Issue #90: control owns the ETS voice mirror — clear it so a fresh
+    # actor (possibly on another node) never serves stale voice_states.
+    # Lanes never write voice, so no clear for them.
+    if state.role == :control do
+      Gateway.Guild.VoiceCache.clear_guild(state.guild_id)
+    end
     # Step 4b: a control dying with no live lane leaves a stale split
     # mark; clear it so the next control starts single. Lanes alive keep
     # the mark (fresh control re-marks on init either way).
@@ -1661,6 +1671,7 @@ defmodule Gateway.Guild.Actor do
       Gateway.Metrics.incr_voice_intent_apply()
 
       new_voice_states = Map.put(state.voice_states, uid, new_vs)
+      Gateway.Guild.VoiceCache.put(state.guild_id, uid, new_vs)
       fan_out_voice_state_update(new_vs, nil, %{state | voice_states: new_voice_states})
       dispatch_voice_server_update(session_id, cid, %{state | voice_states: new_voice_states})
 
@@ -1738,6 +1749,7 @@ defmodule Gateway.Guild.Actor do
         }
 
         fan_out_voice_state_update(leave_vs, vs.channel_id, state)
+        Gateway.Guild.VoiceCache.delete(state.guild_id, uid)
         %{state | voice_states: new_voice_states}
 
       nil ->

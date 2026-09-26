@@ -8,8 +8,8 @@ defmodule Gateway.Presence.BroadcasterTest do
 
   setup do
     # Clear ETS caches and lingering sessions between tests
-    for {_, pid, _, _} <- DynamicSupervisor.which_children(Gateway.ConnSupervisor) do
-      DynamicSupervisor.terminate_child(Gateway.ConnSupervisor, pid)
+    for {_part, pid} <- Gateway.ConnSupervisor.each_child() do
+      Gateway.ConnSupervisor.terminate_child(pid)
     end
 
     for {_, pid, _, _} <- Horde.DynamicSupervisor.which_children(Gateway.GuildSupervisor) do
@@ -48,6 +48,11 @@ defmodule Gateway.Presence.BroadcasterTest do
     # Client 3 in unrelated_g3 (not a mutual guild)
     s3_id = "sess_listener_3"
     {:ok, _} = Session.get_or_spawn(session_id: s3_id, user_id: "listener_3", guild_ids: [unrelated_g3], ws_pid: self())
+
+    # Issue #90: subscriptions converge async via handle_continue — wait.
+    wait_subscribed(mutual_g1, 1)
+    wait_subscribed(mutual_g2, 1)
+    wait_subscribed(unrelated_g3, 1)
 
     activities = [%{"name" => "Visual Studio Code", "type" => 0}]
     client_status = %{"desktop" => "dnd"}
@@ -89,6 +94,7 @@ defmodule Gateway.Presence.BroadcasterTest do
     # Spawn listening session
     s_id = "sess_seq_listener"
     {:ok, _} = Session.get_or_spawn(session_id: s_id, user_id: "listener_seq", guild_ids: [guild_id], ws_pid: self())
+    wait_subscribed(guild_id, 1)
 
     # Update 1: online
     Broadcaster.broadcast_sync(user_id, :online)
@@ -117,5 +123,20 @@ defmodule Gateway.Presence.BroadcasterTest do
 
     assert :ok = Broadcaster.broadcast_sync(user_id, :online)
     refute_receive {:send_frame, _, _, _}, 100
+  end
+
+  defp wait_subscribed(guild_id, expected, timeout_ms \\ 2_000) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait(guild_id, expected, deadline)
+  end
+
+  defp do_wait(guild_id, expected, deadline) do
+    if GuildActor.subscriber_count(guild_id) == expected do
+      :ok
+    else
+      if System.monotonic_time(:millisecond) > deadline,
+        do: flunk("subscription to #{guild_id} did not converge to #{expected}"),
+        else: (Process.sleep(10); do_wait(guild_id, expected, deadline))
+    end
   end
 end

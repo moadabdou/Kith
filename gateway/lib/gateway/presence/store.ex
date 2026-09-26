@@ -52,6 +52,37 @@ defmodule Gateway.Presence.Store do
   end
 
   @doc """
+  Fire-and-forget presence registration (Issue #90 IDENTIFY fast path).
+
+  Same semantics as `session_connected/6` but via `GenServer.cast` — the
+  caller (notably `Gateway.Session.handle_continue`) never blocks on the
+  store mailbox under burst. Convergence is eventual (µs-ms); callers that
+  need read-your-write (tests, explicit attach flows) should keep using
+  the sync `session_connected/6`.
+  """
+  def session_connected_async(user_id, session_id, ws_pid, initial_status \\ :online, client_status \\ %{}, session_pid \\ nil) do
+    case GenServer.whereis(__MODULE__) do
+      pid when is_pid(pid) ->
+        uid = to_string(user_id)
+        sid = to_string(session_id)
+        GenServer.cast(__MODULE__, {:put_presence, uid, initial_status, client_status, sid, ws_pid, session_pid})
+        :ok
+
+      nil ->
+        :ok
+    end
+  catch
+    :exit, _ -> :ok
+  end
+
+  @doc """
+  Fire-and-forget variant of `put_presence/6` (same convergence note).
+  """
+  def put_presence_async(user_id, status, client_status, session_id, ws_pid, session_pid \\ nil) do
+    session_connected_async(user_id, session_id, ws_pid, status, client_status, session_pid)
+  end
+
+  @doc """
   Lifecycle callback invoked when a session disconnects or terminates (plan/05 §1 & #31).
   Removes the session from the user's active session map in `Presence.Store`.
   If no sessions remain, transitions the user to `:offline`.
@@ -246,62 +277,8 @@ defmodule Gateway.Presence.Store do
 
   @impl true
   def handle_call({:put_presence, uid, status, client_status, sid, ws_pid, session_pid}, _from, state) do
-    now = System.system_time(:millisecond)
-    norm_status = to_status_atom(status)
-
-    # Manage process monitor if session_pid is supplied and alive.
-    # NOTE (Phase 7c): sessions may live on another node; Process.alive?/1
-    # raises on remote pids, so remote sessions are monitored directly
-    # (a disconnected node yields an immediate DOWN, handled as disconnect).
-    state =
-      if is_pid(session_pid) and session_reachable?(session_pid) do
-        # Demonitor previous ref for this session if existing
-        state = demonitor_session(state, uid, sid)
-        ref = Process.monitor(session_pid)
-        %{
-          state
-          | monitors: Map.put(state.monitors, ref, {uid, sid}),
-            session_monitors: Map.put(state.session_monitors, {uid, sid}, ref)
-        }
-      else
-        state
-      end
-
-    session_entry = %{
-      session_id: sid,
-      session_pid: session_pid,
-      ws_pid: ws_pid,
-      status: norm_status,
-      declared_status: norm_status,
-      activities: [],
-      afk: false,
-      client_status: client_status || %{},
-      last_activity_at: now
-    }
-
-    {prev_status, prev_activities, prev_client_status, updated_sessions, agg_status, agg_client_status} =
-      case :ets.lookup(@table, uid) do
-        [{^uid, prev_s, prev_cs, _prev_ts, sessions_map}] ->
-          up_sessions = Map.put(sessions_map, sid, session_entry)
-          a_status = resolve_status(up_sessions, norm_status)
-          a_cs = resolve_client_status(up_sessions, client_status || %{})
-          {prev_s, extract_activities(sessions_map), prev_cs, up_sessions, a_status, a_cs}
-
-        [] ->
-          up_sessions = %{sid => session_entry}
-          {:offline, [], %{}, up_sessions, norm_status, client_status || %{}}
-      end
-
-    :ets.insert(@table, {uid, agg_status, agg_client_status, now, updated_sessions})
-    new_activities = extract_activities(updated_sessions)
-
-    maybe_broadcast_change(
-      uid,
-      {prev_status, prev_activities, prev_client_status},
-      {agg_status, new_activities, agg_client_status}
-    )
-
-    {:reply, :ok, state}
+    {new_state, :ok} = do_put_presence(state, uid, status, client_status, sid, ws_pid, session_pid)
+    {:reply, :ok, new_state}
   end
 
   @impl true
@@ -407,6 +384,12 @@ defmodule Gateway.Presence.Store do
   end
 
   @impl true
+  def handle_cast({:put_presence, uid, status, client_status, sid, ws_pid, session_pid}, state) do
+    {new_state, :ok} = do_put_presence_async(state, uid, status, client_status, sid, ws_pid, session_pid)
+    {:noreply, new_state}
+  end
+
+  @impl true
   def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
     case Map.pop(state.monitors, ref) do
       {{uid, sid}, remaining_monitors} ->
@@ -437,6 +420,95 @@ defmodule Gateway.Presence.Store do
   end
 
   # ── Private Helpers ─────────────────────────────────────────────────────────
+
+  defp do_put_presence(state, uid, status, client_status, sid, ws_pid, session_pid) do
+    now = System.system_time(:millisecond)
+    norm_status = to_status_atom(status)
+
+    state =
+      if is_pid(session_pid) and session_reachable?(session_pid) do
+        state = demonitor_session(state, uid, sid)
+        ref = Process.monitor(session_pid)
+
+        %{
+          state
+          | monitors: Map.put(state.monitors, ref, {uid, sid}),
+            session_monitors: Map.put(state.session_monitors, {uid, sid}, ref)
+        }
+      else
+        state
+      end
+
+    session_entry = %{
+      session_id: sid,
+      session_pid: session_pid,
+      ws_pid: ws_pid,
+      status: norm_status,
+      declared_status: norm_status,
+      activities: [],
+      afk: false,
+      client_status: client_status || %{},
+      last_activity_at: now
+    }
+
+    {prev_status, prev_activities, prev_client_status, updated_sessions, agg_status, agg_client_status} =
+      case :ets.lookup(@table, uid) do
+        [{^uid, prev_s, prev_cs, _prev_ts, sessions_map}] ->
+          up_sessions = Map.put(sessions_map, sid, session_entry)
+          a_status = resolve_status(up_sessions, norm_status)
+          a_cs = resolve_client_status(up_sessions, client_status || %{})
+          {prev_s, extract_activities(sessions_map), prev_cs, up_sessions, a_status, a_cs}
+
+        [] ->
+          up_sessions = %{sid => session_entry}
+          {:offline, [], %{}, up_sessions, norm_status, client_status || %{}}
+      end
+
+    :ets.insert(@table, {uid, agg_status, agg_client_status, now, updated_sessions})
+    new_activities = extract_activities(updated_sessions)
+
+    maybe_broadcast_change(
+      uid,
+      {prev_status, prev_activities, prev_client_status},
+      {agg_status, new_activities, agg_client_status}
+    )
+
+    {state, :ok}
+  end
+
+  # Async variant (Issue #90): insert-if-absent. If the session already has
+  # an entry (e.g. an Op 3 status update landed first via the sync path),
+  # a late async initial registration must NOT clobber it back to :online.
+  # Only ensures the process monitor.
+  defp do_put_presence_async(state, uid, status, client_status, sid, ws_pid, session_pid) do
+    case :ets.lookup(@table, uid) do
+      [{^uid, _s, _cs, _ts, sessions_map}] ->
+        if Map.has_key?(sessions_map, sid) do
+          {ensure_monitor(state, uid, sid, session_pid), :ok}
+        else
+          do_put_presence(state, uid, status, client_status, sid, ws_pid, session_pid)
+        end
+
+      [] ->
+        do_put_presence(state, uid, status, client_status, sid, ws_pid, session_pid)
+    end
+  end
+
+  defp ensure_monitor(state, uid, sid, session_pid) do
+    if is_pid(session_pid) and session_reachable?(session_pid) and
+         not Map.has_key?(state.session_monitors, {uid, sid}) do
+      state = demonitor_session(state, uid, sid)
+      ref = Process.monitor(session_pid)
+
+      %{
+        state
+        | monitors: Map.put(state.monitors, ref, {uid, sid}),
+          session_monitors: Map.put(state.session_monitors, {uid, sid}, ref)
+      }
+    else
+      state
+    end
+  end
 
   defp do_sweep_idle(table, threshold_ms) do
     now = System.system_time(:millisecond)

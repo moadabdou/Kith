@@ -38,6 +38,9 @@ defmodule Gateway.Session do
 
   @doc """
   Spawns or retrieves an existing Session Actor under Gateway.ConnSupervisor.
+  The supervisor is partitioned (one DynamicSupervisor per scheduler
+  slice); routing by session_id keeps birth bursts from serializing on a
+  single mailbox while staying fully synchronous (no spawn race).
   """
   def get_or_spawn(opts) do
     session_id = Keyword.fetch!(opts, :session_id)
@@ -47,7 +50,7 @@ defmodule Gateway.Session do
         {:ok, pid}
 
       nil ->
-        case DynamicSupervisor.start_child(Gateway.ConnSupervisor, {__MODULE__, opts}) do
+        case Gateway.ConnSupervisor.start_child(session_id, {__MODULE__, opts}) do
           {:ok, pid} ->
             {:ok, pid}
 
@@ -167,6 +170,7 @@ defmodule Gateway.Session do
         nil
       end
 
+    # ETS-only, no IPC: safe to keep in the critical path (<100µs).
     if user_id do
       Gateway.Guild.Cache.put_session_user(session_id, user_id)
 
@@ -176,26 +180,6 @@ defmodule Gateway.Session do
           _ -> :ok
         end
       end)
-    end
-
-    # Subscribe self to all member guilds (+ their message lane when split;
-    # Step 4b join-then-flag: lane join confirmed before control skips).
-    lane_monitors =
-      Enum.reduce(guild_ids, %{}, fn gid, acc ->
-        Gateway.Guild.Actor.subscribe(gid, session_id, self(), user_id)
-        join_and_monitor_lane(to_string(gid), session_id, user_id, acc)
-      end)
-
-    # Register presence in Gateway.Presence.Store if user_id is provided (plan/05 §1 & #31)
-    if user_id do
-      Gateway.Presence.Store.session_connected(
-        user_id,
-        session_id,
-        ws_pid,
-        :online,
-        %{},
-        self()
-      )
     end
 
     ttl_timer =
@@ -217,26 +201,75 @@ defmodule Gateway.Session do
       max_queue_len: max_queue_len,
       ttl_timer: ttl_timer,
       # Phase 7c: %{guild_id => {actor_pid, monitor_ref}} for re-subscribe.
-      actor_monitors: monitor_actors(guild_ids, %{}),
+      # Populated in handle_continue (Issue #90): init stays non-blocking.
+      actor_monitors: %{},
       # Step 4b: %{guild_id => {lane_key, lane_pid, monitor_ref}} for the
       # message lane (empty while the guild is single).
-      lane_monitors: lane_monitors,
+      lane_monitors: %{},
       # Phase 7d Step 5b (Tier 1): %{guild_id => %{channel_id | nil,
       # self_mute, self_deaf}} — acknowledged voice intent mirrored from
       # Op 4s, pushed to the guild actor on resubscribe after its restart.
       voice_intents: %{}
     }
 
+    Logger.debug("Gateway.Session [#{session_id}] started with #{length(guild_ids)} guilds")
+    {:ok, state, {:continue, :subscribe}}
+  end
+
+  @impl true
+  def handle_continue(:subscribe, state) do
+    # Issue #90: subscriptions run OFF the IDENTIFY critical path.
+    # Each guild is isolated — a failure schedules the existing
+    # :resubscribe backoff (1s, 3s) and never crashes the session.
+    lane_monitors =
+      Enum.reduce(state.guild_ids, %{}, fn gid, acc ->
+        try do
+          case Gateway.Guild.Actor.subscribe(gid, state.session_id, self(), state.user_id) do
+            :ok ->
+              join_and_monitor_lane(to_string(gid), state.session_id, state.user_id, acc)
+
+            {:error, reason} ->
+              Logger.warning(
+                "Gateway.Session [#{state.session_id}]: async subscribe to #{gid} failed (#{inspect(reason)}); scheduling resubscribe"
+              )
+
+              Process.send_after(self(), {:resubscribe, to_string(gid), 0}, 1_000)
+              acc
+          end
+        catch
+          kind, reason ->
+            Logger.warning(
+              "Gateway.Session [#{state.session_id}]: async subscribe to #{gid} #{kind} (#{inspect(reason)}); scheduling resubscribe"
+            )
+
+            Process.send_after(self(), {:resubscribe, to_string(gid), 0}, 1_000)
+            acc
+        end
+      end)
+
+    # Non-blocking presence registration (cast, converges in µs-ms).
+    if state.user_id do
+      Gateway.Presence.Store.session_connected_async(
+        state.user_id,
+        state.session_id,
+        state.ws_pid,
+        :online,
+        %{},
+        self()
+      )
+    end
+
+    actor_monitors = monitor_actors(state.guild_ids, %{})
+
     # Phase 7c: Horde registry replicas converge asynchronously (~300ms
     # CRDT sync). Any guild with no monitor yet (actor just created on
     # another node) is rechecked through the resubscribe path, which
     # subscribes (idempotent) and monitors once visible.
-    for gid <- guild_ids, not Map.has_key?(state.actor_monitors, to_string(gid)) do
+    for gid <- state.guild_ids, not Map.has_key?(actor_monitors, to_string(gid)) do
       Process.send_after(self(), {:resubscribe, to_string(gid), 0}, 1_000)
     end
 
-    Logger.debug("Gateway.Session [#{session_id}] started with #{length(guild_ids)} guilds")
-    {:ok, state}
+    {:noreply, %{state | lane_monitors: lane_monitors, actor_monitors: actor_monitors}}
   end
 
   @impl true

@@ -47,6 +47,7 @@ defmodule Gateway.Application do
       {Gateway.Presence.Store, [idle_threshold_ms: idle_threshold_ms()]},
       Gateway.ConnSupervisor,
       Gateway.Guild.Cache,
+      Gateway.Guild.VoiceCache,
       Supervisor.child_spec({Postgrex, parse_db_url(database_url())}, id: Gateway.DB),
       Gateway.Presence.Broadcaster,
       Gateway.Typing.RateLimiter,

@@ -435,14 +435,20 @@ defmodule Gateway.WS.Handler do
                 guild_ids = Enum.map(guilds, & &1["id"])
 
                 # Hydrate active voice states for each guild filtered by caller visibility
+                # Issue #90: direct ETS reads (no GenServer.call per guild).
                 guilds_with_voice =
                   Enum.map(guilds, fn guild ->
                     gid = to_string(guild["id"])
-                    visible_states = Gateway.Guild.Actor.get_visible_voice_states(gid, user_id)
+                    visible_states = Gateway.Guild.VoiceCache.get_visible_states(gid, user_id)
                     Map.put(guild, "voice_states", visible_states)
                   end)
 
-                # Spawn Session Actor under Gateway.ConnSupervisor
+                # Spawn Session Actor under Gateway.ConnSupervisor.
+                # Sync by design: the pid is needed immediately (op 8 uses
+                # it directly) and READY must never outrun the session —
+                # async spawn opened nil-pid / intent-loss windows. init
+                # itself is ETS-only via handle_continue, so this is the
+                # single remaining fast call on the path.
                 {:ok, session_pid} =
                   Gateway.Session.get_or_spawn(
                     session_id: session_id,

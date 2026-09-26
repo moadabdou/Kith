@@ -5,8 +5,8 @@ defmodule Gateway.WS.HandlerTest do
   alias Gateway.Metrics
 
   setup do
-    for {_, pid, _, _} <- DynamicSupervisor.which_children(Gateway.ConnSupervisor) do
-      DynamicSupervisor.terminate_child(Gateway.ConnSupervisor, pid)
+    for {_part, pid} <- Gateway.ConnSupervisor.each_child() do
+      Gateway.ConnSupervisor.terminate_child(pid)
     end
 
     if :ets.whereis(:gateway_presence_store) != :undefined do
@@ -271,6 +271,10 @@ defmodule Gateway.WS.HandlerTest do
       assert is_binary(session_id)
       guild_id = "87000000000000100"
 
+      # Issue #90: subscription + presence converge async.
+      wait_subscribed(guild_id)
+      wait_presence(user_id, session_id)
+
       # Guild actor has subscriber
       subs_before = Gateway.Guild.Actor.subscriber_count(guild_id)
       assert subs_before >= 1
@@ -311,6 +315,9 @@ defmodule Gateway.WS.HandlerTest do
       {:push, _, identified_state} = Handler.handle_in({payload, opcode: :text}, state)
       session_id = identified_state.session_id
 
+      # Issue #90: presence converges async — wait before asserting.
+      wait_presence(user_id, session_id)
+
       # Verify initial presence
       {:ok, p_init} = Gateway.Presence.Store.get_presence(user_id)
       assert p_init.status == :online
@@ -343,6 +350,7 @@ defmodule Gateway.WS.HandlerTest do
       {:push, _, identified_state} = Handler.handle_in({payload, opcode: :text}, state)
       session_id = identified_state.session_id
 
+      wait_presence(user_id, session_id)
       # Seed a known (recent, non-idle) activity timestamp
       {:ok, p_init} = Gateway.Presence.Store.get_presence(user_id)
       past_ts = p_init.last_activity_at - 5_000
@@ -371,6 +379,7 @@ defmodule Gateway.WS.HandlerTest do
       {:push, _, identified_state} = Handler.handle_in({payload, opcode: :text}, state)
       session_id = identified_state.session_id
 
+      wait_presence(user_id, session_id)
       # Seed a known older timestamp, then type
       {:ok, p_init} = Gateway.Presence.Store.get_presence(user_id)
       past_ts = p_init.last_activity_at - 5_000
@@ -396,6 +405,8 @@ defmodule Gateway.WS.HandlerTest do
 
       {:push, _, identified_state} = Handler.handle_in({id_payload, opcode: :text}, state)
       session_id = identified_state.session_id
+
+      wait_presence(user_id, session_id)
 
       # Send Opcode 3 with dnd and activities
       activities = [%{"name" => "Playing Elixir", "type" => 0}]
@@ -436,6 +447,8 @@ defmodule Gateway.WS.HandlerTest do
 
       {:push, _, identified_state} = Handler.handle_in({id_payload, opcode: :text}, state)
       session_id = identified_state.session_id
+
+      wait_presence(user_id, session_id)
 
       # Send Opcode 3 with invisible
       update_payload =
@@ -481,6 +494,8 @@ defmodule Gateway.WS.HandlerTest do
       {:push, _, identified_state} = Handler.handle_in({id_payload, opcode: :text}, state)
       session_id = identified_state.session_id
 
+      wait_presence(user_id, session_id)
+
       # Invalid status string
       bad_status_payload = Jason.encode!(%{"op" => 3, "d" => %{"status" => "sleeping"}})
       assert {:ok, state1} = Handler.handle_in({bad_status_payload, opcode: :text}, identified_state)
@@ -512,6 +527,11 @@ defmodule Gateway.WS.HandlerTest do
 
       {:push, _, identified_state} = Handler.handle_in({id_payload, opcode: :text}, state)
       session_id = identified_state.session_id
+      # Precise per-session wait: count-based waits can pass instantly on a
+      # lingering actor from a previous test while OUR subscribe is still
+      # in flight via handle_continue.
+      wait_session_subscribed(session_id, "87000000000000100")
+      wait_presence(user_id, session_id)
       # Real seeded channel of Kith HQ (guild 87000000000000100), warm in cache after IDENTIFY
       channel_id = "87000000000000201"
 
@@ -609,6 +629,9 @@ defmodule Gateway.WS.HandlerTest do
 
       {:push, _, identified_state} = Handler.handle_in({id_payload, opcode: :text}, state)
       session_id = identified_state.session_id
+
+      # Async spawn: wait for the session actor before requesting members.
+      wait_session(session_id)
 
       op8_payload =
         Jason.encode!(%{
@@ -715,6 +738,7 @@ defmodule Gateway.WS.HandlerTest do
       session_id = identified1.session_id
       assert is_binary(session_id)
 
+      wait_session(session_id)
       session_pid = Gateway.Session.whereis(session_id)
       assert is_pid(session_pid)
 
@@ -929,6 +953,9 @@ defmodule Gateway.WS.HandlerTest do
       voice_chan = "87000000000000203"
       text_chan = "87000000000000201"
 
+      # Async spawn: session must exist before Op 4 intent mirroring asserts.
+      wait_session(session_id)
+
       # Failed join first (text channel): caches nothing.
       bad_msg =
         Jason.encode!(%{
@@ -1061,6 +1088,85 @@ defmodule Gateway.WS.HandlerTest do
 
       nil ->
         :ok
+    end
+  end
+
+  # Issue #90: session subscriptions + presence converge async via
+  # handle_continue. Tests that assert on them must wait.
+  defp wait_presence(user_id, session_id, timeout_ms \\ 2_000) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_presence(user_id, session_id, deadline)
+  end
+
+  defp do_wait_presence(user_id, session_id, deadline) do
+    case Gateway.Presence.Store.get_presence(user_id) do
+      {:ok, p} ->
+        if Map.has_key?(p.sessions, to_string(session_id)) do
+          :ok
+        else
+          if System.monotonic_time(:millisecond) > deadline,
+            do: flunk("presence for #{user_id}/#{session_id} did not converge"),
+            else: (Process.sleep(10); do_wait_presence(user_id, session_id, deadline))
+        end
+
+      {:error, :not_found} ->
+        if System.monotonic_time(:millisecond) > deadline,
+          do: flunk("presence for #{user_id} not found"),
+          else: (Process.sleep(10); do_wait_presence(user_id, session_id, deadline))
+    end
+  end
+
+  defp wait_subscribed(guild_id, timeout_ms \\ 2_000) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_sub(guild_id, deadline)
+  end
+
+  defp do_wait_sub(guild_id, deadline) do
+    if Gateway.Guild.Actor.subscriber_count(guild_id) >= 1 do
+      :ok
+    else
+      if System.monotonic_time(:millisecond) > deadline,
+        do: flunk("subscription to #{guild_id} did not converge"),
+        else: (Process.sleep(10); do_wait_sub(guild_id, deadline))
+    end
+  end
+
+  # Spawning is sync, but the handle_continue subscription that follows is
+  # not — wait for registry visibility before session-dependent ops.
+  defp wait_session(session_id, timeout_ms \\ 2_000) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_session(session_id, deadline)
+  end
+
+  defp do_wait_session(session_id, deadline) do
+    case Gateway.Session.whereis(session_id) do
+      pid when is_pid(pid) ->
+        :ok
+
+      nil ->
+        if System.monotonic_time(:millisecond) > deadline,
+          do: flunk("session #{session_id} did not spawn"),
+          else: (Process.sleep(10); do_wait_session(session_id, deadline))
+    end
+  end
+
+  # Precise subscribe wait: polls the actor's subscriber list for OUR
+  # session_id instead of a raw count (immune to lingering actors/subs
+  # from previous tests in the shared guild).
+  defp wait_session_subscribed(session_id, guild_id, timeout_ms \\ 2_000) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_session_sub(session_id, guild_id, deadline)
+  end
+
+  defp do_wait_session_sub(session_id, guild_id, deadline) do
+    subs = Gateway.Guild.Actor.subscribers(guild_id)
+
+    if Enum.any?(subs, fn {sid, _pid} -> to_string(sid) == to_string(session_id) end) do
+      :ok
+    else
+      if System.monotonic_time(:millisecond) > deadline,
+        do: flunk("session #{session_id} did not subscribe to #{guild_id}"),
+        else: (Process.sleep(10); do_wait_session_sub(session_id, guild_id, deadline))
     end
   end
 end

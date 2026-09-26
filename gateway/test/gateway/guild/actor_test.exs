@@ -189,16 +189,13 @@ defmodule Gateway.Guild.ActorTest do
       :ok
     end
 
-    test "channel events delivered only to subscribers with VIEW_CHANNEL" do
-      # Subscribe allowed subscriber (self()) and denied subscriber (spawned receiver)
-      denied_receiver =
-        spawn_link(fn ->
-          receive do
-            msg -> send(self(), {:denied_got_msg, msg})
-          after
-            500 -> :ok
-          end
-        end)
+    test "Issue #91: data events dumb-broadcast to ALL subscribers (sessions filter)" do
+      # The actor no longer evaluates permissions: every subscriber gets
+      # the raw frame; Gateway.Session filters via can_view? in parallel.
+      # Subscribe allowed subscriber (self()) and denied subscriber (forwarder).
+      test_pid = self()
+
+      denied_receiver = spawn_link(fn -> forward_loop(test_pid) end)
 
       :ok = Actor.subscribe(@fanout_guild, "sess-allowed", self(), @allowed_uid)
       :ok = Actor.subscribe(@fanout_guild, "sess-denied", denied_receiver, @denied_uid)
@@ -215,13 +212,11 @@ defmodule Gateway.Guild.ActorTest do
 
       Actor.dispatch_event(@fanout_guild, msg_event)
 
-      # Allowed subscriber receives MESSAGE_CREATE
+      # BOTH subscribers receive the raw MESSAGE_CREATE (dumb broadcast).
       assert_receive {:dispatch, ^msg_event, _bus_received_at}, 500
+      assert_receive {:denied_got_msg, {:dispatch, ^msg_event, _}}, 500
 
-      # Denied subscriber receives nothing
-      refute_receive {:denied_got_msg, _}, 100
-
-      # TYPING_START also filtered
+      # TYPING_START likewise broadcasts to all.
       typing_event = %{
         "type" => "TYPING_START",
         "guild_id" => @fanout_guild,
@@ -231,7 +226,7 @@ defmodule Gateway.Guild.ActorTest do
 
       Actor.dispatch_event(@fanout_guild, typing_event)
       assert_receive {:dispatch, ^typing_event, _bus_received_at}, 500
-      refute_receive {:denied_got_msg, _}, 100
+      assert_receive {:denied_got_msg, {:dispatch, ^typing_event, _}}, 500
     end
 
     test "non-channel events delivered to all subscribers" do
@@ -248,8 +243,11 @@ defmodule Gateway.Guild.ActorTest do
       assert_receive {:dispatch, ^presence_event, _}, 500
     end
 
-    test "TOCTOU: mid-session role revocation immediately cuts off channel events" do
-      # Subscriber starts with VIP role allowing VIEW_CHANNEL
+    test "TOCTOU: actor still delivers raw frames after revoke (session filters)" do
+      # Under Issue #91 the actor is permission-blind: revocation takes
+      # effect in each Session's local can_view? check (covered at session
+      # level in fanout_permission_test.exs), while the actor keeps
+      # dumb-broadcasting. This test pins the actor half of the contract.
       :ok = Actor.subscribe(@fanout_guild, "sess-toctou", self(), @allowed_uid)
 
       msg_1 = %{
@@ -292,19 +290,19 @@ defmodule Gateway.Guild.ActorTest do
 
       Actor.dispatch_event(@fanout_guild, msg_2)
 
-      # Verified: subscriber does NOT receive msg_2!
-      refute_receive {:dispatch, ^msg_2, _}, 200
+      # Actor level: raw frame still delivered (dumb broadcast) even though
+      # the subscriber lost access — the Session drops it (see
+      # fanout_permission_test.exs for the end-to-end cutoff).
+      assert_receive {:dispatch, ^msg_2, _}, 500
     end
 
-    test "CHANNEL_CREATE and MESSAGE_REACTION_ADD delivered only to subscribers with VIEW_CHANNEL" do
-      denied_receiver =
-        spawn_link(fn ->
-          receive do
-            msg -> send(self(), {:denied_got_msg, msg})
-          after
-            500 -> :ok
-          end
-        end)
+    test "CHANNEL_CREATE and MESSAGE_REACTION_ADD: smart vs dumb paths" do
+      # CHANNEL_CREATE rides the smart path (per-subscriber visibility, no
+      # leak of secret channels); MESSAGE_REACTION_ADD rides the Issue #91
+      # dumb path (all subscribers receive, sessions filter).
+      test_pid = self()
+
+      denied_receiver = spawn_link(fn -> forward_loop(test_pid) end)
 
       :ok = Actor.subscribe(@fanout_guild, "sess-allowed-chan", self(), @allowed_uid)
       :ok = Actor.subscribe(@fanout_guild, "sess-denied-chan", denied_receiver, @denied_uid)
@@ -350,7 +348,8 @@ defmodule Gateway.Guild.ActorTest do
       Actor.dispatch_event(@fanout_guild, reaction_event)
 
       assert_receive {:dispatch, ^reaction_event, _}, 500
-      refute_receive {:denied_got_msg, _}, 100
+      # Dumb path: denied raw subscriber receives too (its Session filters).
+      assert_receive {:denied_got_msg, {:dispatch, ^reaction_event, _}}, 500
     end
 
     test "CHANNEL_UPDATE emitting synthetic CHANNEL_DELETE on revoked access and CHANNEL_CREATE on gained access" do
@@ -377,14 +376,15 @@ defmodule Gateway.Guild.ActorTest do
       # Subscriber receives synthetic CHANNEL_DELETE!
       assert_receive {:dispatch, %{"type" => "CHANNEL_DELETE", "payload" => %{"id" => @fanout_chan}}, _}, 500
 
-      # Subsequent messages on this channel are not received
+      # Subsequent messages on this channel still dumb-broadcast at actor
+      # level (the Session drops them — see fanout_permission_test.exs).
       msg = %{
         "type" => "MESSAGE_CREATE",
         "guild_id" => @fanout_guild,
         "payload" => %{"id" => "m1", "channel_id" => @fanout_chan, "content" => "hi"}
       }
       Actor.dispatch_event(@fanout_guild, msg)
-      refute_receive {:dispatch, ^msg, _}, 100
+      assert_receive {:dispatch, ^msg, _}, 500
 
       # Now restore access via CHANNEL_UPDATE removing the deny overwrite
       allow_update_event = %{
@@ -446,8 +446,16 @@ defmodule Gateway.Guild.ActorTest do
     end
   end
 
-  defp eventually(assertion_fn, attempts \\ 20, delay_ms \\ 10) do
-    assertion_fn.()
+  # Forwards every received frame to the test process (loops until killed).
+  defp forward_loop(test_pid) do
+    receive do
+      msg ->
+        send(test_pid, {:denied_got_msg, msg})
+        forward_loop(test_pid)
+    end
+  end
+
+  defp eventually(assertion_fn, attempts \\ 20, delay_ms \\ 10) do    assertion_fn.()
   rescue
     e in [ExUnit.AssertionError] ->
       if attempts > 0 do

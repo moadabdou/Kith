@@ -261,6 +261,20 @@ defmodule Gateway.WS.HandlerTest do
     end
 
     test "zombie timeout closes with 4009 and leaves session resumable until TTL expiration" do
+      guild_id = "87000000000000100"
+
+      # Fresh actor slate: prior tests' async unsubscribe casts can lag
+      # into this test and skew exact subscriber counts. Lagging casts
+      # aimed at the dead pid are harmless no-ops on the fresh actor.
+      case Gateway.Guild.Actor.whereis(guild_id) do
+        pid when is_pid(pid) ->
+          Horde.DynamicSupervisor.terminate_child(Gateway.GuildSupervisor, pid)
+          wait_until(fn -> Gateway.Guild.Actor.whereis(guild_id) == nil end)
+
+        nil ->
+          :ok
+      end
+
       {:push, _, state} = Handler.init(heartbeat_interval: 50)
       user_id = 87000000000000001
       token = Gateway.Auth.JWT.issue(user_id, state.jwt_secret, 3600)
@@ -269,10 +283,8 @@ defmodule Gateway.WS.HandlerTest do
       {:push, _, identified_state} = Handler.handle_in({payload, opcode: :text}, state)
       session_id = identified_state.session_id
       assert is_binary(session_id)
-      guild_id = "87000000000000100"
 
-      # Issue #90: subscription + presence converge async.
-      wait_subscribed(guild_id)
+      wait_session_subscribed(session_id, guild_id)
       wait_presence(user_id, session_id)
 
       # Guild actor has subscriber
@@ -299,6 +311,12 @@ defmodule Gateway.WS.HandlerTest do
       # When session is explicitly closed or TTL expires, full cleanup occurs
       close_session(session_id)
       assert Gateway.Session.whereis(session_id) == nil
+      # Unsubscribe converges async (cast + monitor path): poll for our
+      # sid's absence, then assert the exact count.
+      wait_until(fn ->
+        subs = Gateway.Guild.Actor.subscribers(guild_id)
+        not Enum.any?(subs, fn {sid, _} -> to_string(sid) == to_string(session_id) end)
+      end)
       assert Gateway.Guild.Actor.subscriber_count(guild_id) == subs_before - 1
 
       # After session actor terminates, presence transitions to :offline
@@ -1128,6 +1146,22 @@ defmodule Gateway.WS.HandlerTest do
       if System.monotonic_time(:millisecond) > deadline,
         do: flunk("subscription to #{guild_id} did not converge"),
         else: (Process.sleep(10); do_wait_sub(guild_id, deadline))
+    end
+  end
+
+  # Generic condition poller for async convergence with an exact end state.
+  defp wait_until(fun, timeout_ms \\ 2_000) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_until(fun, deadline)
+  end
+
+  defp do_wait_until(fun, deadline) do
+    if fun.() do
+      :ok
+    else
+      if System.monotonic_time(:millisecond) > deadline,
+        do: flunk("condition did not converge in time"),
+        else: (Process.sleep(10); do_wait_until(fun, deadline))
     end
   end
 

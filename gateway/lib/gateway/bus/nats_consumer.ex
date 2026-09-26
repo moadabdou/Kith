@@ -263,26 +263,16 @@ defmodule Gateway.Bus.NatsConsumer do
   end
 
   defp ensure_consumer(gnat, stream, durable_name, filter_subject, deliver_subject) do
-    payload =
-      Jason.encode!(%{
-        stream_name: stream,
-        config: %{
-          durable_name: durable_name,
-          filter_subject: filter_subject,
-          deliver_subject: deliver_subject,
-          ack_policy: "explicit",
-          deliver_policy: "all",
-          replay_policy: "instant",
-          ack_wait: 30_000_000_000 # 30s in nanoseconds
-        }
-      })
+    payload = Jason.encode!(consumer_config(stream, durable_name, filter_subject, deliver_subject))
 
     case Gnat.request(gnat, "$JS.API.CONSUMER.CREATE.#{stream}.#{durable_name}", payload) do
       {:ok, %{body: body}} ->
         case Jason.decode(body) do
           {:ok, %{"error" => err}} ->
-            Logger.warning("JetStream consumer creation notice: #{inspect(err)}")
-            :ok
+            # Durable already exists (normal restarts): push config forward
+            # via UPDATE so max_deliver/ack_wait actually land on the live
+            # consumer instead of being silently skipped.
+            update_consumer(gnat, stream, durable_name, filter_subject, deliver_subject, err)
 
           _ ->
             :ok
@@ -291,6 +281,55 @@ defmodule Gateway.Bus.NatsConsumer do
       {:error, reason} ->
         Logger.warning("JetStream consumer create request failed: #{inspect(reason)}")
         {:error, reason}
+    end
+  end
+
+  # Issue #91: redelivery-storm guard. Explicit acks must arrive within
+  # ack_wait (30s) or NATS resends; max_deliver: 3 dead-letters a poison
+  # message instead of redelivering forever.
+  @doc false
+  def consumer_config(stream, durable_name, filter_subject, deliver_subject) do
+    %{
+      stream_name: stream,
+      config: %{
+        durable_name: durable_name,
+        filter_subject: filter_subject,
+        deliver_subject: deliver_subject,
+        ack_policy: "explicit",
+        deliver_policy: "all",
+        replay_policy: "instant",
+        ack_wait: 30_000_000_000, # 30s in nanoseconds
+        max_deliver: 3
+      }
+    }
+  end
+
+  defp update_consumer(gnat, stream, durable_name, filter_subject, deliver_subject, create_err) do
+    payload = Jason.encode!(consumer_config(stream, durable_name, filter_subject, deliver_subject))
+
+    case Gnat.request(gnat, "$JS.API.CONSUMER.UPDATE.#{stream}.#{durable_name}", payload) do
+      {:ok, %{body: body}} ->
+        case Jason.decode(body) do
+          {:ok, %{"error" => update_err}} ->
+            Logger.warning(
+              "JetStream consumer update notice (keeping existing config): #{inspect(update_err)} (create said: #{inspect(create_err)})"
+            )
+
+          _ ->
+            Logger.info("JetStream consumer #{durable_name} config updated (max_deliver: 3)")
+        end
+
+        :ok
+
+      {:error, reason} ->
+        # Server too old for CONSUMER.UPDATE or transient failure: the
+        # existing durable keeps serving with its current config (same as
+        # before this change) — never worse, just un-tuned.
+        Logger.warning(
+          "JetStream consumer update failed (keeping existing config): #{inspect(reason)} (create said: #{inspect(create_err)})"
+        )
+
+        :ok
     end
   end
 end

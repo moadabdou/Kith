@@ -246,6 +246,16 @@ defmodule Gateway.Metrics do
     bump(:resubscribes)
   end
 
+  # Issue #91: channel-scoped data events dropped by the session-side
+  # permission gate (actor dumb-broadcasts, sessions filter in parallel).
+  def incr_permission_filtered do
+    bump(:permission_filtered)
+  end
+
+  def get_permission_filtered do
+    get_counter(:permission_filtered)
+  end
+
   # Phase 7d (Issue #87): SFU liveness transitions, by direction.
   def incr_sfu_flip(direction) when direction in ["up", "down"] do
     bump_label(:sfu_flips, direction)
@@ -402,6 +412,9 @@ defmodule Gateway.Metrics do
           "# HELP gateway_session_resubscribes_total Sessions re-subscribed to a restarted guild actor (Phase 7c).",
           "# TYPE gateway_session_resubscribes_total counter",
           "gateway_session_resubscribes_total #{state.resubscribes}",
+          "# HELP gateway_permission_filtered_total Channel-scoped data events dropped by the session-side permission gate (Issue #91).",
+          "# TYPE gateway_permission_filtered_total counter",
+          "gateway_permission_filtered_total #{state.permission_filtered}",
           "# HELP gateway_sfu_flips_total SFU liveness transitions observed by the health poller (Phase 7d).",
           "# TYPE gateway_sfu_flips_total counter"] ++
           sfu_flip_lines(state.sfu_flips) ++ [
@@ -554,6 +567,7 @@ defmodule Gateway.Metrics do
       lease_acquired: 0,
       lease_lost: 0,
       resubscribes: 0,
+      permission_filtered: 0,
       # Phase 7d (Issue #87): pre-seeded so gateway_sfu_flips_total exists
       # from boot for the Grafana/alerting series.
       sfu_flips: %{"up" => 0, "down" => 0},

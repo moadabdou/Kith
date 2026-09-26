@@ -446,49 +446,18 @@ defmodule Gateway.Session do
 
   @impl true
   def handle_info({:dispatch, event, bus_received_at}, state) do
-    # 1. Monotonic seq assigned FIRST per plan/01 §4-5
-    seq = state.seq + 1
-
-    # 2. Append to replay ring buffer
-    replay = Gateway.RingBuffer.put(state.replay, seq, event)
-
-    # 3. Check backpressure and forward to socket writer
-    new_state =
-      if state.ws_pid && Process.alive?(state.ws_pid) do
-        case Process.info(state.ws_pid, :message_queue_len) do
-          {:message_queue_len, len} when len > state.max_queue_len ->
-            Logger.warning(
-              "Gateway.Session [#{state.session_id}]: slow consumer queue depth #{len} > #{state.max_queue_len}, dropping with 4008"
-            )
-
-            Gateway.Metrics.incr_slow_consumer_drop()
-
-            # Signal close with code 4008
-            send(state.ws_pid, {:close, 4008, "Slow consumer dropped"})
-
-            if state.ws_ref do
-              Process.demonitor(state.ws_ref, [:flush])
-            end
-
-            timer = Process.send_after(self(), :session_timeout, state.disconnect_ttl_ms)
-
-            %{state | seq: seq, replay: replay, ws_pid: nil, ws_ref: nil, ttl_timer: timer}
-
-          {:message_queue_len, len} ->
-            Gateway.Metrics.record_send_queue_depth(len)
-            send(state.ws_pid, {:send_frame, event, seq, bus_received_at})
-            %{state | seq: seq, replay: replay}
-
-          nil ->
-            timer = Process.send_after(self(), :session_timeout, state.disconnect_ttl_ms)
-            %{state | seq: seq, replay: replay, ws_pid: nil, ws_ref: nil, ttl_timer: timer}
-        end
-      else
-        # ws_pid is nil (disconnected state): event captured in replay buffer!
-        %{state | seq: seq, replay: replay}
-      end
-
-    {:noreply, new_state}
+    # Issue #91: session-side permission gate. The guild actor
+    # dumb-broadcasts channel-scoped data events to all subscribers; each
+    # session filters locally so permission resolution runs in parallel
+    # across all scheduler cores instead of serialized in one actor.
+    # Filter BEFORE seq assignment: dropped frames must not consume seq or
+    # replay space, else RESUME would leak unauthorized content.
+    if channel_scoped_denied?(event, state) do
+      Gateway.Metrics.incr_permission_filtered()
+      {:noreply, state}
+    else
+      push_dispatch(event, bus_received_at, state)
+    end
   end
 
   @impl true
@@ -645,6 +614,92 @@ defmodule Gateway.Session do
   end
 
   defp normalize_intent(_), do: %{channel_id: nil, self_mute: false, self_deaf: false}
+
+  # Issue #91: session-side permission gate helpers. Returns true when the
+  # event rides the dumb-broadcast path AND this session may not view its
+  # channel. Only dumb-path types are checked — lifecycle/synthetic types
+  # (CHANNEL_*, MEMBER/ROLE_*) stay actor-gated (the actor computes
+  # per-subscriber visibility for those, including synthetic
+  # CHANNEL_DELETE notices a revoked session must still receive).
+  defp channel_scoped_denied?(event, state) do
+    type = event["type"] || "UNKNOWN"
+
+    if type in Gateway.Guild.Actor.lane_family() or type == "TYPING_START" do
+      channel_id = dispatch_channel_id(event)
+      guild_id = event["guild_id"] || (is_map(event["payload"]) && event["payload"]["guild_id"])
+
+      not is_nil(channel_id) and not is_nil(guild_id) and
+        not Gateway.Permissions.can_view?(state.user_id, channel_id, guild_id)
+    else
+      false
+    end
+  end
+
+  # Subset of the actor's channel extraction covering data-event shapes
+  # (message payloads carry channel_id directly or nested under message).
+  defp dispatch_channel_id(event) do
+    payload = Map.get(event, "payload") || %{}
+    message = Map.get(payload, "message") || %{}
+
+    cid =
+      event["channel_id"] ||
+        payload["channel_id"] ||
+        message["channel_id"]
+
+    case cid do
+      nil -> nil
+      "" -> nil
+      id -> to_string(id)
+    end
+  end
+
+  # Original dispatch pipeline (seq, replay, backpressure, forward),
+  # now behind the Issue #91 permission gate in handle_info/2 above.
+  defp push_dispatch(event, bus_received_at, state) do
+    # 1. Monotonic seq assigned FIRST per plan/01 §4-5
+    seq = state.seq + 1
+
+    # 2. Append to replay ring buffer
+    replay = Gateway.RingBuffer.put(state.replay, seq, event)
+
+    # 3. Check backpressure and forward to socket writer
+    new_state =
+      if state.ws_pid && Process.alive?(state.ws_pid) do
+        case Process.info(state.ws_pid, :message_queue_len) do
+          {:message_queue_len, len} when len > state.max_queue_len ->
+            Logger.warning(
+              "Gateway.Session [#{state.session_id}]: slow consumer queue depth #{len} > #{state.max_queue_len}, dropping with 4008"
+            )
+
+            Gateway.Metrics.incr_slow_consumer_drop()
+
+            # Signal close with code 4008
+            send(state.ws_pid, {:close, 4008, "Slow consumer dropped"})
+
+            if state.ws_ref do
+              Process.demonitor(state.ws_ref, [:flush])
+            end
+
+            timer = Process.send_after(self(), :session_timeout, state.disconnect_ttl_ms)
+
+            %{state | seq: seq, replay: replay, ws_pid: nil, ws_ref: nil, ttl_timer: timer}
+
+          {:message_queue_len, len} ->
+            Gateway.Metrics.record_send_queue_depth(len)
+            send(state.ws_pid, {:send_frame, event, seq, bus_received_at})
+            %{state | seq: seq, replay: replay}
+
+          nil ->
+            timer = Process.send_after(self(), :session_timeout, state.disconnect_ttl_ms)
+            %{state | seq: seq, replay: replay, ws_pid: nil, ws_ref: nil, ttl_timer: timer}
+        end
+      else
+        # ws_pid is nil (disconnected state): event captured in replay buffer!
+        %{state | seq: seq, replay: replay}
+      end
+
+    {:noreply, new_state}
+  end
 
   # Step 4b: join the message lane when the guild is split (sync call,
   # confirmed), then flag migrated on control (join-then-flag: zero-loss

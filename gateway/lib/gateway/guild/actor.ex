@@ -916,9 +916,8 @@ defmodule Gateway.Guild.Actor do
             handle_channel_scoped_dispatch(event, bus_received_at, state)
           else
             handle_broadcast_dispatch(event, bus_received_at, state)
+            state
           end
-
-          state
       end
 
     {:noreply, state}
@@ -1238,22 +1237,48 @@ defmodule Gateway.Guild.Actor do
     end
   end
 
+  # Issue #91: dumb broadcast. Channel-scoped DATA events (message family,
+  # TYPING_START) go to every subscriber as raw pointer sends — no ETS, no
+  # permission algebra. Each session filters locally via can_view? in
+  # parallel across scheduler cores. Lifecycle types with synthetic
+  # membership transitions (CHANNEL_*, MEMBER/ROLE_*) keep their dedicated
+  # per-subscriber handlers below; this clause only serves data events.
   defp handle_channel_scoped_dispatch(event, bus_received_at, state) do
-    channel_id = extract_channel_id(event)
+    t0 = System.monotonic_time(:microsecond)
     # Step 4b: control skips lane-migrated sessions for lane-family
     # events (their lane serves them); lanes hold no migrated entries.
     skip_migrated? =
       state.role == :control and (event["type"] || "") in lane_family()
 
     Enum.each(state.subscribers, fn {session_id, sub} ->
-      {pid, user_id, _visible_channels} = normalize_subscriber(session_id, sub, state.real_guild_id)
-
-      if can_subscriber_view?(user_id, channel_id, state.real_guild_id) and
-           not (skip_migrated? and MapSet.member?(state.migrated, to_string(session_id))) do
-        send(pid, {:dispatch, event, bus_received_at})
+      if not (skip_migrated? and MapSet.member?(state.migrated, to_string(session_id))) do
+        if pid = subscriber_pid(sub), do: send(pid, {:dispatch, event, bus_received_at})
       end
     end)
+
+    dt = System.monotonic_time(:microsecond) - t0
+    n = Map.get(state, :disp_timed, 0) + 1
+    us = Map.get(state, :disp_timed_us, 0) + dt
+    state = Map.merge(state, %{disp_timed: n, disp_timed_us: us})
+
+    if rem(n, 1000) == 0 do
+      {:message_queue_len, mql} = Process.info(self(), :message_queue_len)
+
+      Logger.info(
+        "Actor dispatch timing: n=#{n} service_avg_us=#{div(us, n)} mbox=#{mql} subs=#{map_size(state.subscribers)}"
+      )
+
+      %{state | disp_timed: 0, disp_timed_us: 0}
+    else
+      state
+    end
   end
+
+  # Raw pid extraction without ETS/cache reads (hot path only).
+  defp subscriber_pid(%{pid: pid}), do: pid
+  defp subscriber_pid({pid, _uid}), do: pid
+  defp subscriber_pid(pid) when is_pid(pid), do: pid
+  defp subscriber_pid(_), do: nil
 
   defp handle_broadcast_dispatch(event, bus_received_at, state) do
     Enum.each(state.subscribers, fn {_session_id, sub} ->

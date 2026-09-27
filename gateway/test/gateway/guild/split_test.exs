@@ -117,7 +117,7 @@ defmodule Gateway.Guild.SplitTest do
       end
     end
 
-    test "lane assignment is stable per session and spread across lanes", %{gid: gid} do
+    test "lane assignment is stable per session and spread across lanes", %{gid: _gid} do
       for _ <- 1..20 do
         assert Actor.lane_assignment("sess-a", 4) == Actor.lane_assignment("sess-a", 4)
       end
@@ -410,7 +410,9 @@ defmodule Gateway.Guild.SplitTest do
 
       # Kill the socket: session survives on TTL, third message buffers.
       Process.exit(ws1, :kill)
+      Process.sleep(25)
       :ok = Actor.route_fanout(gid, msg_event(gid, "rl-3", "three"), nil, bus_seq: 9203)
+      Process.sleep(25)
 
       ws2 = spawn_ws(:r2)
       assert {:ok, current, [{replayed_seq, rl3}]} = Session.resume("sess-resume-lane", ws2, s2, @user)

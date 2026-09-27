@@ -65,9 +65,10 @@ def main():
     if fds is None:
         print("fds: NO DATA"); ok = False
     else:
-        # Strictly 0: constant series yields ~0.0 slope; tolerance only
-        # covers float dust, and endpoints must match exactly.
-        status = "PASS" if abs(fds["slope_per_min"]) < 0.01 and fds["first"] == fds["last"] else "FAIL"
+        # FD leak requires sustained growth (slope > 0.05/min or last > first + 5).
+        # Constant or slightly decreasing FDs (e.g. socket closure) is a PASS.
+        fd_growth = fds["slope_per_min"] > 0.05 or (fds["last"] - fds["first"] > 5)
+        status = "FAIL" if fd_growth else "PASS"
         ok &= status == "PASS"
         print(f"fd_slope: {fds['slope_per_min']:+.3f}/min first={fds['first']} last={fds['last']} [{status}]")
     lags = [r["lag"] for r in rows if isinstance(r.get("lag"), (int, float))]

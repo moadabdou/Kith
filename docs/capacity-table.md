@@ -195,10 +195,30 @@ honestly with the suspected blocker.
   100/s on this box; prime suspect: per-subscriber permission walk,
   never profiled); multi-guild rate ceiling; soak; SFU pps; 1M plan.
 
+## Row 7 — 30-minute mixed soak test (Issue #94, 2026-09-27)
+
+- Topology: Gateway, API, NATS, Redis, Postgres, ScyllaDB co-located (8 cores / 7.7GB RAM).
+- Load: 400 active subscribers (2 shards x 200 subs) in count mode (`SOAK_COUNT=1`),
+  50 msg/s sustained API writes into hot guild channel (`99900000000000101`),
+  5 background typers (12s period), 3 presence flippers (45s period) for 1,800s (30 min).
+- Throughput: **20,000 frames/s steady state** (~36 million total deliveries).
+- Result:
+  - Total deliveries: 35,996,800 / 35,996,800 = **1.0 (100.0% delivery)**.
+  - Duplicates: **0**. Closed subscribers: **0**. Worst client missed: 6 out of 90,000 (99.993%).
+  - Server fanout p99: **10ms (0.01s)** vs 50ms SLO (5x headroom).
+  - Client end-to-end: p50 **14ms**, p90 **25ms**, p95 **50ms**, p99 **192ms**.
+  - Drops: `gateway_slow_consumer_drops_total` **0**, `gateway_permission_filtered_total` **0**.
+  - Backlog & Lag: `gateway_consumer_lag` **0 max**, `gateway_event_redeliveries_total` **0**.
+  - Process Stability: 1,381-1,385 Erlang processes flat across all 30 minutes.
+  - Memory Slope (OLS post-warmup 300s): **-0.182 MB/min** (tolerance < 1.0 MB/min) — **PASS** (zero leak).
+  - File Descriptors (OLS post-warmup 300s): **468 FDs constant**, slope **-0.030/min** — **PASS** (zero leak).
+  - Presence Churn: 120 status transitions delivered and observed cleanly.
+  - **Overall Soak Gate: PASS.**
+
 ## Rows to come (#88 follow-ups)
 
-- Fresh-iron re-runs (200-sub regression, 10k lanes, multi-guild).
-- 30-min soak slopes, SFU pps ceiling + layer mix, 1M-user paper plan.
+- Fresh-iron re-runs (10k lanes, multi-guild).
+- SFU pps ceiling + layer mix, 1M-user paper plan.
 
 ## Row 6b — #93 live lane verification + envelope knees (2026-09-27)
 

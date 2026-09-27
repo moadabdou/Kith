@@ -254,6 +254,24 @@ defmodule Gateway.Guild.Actor do
     :persistent_term.get({__MODULE__, :split, to_string(guild_id)}, :single)
   end
 
+  @doc """
+  Step 4b: flags a session as lane-served for chat (fire-and-forget).
+  Sent by the session after it confirmed its lane subscription
+  (join-then-flag: zero-loss cutover). Control skips flagged sessions
+  for lane-family events.
+  """
+  def note_migrated(guild_id, session_id) do
+    case whereis(guild_id) do
+      pid when is_pid(pid) ->
+        GenServer.cast(pid, {:note_migrated, to_string(session_id)})
+
+      nil ->
+        :ok
+    end
+  catch
+    :exit, _ -> :ok
+  end
+
   defp mark_split(guild_id, lane_count) do
     :persistent_term.put({__MODULE__, :split, to_string(guild_id)}, {:split, lane_count})
   end
@@ -595,36 +613,6 @@ defmodule Gateway.Guild.Actor do
     end
   end
 
-  # Step 4b: spawn lanes, mark split, notify existing subscribers to join.
-  # Control keeps serving everyone until each session flags migrated
-  # (join-then-flag: a microsecond dup race beats any loss window, and it
-  # only runs during setup, never inside measurement).
-  defp split_guild(state) do
-    gid = state.real_guild_id
-    k = split_lane_count()
-
-    for i <- 0..(k - 1) do
-      ensure_lane(gid, lane_key(gid, i))
-    end
-
-    mark_split(gid, k)
-
-    for {_sid, sub} <- state.subscribers do
-      pid =
-        case sub do
-          %{pid: p} -> p
-          {p, _uid} -> p
-          p when is_pid(p) -> p
-          _ -> nil
-        end
-
-      if is_pid(pid), do: send(pid, {:guild_split, gid})
-    end
-
-    Logger.info("Gateway.Guild.Actor [#{gid}] split MESSAGE fan-out across #{k} lanes")
-    state
-  end
-
   # Sync explicit-leave path (Issue #88 flood keeps this call: the caller
   # needs to know the unsubscribe landed). Terminate path uses the
   # handle_cast grouped with the other casts below — same shared
@@ -755,6 +743,36 @@ defmodule Gateway.Guild.Actor do
     end
   end
 
+  # Step 4b: spawn lanes, mark split, notify existing subscribers to join.
+  # Control keeps serving everyone until each session flags migrated
+  # (join-then-flag: a microsecond dup race beats any loss window, and it
+  # only runs during setup, never inside measurement).
+  defp split_guild(state) do
+    gid = state.real_guild_id
+    k = split_lane_count()
+
+    for i <- 0..(k - 1) do
+      ensure_lane(gid, lane_key(gid, i))
+    end
+
+    mark_split(gid, k)
+
+    for {_sid, sub} <- state.subscribers do
+      pid =
+        case sub do
+          %{pid: p} -> p
+          {p, _uid} -> p
+          p when is_pid(p) -> p
+          _ -> nil
+        end
+
+      if is_pid(pid), do: send(pid, {:guild_split, gid})
+    end
+
+    Logger.info("Gateway.Guild.Actor [#{gid}] split MESSAGE fan-out across #{k} lanes")
+    state
+  end
+
 
 
 
@@ -840,24 +858,6 @@ defmodule Gateway.Guild.Actor do
   @impl true
   def handle_cast({:unsubscribe, session_id}, state) do
     {:noreply, do_unsubscribe(session_id, state)}
-  end
-
-  @doc """
-  Step 4b: flags a session as lane-served for chat (fire-and-forget).
-  Sent by the session after it confirmed its lane subscription
-  (join-then-flag: zero-loss cutover). Control skips flagged sessions
-  for lane-family events.
-  """
-  def note_migrated(guild_id, session_id) do
-    case whereis(guild_id) do
-      pid when is_pid(pid) ->
-        GenServer.cast(pid, {:note_migrated, to_string(session_id)})
-
-      nil ->
-        :ok
-    end
-  catch
-    :exit, _ -> :ok
   end
 
   @impl true

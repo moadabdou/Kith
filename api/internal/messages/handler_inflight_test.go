@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/moadabdou/Kith/api/internal/auth"
 	"github.com/moadabdou/Kith/api/internal/events"
@@ -120,18 +121,32 @@ func TestSendInvalidContentConsumesNoSlot(t *testing.T) {
 	}
 }
 
+type holdingStore struct {
+	mockHandlerStore
+	hold time.Duration
+}
+
+func (h *holdingStore) Insert(ctx context.Context, msg *Message) error {
+	if h.hold > 0 {
+		time.Sleep(h.hold)
+	}
+	return nil
+}
+
 func TestSendConcurrentHammerBounded(t *testing.T) {
-	svc := NewService(nil, &mockHandlerStore{}, testNode(t), NoopRecorder{})
+	svc := NewService(nil, &holdingStore{hold: 2 * time.Millisecond}, testNode(t), NoopRecorder{})
 	h := NewHandler(svc, 4)
 	mux := sendMux(h)
 
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	codes := map[int]int{}
+	start := make(chan struct{})
 	for i := 0; i < 100; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
+			<-start
 			rec := httptest.NewRecorder()
 			mux.ServeHTTP(rec, sendReq(int64(1000+i), `{"content":"x"}`))
 			mu.Lock()
@@ -139,6 +154,7 @@ func TestSendConcurrentHammerBounded(t *testing.T) {
 			mu.Unlock()
 		}(i)
 	}
+	close(start)
 	wg.Wait()
 	if codes[http.StatusCreated]+codes[http.StatusTooManyRequests] != 100 {
 		t.Fatalf("unexpected status mix: %v", codes)

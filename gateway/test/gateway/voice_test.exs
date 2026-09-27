@@ -529,7 +529,7 @@ defmodule Gateway.VoiceTest do
           Cache.put_channel_overwrites(cid, [])
         end
 
-        candidates = [@public_voice_channel | extra]
+        _candidates = [@public_voice_channel | extra]
         dead = Gateway.Voice.Placement.select(@public_voice_channel, pool)
 
         victim_chan = @public_voice_channel

@@ -548,6 +548,25 @@ defmodule Gateway.Session do
     end
   end
 
+  # Step 4b: control announces chat moved to lanes; join ours (idempotent
+  # with the post-subscribe join — whichever lands first wins, the other
+  # is a no-op re-subscribe).
+  def handle_info({:guild_split, gid}, state) do
+    lane_monitors =
+      join_and_monitor_lane(to_string(gid), state.session_id, state.user_id, state.lane_monitors)
+
+    {:noreply, %{state | lane_monitors: lane_monitors}}
+  end
+
+  def handle_info(:session_timeout, state) do
+    Logger.info("Gateway.Session [#{state.session_id}]: expired after disconnect timeout; stopping")
+    {:stop, :normal, state}
+  end
+
+  def handle_info(_msg, state) do
+    {:noreply, state}
+  end
+
   # Issue #95: every guild-actor call site in this module funnels through
   # here. GenServer.call exits (timeouts under burst, Horde races) become
   # plain errors feeding the resubscribe backoff. A lone slow guild must
@@ -576,25 +595,6 @@ defmodule Gateway.Session do
       {:error, reason} ->
         {:error, reason}
     end
-  end
-
-  # Step 4b: control announces chat moved to lanes; join ours (idempotent
-  # with the post-subscribe join — whichever lands first wins, the other
-  # is a no-op re-subscribe).
-  def handle_info({:guild_split, gid}, state) do
-    lane_monitors =
-      join_and_monitor_lane(to_string(gid), state.session_id, state.user_id, state.lane_monitors)
-
-    {:noreply, %{state | lane_monitors: lane_monitors}}
-  end
-
-  def handle_info(:session_timeout, state) do
-    Logger.info("Gateway.Session [#{state.session_id}]: expired after disconnect timeout; stopping")
-    {:stop, :normal, state}
-  end
-
-  def handle_info(_msg, state) do
-    {:noreply, state}
   end
 
   @impl true

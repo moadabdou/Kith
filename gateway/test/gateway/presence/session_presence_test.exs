@@ -188,7 +188,7 @@ defmodule Gateway.Presence.SessionPresenceTest do
     end
   end
 
-  defp wait_presence(user_id, session_id, count \\ 1, timeout_ms \\ 2_000) do
+  defp wait_presence(user_id, session_id, count, timeout_ms \\ 2_000) do
     deadline = System.monotonic_time(:millisecond) + timeout_ms
     do_wait(user_id, session_id, count, deadline)
   end

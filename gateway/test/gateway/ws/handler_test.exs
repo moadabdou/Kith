@@ -1134,20 +1134,6 @@ defmodule Gateway.WS.HandlerTest do
     end
   end
 
-  defp wait_subscribed(guild_id, timeout_ms \\ 2_000) do
-    deadline = System.monotonic_time(:millisecond) + timeout_ms
-    do_wait_sub(guild_id, deadline)
-  end
-
-  defp do_wait_sub(guild_id, deadline) do
-    if Gateway.Guild.Actor.subscriber_count(guild_id) >= 1 do
-      :ok
-    else
-      if System.monotonic_time(:millisecond) > deadline,
-        do: flunk("subscription to #{guild_id} did not converge"),
-        else: (Process.sleep(10); do_wait_sub(guild_id, deadline))
-    end
-  end
 
   # Generic condition poller for async convergence with an exact end state.
   defp wait_until(fun, timeout_ms \\ 2_000) do

@@ -139,7 +139,7 @@ defmodule Gateway.Guild.ClusteringTest do
     :ok
   end
 
-  defp cleanup_visibility_fixture(gid, uid, cid, rid) do
+  defp cleanup_visibility_fixture(gid, uid, _cid, _rid) do
     q = fn sql, params ->
       try do
         Postgrex.query(Gateway.DB, sql, params)

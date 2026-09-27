@@ -407,12 +407,18 @@ async function subsOnlyAggregate(subs, fanoutBefore, shardIdx, shardN) {
   }
   console.error(`[${TAG}] subs READY (shard ${shardIdx}/${shardN}), waiting for manifest ${MANIFEST}...`);
   const t0 = Date.now();
-  while (Date.now() - t0 < 600000) {
+  const waitTimeoutMs = Math.max(600000, (DURATION_S + 300) * 1000);
+  let found = false;
+  while (Date.now() - t0 < waitTimeoutMs) {
     try {
       fs.accessSync(MANIFEST);
+      found = true;
       break;
     } catch {}
     await new Promise((r) => setTimeout(r, 500));
+  }
+  if (!found) {
+    throw new Error(`timed out waiting for manifest ${MANIFEST} after ${waitTimeoutMs / 1000}s`);
   }
   let postedIds;
   try {

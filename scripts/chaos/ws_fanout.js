@@ -230,6 +230,10 @@ async function main() {
   // collapse per-node (T3 wedged gw1 twice). Default 100 suits ≤1k armies;
   // 10k births pace at BATCH=20.
   const BATCH = parseInt(process.env.BIRTH_BATCH || '100', 10);
+  // BIRTH_PACE_MS sleeps this long between birth batches, turning the
+  // burst loop into a paced ramp (Issue #93). Effective ceiling ≈
+  // BATCH / (batch_ms + BIRTH_PACE_MS) births/s. 0 = unpaced bursts.
+  const BIRTH_PACE_MS = parseInt(process.env.BIRTH_PACE_MS || '0', 10);
   let birthSlot = 0;
   for (let done = 0; done < myIdx.length; done += BATCH) {
     const slice = myIdx.slice(done, done + BATCH);
@@ -246,6 +250,9 @@ async function main() {
     );
     await Promise.all(attempts);
     console.error(`[${TAG}] ${subs.length}/${myIdx.length} subs READY (shard ${shardIdx}/${shardN})`);
+    if (BIRTH_PACE_MS > 0 && done + BATCH < myIdx.length) {
+      await new Promise((r) => setTimeout(r, BIRTH_PACE_MS));
+    }
   }
   if (subs.length < myIdx.length) {
     // Birth stragglers (single 15s IDENTIFY timeouts) must not void a

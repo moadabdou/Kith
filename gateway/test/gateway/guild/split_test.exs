@@ -189,4 +189,239 @@ defmodule Gateway.Guild.SplitTest do
       assert %{} = :sys.get_state(Actor.whereis(key)) |> Map.get(:voice_states)
     end
   end
+
+  describe "lane + session integration (Issues #91/#93)" do
+    alias Gateway.{Session, Metrics}
+
+    # Forwarder "sockets" tagging send_frames per session.
+    defp spawn_ws(tag) do
+      test = self()
+      spawn(fn -> ws_loop(test, tag) end)
+    end
+
+    defp ws_loop(test, tag) do
+      receive do
+        {:send_frame, event, seq, ts} ->
+          send(test, {tag, event, seq, ts})
+          ws_loop(test, tag)
+
+        {:close, code, reason} ->
+          send(test, {tag, :closed, code, reason})
+      end
+    end
+
+    defp spawn_session(sid, user_id, gid, ws) do
+      {:ok, pid} =
+        Session.get_or_spawn(session_id: sid, user_id: user_id, guild_ids: [gid], ws_pid: ws)
+
+      wait_subscribed(gid, sid)
+      pid
+    end
+
+    defp wait_subscribed(gid, sid, timeout_ms \\ 5_000) do
+      deadline = System.monotonic_time(:millisecond) + timeout_ms
+      do_wait_sub(gid, sid, deadline)
+    end
+
+    defp do_wait_sub(gid, sid, deadline) do
+      subscribed? =
+        Actor.subscribers(gid)
+        |> Enum.any?(fn {id, _} -> to_string(id) == to_string(sid) end)
+
+      cond do
+        subscribed? ->
+          :ok
+
+        System.monotonic_time(:millisecond) > deadline ->
+          flunk("session #{sid} did not subscribe to #{gid}")
+
+        true ->
+          # Nudge the idempotent resubscribe path (Horde placement races
+          # under parallel-suite load can strand the initial subscribe).
+          if pid = Session.whereis(sid), do: send(pid, {:resubscribe, to_string(gid), 0})
+          Process.sleep(20)
+          do_wait_sub(gid, sid, deadline)
+      end
+    end
+
+    defp wait_lane_subscribed(gid, sid, timeout_ms \\ 5_000) do
+      key = Actor.lane_key(gid, Actor.lane_assignment(sid, Actor.split_lane_count()))
+      deadline = System.monotonic_time(:millisecond) + timeout_ms
+      do_wait_lane(key, sid, deadline)
+    end
+
+    defp do_wait_lane(key, sid, deadline) do
+      subscribed? =
+        Actor.subscribers(key)
+        |> Enum.any?(fn {id, _} -> to_string(id) == to_string(sid) end)
+
+      cond do
+        subscribed? ->
+          :ok
+
+        System.monotonic_time(:millisecond) > deadline ->
+          flunk("session #{sid} did not join lane #{key}")
+
+        true ->
+          Process.sleep(20)
+          do_wait_lane(key, sid, deadline)
+      end
+    end
+
+    # Private guild fixture: @everyone denied on the channel, VIP allowed.
+    defp seed_private_guild(gid, chan, vip, alice, bob) do
+      view = 1024
+
+      Cache.put_guild(%{
+        "id" => gid,
+        "name" => "lane-filter",
+        "owner_id" => "1",
+        "channels" => [%{"id" => chan, "guild_id" => gid, "type" => 0, "name" => "c"}]
+      })
+
+      Cache.put_guild_roles(gid, [
+        %{"id" => gid, "name" => "@everyone", "position" => 0, "permissions" => 0},
+        %{"id" => vip, "name" => "VIP", "position" => 1, "permissions" => 0}
+      ])
+
+      Cache.put_channel_overwrites(chan, [
+        %{"target_id" => gid, "target_type" => 0, "allow" => 0, "deny" => view},
+        %{"target_id" => vip, "target_type" => 0, "allow" => view, "deny" => 0}
+      ])
+
+      Cache.put_member_roles(alice, gid, [vip])
+      Cache.put_member_roles(bob, gid, [])
+      Cache.put_member_guilds(alice, [gid])
+      Cache.put_member_guilds(bob, [gid])
+    end
+
+    defp lane_msg(gid, chan, id) do
+      %{
+        "type" => "MESSAGE_CREATE",
+        "guild_id" => gid,
+        "payload" => %{"id" => id, "channel_id" => chan, "content" => id}
+      }
+    end
+
+    test "lane traffic: authorized session gets gapless seq, denied gets silence", %{gid: _} do
+      n = System.unique_integer([:positive])
+      gid = "lane_filter_#{n}"
+      chan = "lane_filter_chan_#{n}"
+      vip = "lane_filter_vip_#{n}"
+      alice = "lane_filter_alice_#{n}"
+      bob = "lane_filter_bob_#{n}"
+      seed_private_guild(gid, chan, vip, alice, bob)
+
+      alice_ws = spawn_ws(:alice)
+      bob_ws = spawn_ws(:bob)
+      spawn_session("sess-lane-a-#{n}", alice, gid, alice_ws)
+      spawn_session("sess-lane-b-#{n}", bob, gid, bob_ws)
+      # Third subscriber crosses the test threshold (3) so lanes exist.
+      spawn_session("sess-lane-c-#{n}", alice, gid, spawn_ws(:carol))
+
+      # All three must be lane-joined before dispatching, else assertions
+      # about filtering would pass vacuously on never-sent frames.
+      for sid <- ["sess-lane-a-#{n}", "sess-lane-b-#{n}", "sess-lane-c-#{n}"] do
+        wait_lane_subscribed(gid, sid)
+      end
+
+      before_filtered = Metrics.get_permission_filtered()
+      {:ok, %{seq: alice_base}} = Session.info("sess-lane-a-#{n}")
+      {:ok, %{seq: bob_base}} = Session.info("sess-lane-b-#{n}")
+
+      for i <- 1..3 do
+        :ok = Actor.route_fanout(gid, lane_msg(gid, chan, "lm-#{i}"), nil, bus_seq: 9000 + i)
+      end
+
+      # Authorized: exactly 3 frames, gapless seq continuing from the
+      # pre-dispatch base (presence frames may own the early numbers —
+      # assert consecutiveness, not absolute position). No control dup —
+      # migrated sessions are skipped by control, served once by the lane.
+      for expected_seq <- [(alice_base + 1), (alice_base + 2), (alice_base + 3)] do
+        assert_receive {:alice, %{"type" => "MESSAGE_CREATE"}, ^expected_seq, _}, 1_000
+      end
+
+      refute_receive {:alice, %{"type" => "MESSAGE_CREATE"}, _, _}, 200
+
+      # Denied: silence on data frames, seq untouched by them, filter
+      # counter moved.
+      refute_receive {:bob, %{"type" => "MESSAGE_CREATE"}, _, _}, 300
+      assert {:ok, %{seq: ^bob_base}} = Session.info("sess-lane-b-#{n}")
+      assert Metrics.get_permission_filtered() > before_filtered
+    end
+
+    test "hot cutover: crossing threshold under traffic loses nothing", %{gid: gid} do
+      # Two sessions below threshold: control serves chat directly.
+      ws1 = spawn_ws(:s1)
+      ws2 = spawn_ws(:s2)
+      spawn_session("sess-hot-1", @user, gid, ws1)
+      spawn_session("sess-hot-2", @user, gid, ws2)
+
+      :ok = Actor.route_fanout(gid, msg_event(gid, "hot-0", "pre"), nil, bus_seq: 9100)
+      assert_receive {:s1, %{"type" => "MESSAGE_CREATE"}, _, _}, 1_000
+      assert_receive {:s2, %{"type" => "MESSAGE_CREATE"}, _, _}, 1_000
+
+      # Third subscriber trips the split while traffic flows.
+      ws3 = spawn_ws(:s3)
+      spawn_session("sess-hot-3", @user, gid, ws3)
+      assert {:split, 4} = Actor.split_state(gid)
+
+      # Let migration settle (lane joins + migrated flags converge).
+      for sid <- ["sess-hot-1", "sess-hot-2", "sess-hot-3"] do
+        wait_lane_subscribed(gid, sid)
+      end
+
+      # Bases AFTER settle: presence/early frames may own arbitrary seqs.
+      {:ok, %{seq: b1}} = Session.info("sess-hot-1")
+      {:ok, %{seq: b2}} = Session.info("sess-hot-2")
+      {:ok, %{seq: b3}} = Session.info("sess-hot-3")
+
+      for i <- 1..4 do
+        :ok = Actor.route_fanout(gid, msg_event(gid, "hot-#{i}", "post"), nil, bus_seq: 9100 + i)
+      end
+
+      # Every session holds a gapless run continuing its base, exactly
+      # once each (no loss, no control+lane dup).
+      for {tag, base} <- [s1: b1, s2: b2, s3: b3] do
+        for expected_seq <- Enum.to_list((base + 1)..(base + 4)) do
+          assert_receive {^tag, %{"type" => "MESSAGE_CREATE"}, ^expected_seq, _}, 1_000
+        end
+      end
+
+      for tag <- [:s1, :s2, :s3] do
+        refute_receive {^tag, %{"type" => "MESSAGE_CREATE"}, _, _}, 200
+      end
+    end
+
+    test "resume on a lane: replay intact across socket drop", %{gid: gid} do
+      ws1 = spawn_ws(:r1)
+      spawn_session("sess-resume-lane", @user, gid, ws1)
+      # Force split so this session is lane-served.
+      spawn_session("sess-resume-fill-1", @user, gid, spawn_ws(:f1))
+      spawn_session("sess-resume-fill-2", @user, gid, spawn_ws(:f2))
+      assert {:split, 4} = Actor.split_state(gid)
+      wait_lane_subscribed(gid, "sess-resume-lane")
+
+      :ok = Actor.route_fanout(gid, msg_event(gid, "rl-1", "one"), nil, bus_seq: 9201)
+      :ok = Actor.route_fanout(gid, msg_event(gid, "rl-2", "two"), nil, bus_seq: 9202)
+      assert_receive {:r1, _, s1, _}, 1_000
+      assert_receive {:r1, _, s2, _}, 1_000
+      assert s2 == s1 + 1
+
+      # Kill the socket: session survives on TTL, third message buffers.
+      Process.exit(ws1, :kill)
+      :ok = Actor.route_fanout(gid, msg_event(gid, "rl-3", "three"), nil, bus_seq: 9203)
+
+      ws2 = spawn_ws(:r2)
+      assert {:ok, current, [{replayed_seq, rl3}]} = Session.resume("sess-resume-lane", ws2, s2, @user)
+      assert current == s2 + 1
+      assert replayed_seq == s2 + 1
+      assert rl3["payload"]["message"]["id"] == "rl-3"
+
+      # Live tail continues on the new socket with seq continuity.
+      :ok = Actor.route_fanout(gid, msg_event(gid, "rl-4", "four"), nil, bus_seq: 9204)
+      assert_receive {:r2, _, s4, _}, 1_000
+      assert s4 == replayed_seq + 1
+    end
+  end
 end

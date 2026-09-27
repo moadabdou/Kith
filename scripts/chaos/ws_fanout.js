@@ -61,6 +61,64 @@ const SETTLE_S = parseInt(process.env.SETTLE_S || '5', 10);
 const HB_MS = 8000;
 const crypto = require('crypto');
 
+// SOAK_COUNT=1 switches per-delivery recording from tuple hoarding to
+// interval accounting (Issue #94): a 30-min soak at 50 msg/s x 11k subs
+// is ~1B deliveries, which tuple storage cannot hold. Bids carry a
+// trailing poster-local sequence (`<prefix>-<n>`); each sub keeps merged
+// [lo,hi] intervals (O(gaps) memory) plus a shared latency reservoir.
+// Same summary shape out, bounded memory in.
+const SOAK_COUNT = process.env.SOAK_COUNT === '1';
+const SOAK_LAT_EVERY = parseInt(process.env.SOAK_LAT_EVERY || '100', 10);
+const SOAK_LAT_CAP = parseInt(process.env.SOAK_LAT_CAP || '20000', 10);
+const soakLat = [];
+let soakLatTick = 0;
+
+function bidSeq(bid) {
+  const m = /-(\d+)$/.exec(bid);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+function soakObserve(rec, bid, sentAt, recvAt) {
+  const s = bidSeq(bid);
+  if (s === null) return;
+  const iv = rec.soak.intervals;
+  // Insert s into the sorted interval list with merge (lists stay tiny:
+  // 1 interval when nothing is missed).
+  let placed = false;
+  for (let i = 0; i < iv.length; i++) {
+    const [lo, hi] = iv[i];
+    if (s >= lo - 1 && s <= hi + 1) {
+      iv[i][0] = Math.min(lo, s);
+      iv[i][1] = Math.max(hi, s);
+      placed = true;
+      break;
+    }
+    if (s < lo - 1) {
+      iv.splice(i, 0, [s, s]);
+      placed = true;
+      break;
+    }
+  }
+  if (!placed) iv.push([s, s]);
+  // Merge pass for adjacency created by out-of-order arrival.
+  for (let i = 0; i + 1 < iv.length; i++) {
+    if (iv[i][1] + 1 >= iv[i + 1][0]) {
+      iv[i][1] = Math.max(iv[i][1], iv[i + 1][1]);
+      iv.splice(i + 1, 1);
+      i--;
+    }
+  }
+  if (Number.isFinite(sentAt) && soakLatTick++ % SOAK_LAT_EVERY === 0 && soakLat.length < SOAK_LAT_CAP) {
+    soakLat.push(recvAt - sentAt);
+  }
+}
+
+function soakReceived(rec) {
+  let n = 0;
+  for (const [lo, hi] of rec.soak.intervals) n += hi - lo + 1;
+  return n;
+}
+
 // Clock 3/3: observer health. A 500ms interval measures event-loop drift;
 // if the subscriber process saturates parsing inbound frames, drift grows
 // and client-observed latencies are observer-inflated (void run).
@@ -100,6 +158,7 @@ function connectSub(url, token, idx) {
     // sockets close, when nothing is time-critical. Control frames
     // (HELLO/READY/acks) are rare and still parsed.
     const rec = { idx, url, session_id: null, tuples: [], closed: false };
+    if (SOAK_COUNT) rec.soak = { intervals: [] };
     const ws = new WebSocket(url);
     const hb = setInterval(() => {
       if (ws.readyState === 1) ws.send(JSON.stringify({ op: 1, d: null }));
@@ -112,7 +171,8 @@ function connectSub(url, token, idx) {
         // ASCII, never JSON-escaped): raw-string match, no parse.
         const m = raw.match(/bench (\S+) (\d+)/);
         if (!m) return; // non-bench traffic
-        rec.tuples.push([m[1], parseInt(m[2], 10), Date.now()]);
+        if (SOAK_COUNT) soakObserve(rec, m[1], parseInt(m[2], 10), Date.now());
+        else rec.tuples.push([m[1], parseInt(m[2], 10), Date.now()]);
         return;
       }
       let msg;
@@ -383,6 +443,7 @@ async function subsOnlyAggregate(subs, fanoutBefore, shardIdx, shardN) {
 }
 
 function aggregateResults(subs, postedIds, posted, post429, postErr, fanoutBefore, fanoutAfter) {
+  if (SOAK_COUNT) return aggregateSoak(subs, postedIds, posted, post429, postErr, fanoutBefore, fanoutAfter);
   let totalRecv = 0, totalDups = 0;
   const allLat = [];
   let minRecv = Infinity, maxRecv = 0;
@@ -437,6 +498,58 @@ function aggregateResults(subs, postedIds, posted, post429, postErr, fanoutBefor
     worst_client_missed: missedWorst,
     closed_subs: closedSubs,
     client_latency_ms: lat,
+    server_fanout_p99: serverFanout,
+    fanout_histogram_before: fanoutBefore,
+    fanout_histogram_after: fanoutAfter,
+    gate: { server_p99_le_50ms: serverP99Ok, zero_missed: missedWorst === 0, zero_closed: closedSubs === 0 },
+  };
+}
+
+// Soak-mode aggregation: same summary shape as aggregateResults, fed by
+// per-sub intervals instead of tuple hoards. Dups are not tracked in
+// soak mode (interval accounting is idempotent by construction).
+function aggregateSoak(subs, postedIds, posted, post429, postErr, fanoutBefore, fanoutAfter) {
+  let totalRecv = 0;
+  let minRecv = Infinity, maxRecv = 0;
+  let closedSubs = 0;
+  const expected = postedIds.length;
+  let missedWorst = 0;
+  for (const { rec } of subs) {
+    const received = soakReceived(rec);
+    totalRecv += received;
+    if (rec.closed) closedSubs++;
+    minRecv = Math.min(minRecv, received);
+    maxRecv = Math.max(maxRecv, received);
+    missedWorst = Math.max(missedWorst, expected - received);
+  }
+  const lat = [...soakLat].sort((a, b) => a - b);
+  const latOut = {
+    n: lat.length,
+    p50: pct(lat, 0.5),
+    p90: pct(lat, 0.9),
+    p95: pct(lat, 0.95),
+    p99: pct(lat, 0.99),
+    max: lat.length ? lat[lat.length - 1] : null,
+    note: 'soak reservoir: every ' + SOAK_LAT_EVERY + 'th delivery; diagnostic only, NOT the gate',
+  };
+
+  const serverFanout = serverFanoutP99(fanoutBefore, fanoutAfter);
+  const serverP99Ok = serverFanout.p99_s !== null && serverFanout.p99_s <= 0.05;
+
+  return {
+    tool: 'ws_fanout',
+    tag: TAG,
+    subs: SUBS, held_subs: subs.length, rate: RATE, duration_s: DURATION_S,
+    posted, post429, postErr, expected_msgs: posted,
+    per_client_recv: { min: minRecv === Infinity ? 0 : minRecv, max: maxRecv },
+    total_deliveries: totalRecv,
+    expected_deliveries: posted * subs.length,
+    delivery_rate: posted ? +(totalRecv / (posted * subs.length)).toFixed(5) : 0,
+    total_dups: 0,
+    dups_note: 'not tracked in SOAK_COUNT mode (intervals idempotent)',
+    worst_client_missed: missedWorst,
+    closed_subs: closedSubs,
+    client_latency_ms: latOut,
     server_fanout_p99: serverFanout,
     fanout_histogram_before: fanoutBefore,
     fanout_histogram_after: fanoutAfter,

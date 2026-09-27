@@ -19,6 +19,16 @@ const (
 // Handler exposes the message endpoints.
 type Handler struct {
 	Svc *Service
+	// Inflight bounds concurrent Send work (Issue #92): overflow fails
+	// fast with 429 instead of queueing against the DB pool. Nil rejects
+	// (fail closed) — construct with NewHandler.
+	Inflight *Inflight
+}
+
+// NewHandler wires a Service with an in-flight cap for Send.
+// Non-positive max falls back to DefaultMaxInflight.
+func NewHandler(svc *Service, maxInflight int) *Handler {
+	return &Handler{Svc: svc, Inflight: NewInflight(maxInflight)}
 }
 
 func (h *Handler) writeErr(w http.ResponseWriter, err error) {
@@ -75,6 +85,17 @@ func (h *Handler) Send(w http.ResponseWriter, r *http.Request) {
 		errs.Write(w, e)
 		return
 	}
+	// Issue #92 fast-reject: validation (cheap) runs first so malformed
+	// requests never consume a slot; the semaphore guards everything
+	// downstream (perm checks, insert, publish). Rejection is immediate —
+	// never a wait — and release is deferred to cover success, error,
+	// and panic paths alike.
+	if !h.Inflight.TryAcquire() {
+		w.Header().Set("Retry-After", "1")
+		errs.Write(w, errs.RateLimited(1, false))
+		return
+	}
+	defer h.Inflight.Release()
 	m, err := h.Svc.Send(r.Context(), mustUser(r), cid, req.Content, req.Attachments)
 	if err != nil {
 		h.writeErr(w, err)

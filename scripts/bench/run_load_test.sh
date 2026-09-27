@@ -35,6 +35,11 @@ echo ""
 printf "${YELLOW}→ [1/5] Verifying environment & seeding benchmark channels...${NC}\n"
 "${BENCH_DIR}/setup_bench.sh"
 
+# Issue #92 tier isolation: park search tiers for the whole run, restore
+# on any exit path so later suites never inherit a muted stack.
+"${BENCH_DIR}/isolate_write_path.sh" isolate
+trap '"${BENCH_DIR}/isolate_write_path.sh" restore' EXIT
+
 # Ensure API is in scylla_only mode
 STORE_MODE=$(docker exec kith-api-1 env | grep -E '^MESSAGES_STORE_MODE=' | cut -d= -f2 || true)
 printf "API Message Store Mode: ${CYAN}%s${NC}\n" "${STORE_MODE:-unknown}"

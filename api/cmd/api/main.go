@@ -107,9 +107,13 @@ func main() {
 		slog.Error("failed to open database", "error", err)
 		os.Exit(1)
 	}
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(25)
-	db.SetConnMaxLifetime(5 * time.Minute)
+	db.SetMaxOpenConns(dbPoolConfig.maxOpen)
+	db.SetMaxIdleConns(dbPoolConfig.maxIdle)
+	db.SetConnMaxLifetime(dbPoolConfig.maxLifetime)
+	slog.Info("database pool configured",
+		"max_open", dbPoolConfig.maxOpen,
+		"max_idle", dbPoolConfig.maxIdle,
+		"max_lifetime", dbPoolConfig.maxLifetime.String())
 
 	jwt := auth.NewJWTManager([]byte(jwtSecret), accessTokenTTL)
 	authSvc := auth.NewService(db, node, jwt, refreshTokenTTL)
@@ -187,7 +191,12 @@ func main() {
 		slog.Info("message store initialized", "mode", "postgres_only", "store", "postgres")
 	}
 
-	messagesHandler := &messages.Handler{Svc: messages.NewService(db, msgStore, node, publisher)}
+	messagesHandler := messages.NewHandler(
+		messages.NewService(db, msgStore, node, publisher),
+		envInt("API_MSG_MAX_INFLIGHT", messages.DefaultMaxInflight),
+	)
+	slog.Info("message write path configured",
+		"max_inflight", messagesHandler.Inflight.Cap())
 
 	// Search Rung 2: Meilisearch query engine with ScyllaDB hydration & reconciliation scanner (plan/04 §3–4)
 	meiliURL := envOr("MEILISEARCH_URL", "")
@@ -418,6 +427,36 @@ func instrument(next http.Handler) http.Handler {
 func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+// dbPool holds the postgres pool sizing (Issue #92: sized against the
+// shared 200-conn budget — 2 API replicas x 25 + 2 gateways x 25 +
+// admin headroom — and verified by dbPoolConfigFromEnv unit tests).
+type dbPool struct {
+	maxOpen     int
+	maxIdle     int
+	maxLifetime time.Duration
+}
+
+// dbPoolConfig is resolved once at startup from the environment so
+// capacity runs can probe pool sensitivity without rebuilding.
+var dbPoolConfig = dbPoolConfigFromEnv()
+
+func dbPoolConfigFromEnv() dbPool {
+	return dbPool{
+		maxOpen:     envInt("PG_POOL_MAX_OPEN_CONNS", 25),
+		maxIdle:     envInt("PG_POOL_MAX_IDLE_CONNS", 25),
+		maxLifetime: time.Duration(envInt("PG_POOL_MAX_LIFETIME_SEC", 300)) * time.Second,
+	}
+}
+
+func envInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
 	}
 	return fallback
 }

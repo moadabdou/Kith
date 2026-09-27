@@ -43,9 +43,12 @@ type Config struct {
 	Samples      int
 	Duration     time.Duration
 	Label        string
-	SnapshotFile string
-	SFUContainer string
-	KillFile     string
+	SnapshotFile       string
+	SFUContainer       string
+	KillFile           string
+	LadderRungs        string
+	LadderStepDuration time.Duration
+	LadderPPS          int
 }
 
 func main() {
@@ -54,13 +57,16 @@ func main() {
 	flag.StringVar(&cfg.GatewayWS, "gateway", "ws://127.0.0.1:4000/ws", "WebSocket URL for Kith Gateway")
 	flag.StringVar(&cfg.SFUWS, "sfu", "ws://127.0.0.1:5000/ws", "WebSocket URL for Pion SFU")
 	flag.StringVar(&cfg.SFUMetrics, "sfu-metrics", "http://127.0.0.1:5000/metrics", "Prometheus metrics URL for SFU")
-	flag.StringVar(&cfg.Drill, "drill", "clap", "Drill to execute: clap | impairment | failover | partition | pli_storm | layer_throttle | screen_detail | video_failover | pool_failover | resource | all")
+	flag.StringVar(&cfg.Drill, "drill", "clap", "Drill to execute: clap | impairment | failover | partition | pli_storm | layer_throttle | screen_detail | video_failover | pool_failover | resource | audio_ladder | layer_mix | all")
 	flag.IntVar(&cfg.Samples, "samples", 100, "Number of clap impulse samples")
 	flag.DurationVar(&cfg.Duration, "duration", 5*time.Second, "Duration for continuous streaming drills")
 	flag.StringVar(&cfg.Label, "label", "", "Label for resource snapshot rows (resource drill)")
 	flag.StringVar(&cfg.SnapshotFile, "snapshot", "", "TSV file to append resource snapshots to (resource drill)")
 	flag.StringVar(&cfg.SFUContainer, "container", "kith-sfu-1", "SFU container name for docker stats (resource drill)")
 	flag.StringVar(&cfg.KillFile, "killfile", "", "File where orchestrator writes kill epoch-nanos (video_failover)")
+	flag.StringVar(&cfg.LadderRungs, "ladder-rungs", "1:2,2:4,4:8,5:10", "Step-ladder rungs as pub:sub pairs (e.g. '1:2,2:4,4:8,5:10')")
+	flag.DurationVar(&cfg.LadderStepDuration, "ladder-step-duration", 15*time.Second, "Hold duration per ladder rung")
+	flag.IntVar(&cfg.LadderPPS, "ladder-pps", 50, "RTP packet rate per publisher (50 = 20ms frames)")
 	flag.Parse()
 
 	fmt.Printf("%s%s================================================================================%s\n", colorBold, colorCyan, colorReset)
@@ -91,6 +97,10 @@ func main() {
 		err = runPoolFailoverDrill(cfg)
 	case "resource":
 		err = runResourceSnapshot(cfg, cfg.Label, cfg.SnapshotFile, cfg.SFUContainer)
+	case "audio_ladder":
+		err = runAudioLadderDrill(cfg)
+	case "layer_mix":
+		err = runLayerMixBenchmark(cfg)
 	case "all":
 		if err = runClapBenchmark(cfg); err != nil {
 			break
@@ -146,6 +156,10 @@ func registerAndLogin(apiBase, username, password string) (*TestUser, error) {
 		return nil, fmt.Errorf("register request: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("register failed status %d: %s", resp.StatusCode, string(b))
+	}
 
 	loginBody, _ := json.Marshal(map[string]string{
 		"login":    username,
@@ -220,6 +234,8 @@ func createVoiceChannel(apiBase, userToken, guildID, name string) (string, error
 	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
 		return "", err
 	}
+	// Allow NATS CHANNEL_CREATE event to propagate to Gateway.Guild.Cache
+	time.Sleep(200 * time.Millisecond)
 	return res.ID, nil
 }
 
@@ -346,6 +362,8 @@ func connectGatewayAndJoinVoice(ctx context.Context, gatewayWS string, user *Tes
 		return nil, fmt.Errorf("timeout waiting for Gateway READY")
 	}
 
+	time.Sleep(250 * time.Millisecond) // Allow non-blocking IDENTIFY async guild subscription to complete
+
 	// Send Opcode 4: VOICE_STATE_UPDATE to join channel
 	err = wsjson.Write(connCtx, conn, map[string]any{
 		"op": 4,
@@ -362,6 +380,37 @@ func connectGatewayAndJoinVoice(ctx context.Context, gatewayWS string, user *Tes
 	}
 
 	return sess, nil
+}
+
+func (s *GatewayVoiceSession) WaitForVoiceServer(timeout time.Duration) (VoiceServerInfo, error) {
+	select {
+	case vs := <-s.VoiceServerChan:
+		return vs, nil
+	case <-time.After(timeout):
+		return VoiceServerInfo{}, fmt.Errorf("timeout waiting for VOICE_SERVER_UPDATE after %v", timeout)
+	}
+}
+
+func (s *GatewayVoiceSession) WaitForVoiceServerOrRetry(guildID, channelID string, timeout time.Duration) (VoiceServerInfo, error) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		select {
+		case vs := <-s.VoiceServerChan:
+			return vs, nil
+		case <-time.After(1500 * time.Millisecond):
+			// Retry sending Opcode 4 in case async subscription hadn't landed yet
+			_ = wsjson.Write(s.Ctx, s.Conn, map[string]any{
+				"op": 4,
+				"d": map[string]any{
+					"guild_id":   guildID,
+					"channel_id": channelID,
+					"self_mute":  false,
+					"self_deaf":  false,
+				},
+			})
+		}
+	}
+	return VoiceServerInfo{}, fmt.Errorf("timeout waiting for VOICE_SERVER_UPDATE after %v", timeout)
 }
 
 func (s *GatewayVoiceSession) Close() {
@@ -629,8 +678,14 @@ func runClapBenchmark(cfg Config) error {
 	defer bobGW.Close()
 
 	// Wait for VOICE_SERVER_UPDATE for both
-	aliceVS := <-aliceGW.VoiceServerChan
-	bobVS := <-bobGW.VoiceServerChan
+	aliceVS, err := aliceGW.WaitForVoiceServer(10 * time.Second)
+	if err != nil {
+		return fmt.Errorf("alice voice server: %w", err)
+	}
+	bobVS, err := bobGW.WaitForVoiceServer(10 * time.Second)
+	if err != nil {
+		return fmt.Errorf("bob voice server: %w", err)
+	}
 
 	// 5. Connect both to SFU
 	fmt.Println("==> Connecting Alice and Bob to Pion SFU...")
@@ -813,8 +868,14 @@ func runImpairmentDrill(cfg Config) error {
 	}
 	defer bobGW.Close()
 
-	aliceVS := <-aliceGW.VoiceServerChan
-	bobVS := <-bobGW.VoiceServerChan
+	aliceVS, err := aliceGW.WaitForVoiceServer(10 * time.Second)
+	if err != nil {
+		return fmt.Errorf("alice voice server: %w", err)
+	}
+	bobVS, err := bobGW.WaitForVoiceServer(10 * time.Second)
+	if err != nil {
+		return fmt.Errorf("bob voice server: %w", err)
+	}
 
 	aliceSFU, err := connectSFUPeer(ctx, cfg.SFUWS, aliceVS.Token, chanID, alice.ID, true)
 	if err != nil {
@@ -960,9 +1021,18 @@ func runFailoverDrill(cfg Config) error {
 	}
 	defer g3.Close()
 
-	vs1 := <-g1.VoiceServerChan
-	vs2 := <-g2.VoiceServerChan
-	vs3 := <-g3.VoiceServerChan
+	vs1, err := g1.WaitForVoiceServer(10 * time.Second)
+	if err != nil {
+		return fmt.Errorf("u1 voice server: %w", err)
+	}
+	vs2, err := g2.WaitForVoiceServer(10 * time.Second)
+	if err != nil {
+		return fmt.Errorf("u2 voice server: %w", err)
+	}
+	vs3, err := g3.WaitForVoiceServer(10 * time.Second)
+	if err != nil {
+		return fmt.Errorf("u3 voice server: %w", err)
+	}
 
 	// Connect all 3 to SFU
 	fmt.Println("==> Establishing 3-way active voice call on SFU...")
@@ -1075,9 +1145,18 @@ func runFailoverDrill(cfg Config) error {
 		"d":  map[string]any{"guild_id": guildID, "channel_id": chanID, "self_mute": false, "self_deaf": false},
 	})
 
-	newVS1 := <-g1.VoiceServerChan
-	newVS2 := <-g2.VoiceServerChan
-	newVS3 := <-g3.VoiceServerChan
+	newVS1, err := g1.WaitForVoiceServer(10 * time.Second)
+	if err != nil {
+		return fmt.Errorf("u1 new voice server: %w", err)
+	}
+	newVS2, err := g2.WaitForVoiceServer(10 * time.Second)
+	if err != nil {
+		return fmt.Errorf("u2 new voice server: %w", err)
+	}
+	newVS3, err := g3.WaitForVoiceServer(10 * time.Second)
+	if err != nil {
+		return fmt.Errorf("u3 new voice server: %w", err)
+	}
 
 	// Reconnect SFU peers
 	reSFU1, err := connectSFUPeer(ctx, cfg.SFUWS, newVS1.Token, chanID, u1.ID, true)
@@ -1167,8 +1246,14 @@ func runPartitionDrill(cfg Config) error {
 		return err
 	}
 
-	aliceVS := <-aliceGW.VoiceServerChan
-	bobVS := <-bobGW.VoiceServerChan
+	aliceVS, err := aliceGW.WaitForVoiceServer(10 * time.Second)
+	if err != nil {
+		return fmt.Errorf("alice voice server: %w", err)
+	}
+	bobVS, err := bobGW.WaitForVoiceServer(10 * time.Second)
+	if err != nil {
+		return fmt.Errorf("bob voice server: %w", err)
+	}
 
 	aliceSFU, err := connectSFUPeer(ctx, cfg.SFUWS, aliceVS.Token, chanID, alice.ID, true)
 	if err != nil {

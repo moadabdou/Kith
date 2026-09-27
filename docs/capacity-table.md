@@ -199,3 +199,45 @@ honestly with the suspected blocker.
 
 - Fresh-iron re-runs (200-sub regression, 10k lanes, multi-guild).
 - 30-min soak slopes, SFU pps ceiling + layer mix, 1M-user paper plan.
+
+## Row 6b — #93 live lane verification + envelope knees (2026-09-27)
+
+Unit proof first (gateway suite 229 green, incl. 3 new lane+session
+tests): lane traffic gives authorized sessions gapless seq with silence +
+zero seq for denied; hot cutover under traffic loses nothing exactly
+once; resume on a lane replays intact with seq continuity. Seq assertions
+are base-relative — presence broadcasts consume seq asynchronously, so
+absolute positions are inherently racy.
+
+Birth calibration (paced births, bench user, clean slate per rung):
+100/s → 499/499, p50 0.7ms; 200/s → 999/999, p50 0.7ms; 400/s → 1998/1998,
+p50 1.5ms; 800/s → 3995/3995, p50 4.4ms, zero timeouts throughout. The
+pre-#90 ≤150/s pacing rule is obsolete; ~400/s (`BIRTH_BATCH=100` +
+`BIRTH_PACE_MS≈150`, new knob in `ws_fanout.js`) is the recommended 10k
+ramp. This ladder also exposed #95 (resubscribe crash → limbo sessions),
+fixed separately.
+
+Staged fan-out (single gateway node, 100 msg/s, 30s sustains, 8c/7.6GB
+shared box — API + PG + drivers co-located):
+
+| Subs | Frames/s | Delivery | Server p99 | Client | Drops of every kind |
+|---|---|---|---|---|---|
+| 200 | 20k | 100%, worst 0 | 5ms | p50 21ms | 0 |
+| 250 | 25k | 100%, worst 0 | 50ms (SLO edge) | p50 780ms | 0 |
+| 300 | 30k | 88%, worst 467 | 50ms (edge) | p50 800ms | 0 |
+| 1000 | 100k | ~46% (uniform-early) | overflow | p99 24s | 0, but redeliveries fire |
+| 2000 | 200k | ~17% (uniform-early) | overflow | p99 30s | 0, redelivery storm |
+
+Lanes held ~100µs dispatch with mailbox 0 at every scale; NATS lag 0
+except under full saturation. Misses above 25k are uniform-early
+(split-migration transient + total-system CPU saturation: session
+wakeups + per-delivery JSON encode + observers force-fed past their
+~20k frames/s/process ceiling), never per-subscriber loss — no counter
+of any kind ever moved.
+
+Envelope verdict for this box class: **25k frames/s is the last fully
+clean point; 30k slips; past ~100k only server internals stay healthy.**
+The 10k-subscriber × 100/s firehose (1M deliveries/s ≈ 8µs budget each
+all-in) needs isolated iron: gateway alone on 8+ cores, drivers on
+separate machines, ~5GB observer RAM for 60s tuple storage at 10k subs.
+10k births themselves are proven (5000/5000 READY, 0 failures).

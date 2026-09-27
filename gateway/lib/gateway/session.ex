@@ -163,8 +163,15 @@ defmodule Gateway.Session do
 
     Gateway.Metrics.incr_session()
 
+    # A live socket is monitored; anything else (nil or an already-dead
+    # pid, e.g. a supervisor restart reusing stale args) counts as
+    # disconnected. Issue #95: the old `ws_pid == nil` test armed neither
+    # monitor nor TTL for restarted sessions handed a dead pid — immortal
+    # limbo. This predicate drives both the monitor and the TTL below.
+    socket_alive? = is_pid(ws_pid) and Process.alive?(ws_pid)
+
     ws_ref =
-      if ws_pid && Process.alive?(ws_pid) do
+      if socket_alive? do
         Process.monitor(ws_pid)
       else
         nil
@@ -183,10 +190,10 @@ defmodule Gateway.Session do
     end
 
     ttl_timer =
-      if ws_pid == nil do
-        Process.send_after(self(), :session_timeout, disconnect_ttl_ms)
-      else
+      if socket_alive? do
         nil
+      else
+        Process.send_after(self(), :session_timeout, disconnect_ttl_ms)
       end
 
     state = %{
@@ -223,23 +230,13 @@ defmodule Gateway.Session do
     # :resubscribe backoff (1s, 3s) and never crashes the session.
     lane_monitors =
       Enum.reduce(state.guild_ids, %{}, fn gid, acc ->
-        try do
-          case Gateway.Guild.Actor.subscribe(gid, state.session_id, self(), state.user_id) do
-            :ok ->
-              join_and_monitor_lane(to_string(gid), state.session_id, state.user_id, acc)
+        case subscribe_guild(gid, state.session_id, state.user_id, nil, acc) do
+          {:ok, monitors} ->
+            monitors
 
-            {:error, reason} ->
-              Logger.warning(
-                "Gateway.Session [#{state.session_id}]: async subscribe to #{gid} failed (#{inspect(reason)}); scheduling resubscribe"
-              )
-
-              Process.send_after(self(), {:resubscribe, to_string(gid), 0}, 1_000)
-              acc
-          end
-        catch
-          kind, reason ->
+          {:error, reason} ->
             Logger.warning(
-              "Gateway.Session [#{state.session_id}]: async subscribe to #{gid} #{kind} (#{inspect(reason)}); scheduling resubscribe"
+              "Gateway.Session [#{state.session_id}]: async subscribe to #{gid} failed (#{inspect(reason)}); scheduling resubscribe"
             )
 
             Process.send_after(self(), {:resubscribe, to_string(gid), 0}, 1_000)
@@ -504,13 +501,10 @@ defmodule Gateway.Session do
     # The actor applies it under its guards (absent, lease, perms).
     intent = Map.get(state.voice_intents, to_string(gid))
 
-    case Gateway.Guild.Actor.subscribe(gid, state.session_id, self(), state.user_id, intent) do
-      :ok ->
+    case subscribe_guild(gid, state.session_id, state.user_id, intent, state.lane_monitors) do
+      {:ok, lane_monitors} ->
         Gateway.Metrics.incr_resubscribe()
         Logger.info("Gateway.Session [#{state.session_id}]: re-subscribed to guild #{gid}")
-        # Step 4b: re-join the lane too (idempotent). Covers a restarted
-        # control whose migrated set was lost: the lane join re-flags it.
-        lane_monitors = join_and_monitor_lane(to_string(gid), state.session_id, state.user_id, state.lane_monitors)
 
         {:noreply,
          %{state | actor_monitors: monitor_actors([gid], state.actor_monitors), lane_monitors: lane_monitors}}
@@ -532,7 +526,9 @@ defmodule Gateway.Session do
   # inside subscribe revives a dead lane; order per guild is preserved
   # because the lane key (and its FIFO mailbox) never changes.
   def handle_info({:resubscribe_lane, gid, key, attempt}, state) do
-    case Gateway.Guild.Actor.subscribe(key, state.session_id, self(), state.user_id) do
+    case try_guild_call(fn ->
+           Gateway.Guild.Actor.subscribe(key, state.session_id, self(), state.user_id)
+         end) do
       :ok ->
         Logger.info("Gateway.Session [#{state.session_id}]: re-subscribed to lane #{key}")
 
@@ -549,6 +545,36 @@ defmodule Gateway.Session do
             Process.send_after(self(), {:resubscribe_lane, gid, key, attempt + 1}, delay)
             {:noreply, state}
         end
+    end
+  end
+
+  # Issue #95: every guild-actor call site in this module funnels through
+  # here. GenServer.call exits (timeouts under burst, Horde races) become
+  # plain errors feeding the resubscribe backoff. A lone slow guild must
+  # never crash the session: a crash restarts it with a stale dead ws_pid
+  # that arms neither monitor nor TTL (limbo). Never raises.
+  defp try_guild_call(fun) do
+    case fun.() do
+      :ok -> :ok
+      {:error, reason} -> {:error, reason}
+      other -> {:error, {:unexpected_reply, other}}
+    end
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  # Full per-guild subscription (control + lane join) that never raises.
+  # Lane-join failures schedule a lane-only retry; the resubscribe loop
+  # heals anything left over.
+  defp subscribe_guild(gid, session_id, user_id, intent, lane_monitors) do
+    case try_guild_call(fn ->
+           Gateway.Guild.Actor.subscribe(gid, session_id, self(), user_id, intent)
+         end) do
+      :ok ->
+        {:ok, join_and_monitor_lane(to_string(gid), session_id, user_id, lane_monitors)}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -704,17 +730,40 @@ defmodule Gateway.Session do
   # Step 4b: join the message lane when the guild is split (sync call,
   # confirmed), then flag migrated on control (join-then-flag: zero-loss
   # cutover). Idempotent: safe to run on every (re)subscribe and on the
-  # control's split announcement.
+  # control's split announcement. Never raises (Issue #95): a failed lane
+  # join schedules a lane-only retry and the resubscribe loop heals the
+  # rest — this runs inside handle_continue, resubscribe, and guild_split
+  # handlers, none of which may crash on a slow actor.
   defp join_and_monitor_lane(gid, session_id, user_id, lane_monitors) do
     case Gateway.Guild.Actor.message_lane(gid, session_id) do
       {:lane, key} ->
-        Gateway.Guild.Actor.subscribe(key, session_id, self(), user_id)
-        Gateway.Guild.Actor.note_migrated(gid, session_id)
-        monitor_lane_key(gid, key, lane_monitors)
+        case try_guild_call(fn ->
+               Gateway.Guild.Actor.subscribe(key, session_id, self(), user_id)
+             end) do
+          :ok ->
+            Gateway.Guild.Actor.note_migrated(gid, session_id)
+            monitor_lane_key(gid, key, lane_monitors)
+
+          {:error, reason} ->
+            Logger.warning(
+              "Gateway.Session [#{session_id}]: lane join #{key} failed (#{inspect(reason)}); scheduling lane resubscribe"
+            )
+
+            Process.send_after(self(), {:resubscribe_lane, to_string(gid), key, 0}, 1_000)
+            lane_monitors
+        end
 
       :single ->
         lane_monitors
     end
+  catch
+    kind, reason ->
+      Logger.warning(
+        "Gateway.Session [#{session_id}]: lane join for #{gid} #{kind} (#{inspect(reason)}); scheduling resubscribe"
+      )
+
+      Process.send_after(self(), {:resubscribe, to_string(gid), 0}, 1_000)
+      lane_monitors
   end
 
   defp monitor_lane_key(gid, key, lane_monitors) do

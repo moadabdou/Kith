@@ -226,8 +226,73 @@ defmodule Gateway.SessionTest do
     end
   end
 
-  describe "Tier 1 voice intent mirror (Phase 7d Step 5b)" do
-    test "note_voice_intent caches join and clears on leave (per-gid)" do
+  describe "Issue #95: subscribe-failure survival (no crash, no limbo)" do
+    test "subscribe timeouts never crash the session; it heals on retry" do
+      gid = "sess-timeout-guild-#{System.unique_integer([:positive])}"
+      sid = "sess-timeout-#{System.unique_integer([:positive])}"
+      {:ok, actor_pid} = Gateway.Guild.Actor.get_or_spawn(gid)
+
+      try do
+        # Freeze the actor: every subscribe call blocks to its 5s timeout,
+        # simulating a saturated actor under burst.
+        :sys.suspend(actor_pid)
+
+        {:ok, session_pid} =
+          Session.get_or_spawn(session_id: sid, user_id: nil, guild_ids: [gid], ws_pid: self())
+
+        # Initial handle_continue subscribe times out at ~5s (caught), the
+        # scheduled resubscribe attempt also blocks to its own timeout.
+        # Either way the session must stay the SAME process: previously the
+        # unguarded resubscribe handler crashed it, and the supervisor
+        # restart (stale dead ws_pid, no TTL) stranded it in limbo.
+        Process.sleep(6_500)
+        assert Process.alive?(session_pid)
+        assert Session.whereis(sid) == session_pid
+
+        # Actor recovers: an explicit retry converges the subscription.
+        :sys.resume(actor_pid)
+        send(session_pid, {:resubscribe, gid, 0})
+
+        wait_until(fn ->
+          Gateway.Guild.Actor.subscribers(gid)
+          |> Enum.any?(fn {id, _} -> id == sid end)
+        end)
+
+        Session.close(sid)
+      after
+        # Never leave a suspended actor behind for other tests.
+        try do
+          :sys.resume(actor_pid)
+        catch
+          _, _ -> :ok
+        end
+      end
+    end
+
+    test "init with an already-dead socket arms the disconnect TTL" do
+      sid = "sess-dead-ws-#{System.unique_integer([:positive])}"
+      dead = spawn(fn -> :ok end)
+      ref = Process.monitor(dead)
+
+      receive do
+        {:DOWN, ^ref, :process, ^dead, _} -> :ok
+      after
+        1_000 -> flunk("helper process did not exit")
+      end
+
+      {:ok, session_pid} =
+        Session.start_link(session_id: sid, user_id: nil, guild_ids: [], ws_pid: dead, disconnect_ttl_ms: 100)
+
+      Process.unlink(session_pid)
+      sref = Process.monitor(session_pid)
+
+      # Pre-fix this session lived forever (non-nil dead pid armed no TTL).
+      assert_receive {:DOWN, ^sref, :process, ^session_pid, :normal}, 2_000
+      assert Session.whereis(sid) == nil
+    end
+  end
+
+  describe "Tier 1 voice intent mirror (Phase 7d Step 5b)" do    test "note_voice_intent caches join and clears on leave (per-gid)" do
       {:ok, session_pid} =
         Session.get_or_spawn(
           session_id: @test_session_id,

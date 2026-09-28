@@ -47,7 +47,32 @@ Redis lease (10s TTL / 3s renew), NATS broadcast + actor dedup.
 * Actual: actor created by cohort at +2s, all 4 sessions within 80ms after,
   3/3 received each, zero dups. Kill→whole 27s (mostly drill overhead:
   IDENTIFY round-trips + 25s listen window; system contribution ~2s).
-* SLO #3 (27s ≤ 60s) ✓.
+
+## Phase 7e — Failure Drills: ScyllaDB partition under live load (Issue #97, Drill 5)
+
+Harness: `scripts/chaos/phase7_scylla.sh` (`scripts/chaos/phase7_scylla_chaos.go`).
+Topology: 3-node Scylla cluster (`scylla1`, `scylla2`, `scylla3`, RF=3, NetworkTopologyStrategy).
+Target: `kith.messages` table with TWCS compaction.
+
+### D5 — ScyllaDB node network partition under live read/write load
+
+* Prediction:
+  - 3-node cluster with RF=3 has Quorum = 2. Partitioning `scylla2` (`docker network disconnect` + `nodetool disablegossip`) leaves `{scylla1, scylla3}` surviving (66.7% > 50%).
+  - Live writes and reads at `LOCAL_QUORUM` (W=2, R=2) will continue with 100% availability (0 errors) throughout the partition window.
+  - In contrast, writes with `Consistency: ALL` (W=3) must fail 100% while `scylla2` is isolated.
+  - Upon network reconnection and gossip enable, RTO will be <= 15s.
+  - Anti-entropy catch-up (`nodetool repair -pr kith messages`) reconciles all partition-window writes to the recovered node with RPO = 0 (100% row match across all 3 nodes, 0 missing rows, 0 content corruption).
+  - Post-healing stress burst recovers to 100% throughput with write/read p99 latency < 50ms.
+* Actual:
+  - Partition window: 8.0s under live concurrent traffic.
+  - Quorum invariant: 1,984/1,984 writes at `LOCAL_QUORUM` succeeded (0 failures, 100.0% availability).
+  - Quorum reads: 1,976/1,976 reads at `LOCAL_QUORUM` succeeded (0 failures, 0 phantoms).
+  - Quorum boundary probe: 5/5 writes at `Consistency: ALL` failed (100% failure as expected by quorum math).
+  - Recovery Time Objective (RTO): 1.35s (from network reconnect to `nodetool status` reporting `UN`). Gate <= 15s ✓.
+  - Anti-entropy audit: 1,984 / 1,984 messages present on Node 1 (100%), Node 2 (100%), and Node 3 (100%).
+  - Recovery Point Objective (RPO): 0 missing rows, 0 content mismatches (0 corruption). Gate RPO = 0 ✓.
+  - Post-healing stress recovery: 2,067.1 writes/sec at `LOCAL_QUORUM`. Write p50: 1.74ms, p95: 3.26ms, p99: 4.36ms (< 50ms gate ✓). Read p50: 1.57ms, p95: 3.40ms, p99: 5.26ms (< 50ms gate ✓).
+  - Verdict: **PASS**. Results archived in `scripts/chaos/results/phase7_scylla_drill5.json`.
 
 ### Environment notes (applies to all Phase 7 drills)
 

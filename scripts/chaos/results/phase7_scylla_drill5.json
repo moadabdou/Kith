@@ -1,0 +1,78 @@
+{
+  "drill_name": "Drill 5: ScyllaDB Node Network Partition",
+  "timestamp": "2026-09-28T01:31:39Z",
+  "baseline_write_latency": {
+    "count": 300,
+    "min_ms": 1.134,
+    "p50_ms": 1.584,
+    "p95_ms": 2.118,
+    "p99_ms": 3.546,
+    "max_ms": 18.257,
+    "avg_ms": 1.678
+  },
+  "baseline_read_latency": {
+    "count": 300,
+    "min_ms": 1.166,
+    "p50_ms": 1.676,
+    "p95_ms": 2.305,
+    "p99_ms": 3.263,
+    "max_ms": 4.57,
+    "avg_ms": 1.702
+  },
+  "partition_duration_sec": 8.00040057,
+  "partition_writes_attempted": 1984,
+  "partition_writes_succeeded": 1984,
+  "partition_writes_failed": 0,
+  "partition_reads_attempted": 1976,
+  "partition_reads_succeeded": 1976,
+  "partition_reads_failed": 0,
+  "all_quorum_prober_attempted": 5,
+  "all_quorum_prober_failed": 5,
+  "partition_write_latency": {
+    "count": 1984,
+    "min_ms": 0.451,
+    "p50_ms": 2.286,
+    "p95_ms": 4.229,
+    "p99_ms": 6.914,
+    "max_ms": 14.654,
+    "avg_ms": 2.47
+  },
+  "partition_read_latency": {
+    "count": 1976,
+    "min_ms": 0.426,
+    "p50_ms": 2.38,
+    "p95_ms": 4.321,
+    "p99_ms": 7.217,
+    "max_ms": 15.982,
+    "avg_ms": 2.571
+  },
+  "rto_seconds": 1.35,
+  "post_repair_missing_on_victim": 0,
+  "audited_total_messages": 1984,
+  "node1_audit_successes": 1984,
+  "node2_audit_successes": 1984,
+  "node3_audit_successes": 1984,
+  "audit_content_mismatches": 0,
+  "stress_writes_attempted": 1000,
+  "stress_writes_succeeded": 1000,
+  "stress_throughput_ops_sec": 2067.1,
+  "stress_write_latency": {
+    "count": 1000,
+    "min_ms": 0.391,
+    "p50_ms": 1.743,
+    "p95_ms": 3.261,
+    "p99_ms": 4.355,
+    "max_ms": 5.505,
+    "avg_ms": 1.836
+  },
+  "stress_read_latency": {
+    "count": 1000,
+    "min_ms": 0.403,
+    "p50_ms": 1.573,
+    "p95_ms": 3.403,
+    "p99_ms": 5.261,
+    "max_ms": 6.629,
+    "avg_ms": 1.673
+  },
+  "gate_verdict": "PASS"
+}

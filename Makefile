@@ -27,7 +27,7 @@ scylla-status:
 	docker compose exec scylla nodetool status
 
 gateway-test:
-	docker build --target test -t kith-gateway-test gateway
+	docker build --target test -t kith-gateway-test -f gateway/Dockerfile .
 	docker run --rm --network host -v $(CURDIR)/testvectors:/app/testvectors:ro -e PORT=0 kith-gateway-test
 
 smoke:

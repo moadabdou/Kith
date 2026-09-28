@@ -44,6 +44,33 @@ defmodule Gateway.Guild.VoiceCache do
   No-op when `channel_id` is nil (use `delete/2` for leaves).
   """
   def put(guild_id, user_id, vs) do
+    do_put(guild_id, user_id, vs)
+    replicate(:do_put, [guild_id, user_id, vs])
+    :ok
+  end
+
+  @doc """
+  Removes a user's voice entry for a guild (leave / cleanup).
+  """
+  def delete(guild_id, user_id) do
+    do_delete(guild_id, user_id)
+    replicate(:do_delete, [guild_id, user_id])
+    :ok
+  end
+
+  @doc """
+  Clears all voice entries for a guild (actor terminate).
+  """
+  def clear_guild(guild_id) do
+    do_clear_guild(guild_id)
+    replicate(:do_clear_guild, [guild_id])
+    :ok
+  end
+
+  @doc """
+  Locally writes an entry into the node's ETS table.
+  """
+  def do_put(guild_id, user_id, vs) do
     gid = to_string(guild_id)
     uid = to_string(user_id)
     map = to_voice_map(gid, uid, vs)
@@ -52,7 +79,7 @@ defmodule Gateway.Guild.VoiceCache do
       ensure_table()
       :ets.insert(@table, {{gid, uid}, map})
     else
-      delete(gid, uid)
+      do_delete(gid, uid)
     end
 
     :ok
@@ -61,11 +88,10 @@ defmodule Gateway.Guild.VoiceCache do
   end
 
   @doc """
-  Removes a user's voice entry for a guild (leave / cleanup).
+  Locally removes an entry from the node's ETS table.
   """
-  def delete(guild_id, user_id) do
+  def do_delete(guild_id, user_id) do
     ensure_table()
-
     :ets.delete(@table, {to_string(guild_id), to_string(user_id)})
     :ok
   rescue
@@ -73,15 +99,35 @@ defmodule Gateway.Guild.VoiceCache do
   end
 
   @doc """
-  Clears all voice entries for a guild (actor terminate).
+  Locally clears all voice entries for a guild from the node's ETS table.
   """
-  def clear_guild(guild_id) do
+  def do_clear_guild(guild_id) do
     ensure_table()
     gid = to_string(guild_id)
     :ets.match_delete(@table, {{gid, :_}, :_})
     :ok
   rescue
     _ -> :ok
+  end
+
+  defp replicate(func, args) do
+    case Node.list() do
+      [] ->
+        :ok
+
+      peers ->
+        Task.start(fn ->
+          try do
+            :erpc.multicall(peers, __MODULE__, func, args, 1000)
+          rescue
+            _ -> :ok
+          catch
+            _, _ -> :ok
+          end
+        end)
+
+        :ok
+    end
   end
 
   @doc """
@@ -105,11 +151,21 @@ defmodule Gateway.Guild.VoiceCache do
   @doc """
   Returns all active voice states in a guild visible to `user_id`,
   matching `Guild.Actor.get_visible_voice_states/2` semantics but lock-free.
+  Falls back to warming from the cluster Horde actor if local ETS is empty.
   """
   def get_visible_states(guild_id, user_id) do
     gid = to_string(guild_id)
 
-    get_guild_states(gid)
+    states =
+      case get_guild_states(gid) do
+        map when map_size(map) > 0 ->
+          map
+
+        _empty ->
+          warm_from_actor(gid)
+      end
+
+    states
     |> Map.values()
     |> Enum.filter(fn vs ->
       cid = vs["channel_id"] || vs[:channel_id]
@@ -118,6 +174,32 @@ defmodule Gateway.Guild.VoiceCache do
     |> Enum.map(&Gateway.Voice.VoiceState.to_map/1)
   rescue
     _ -> []
+  end
+
+  defp warm_from_actor(gid) do
+    case Gateway.Guild.Actor.whereis(gid) do
+      pid when is_pid(pid) and node(pid) != node() ->
+        try do
+          actor_states = GenServer.call(pid, :get_voice_states, 2000)
+
+          if is_map(actor_states) and map_size(actor_states) > 0 do
+            Enum.each(actor_states, fn {uid, vs} ->
+              do_put(gid, uid, vs)
+            end)
+
+            get_guild_states(gid)
+          else
+            %{}
+          end
+        rescue
+          _ -> %{}
+        catch
+          _, _ -> %{}
+        end
+
+      _ ->
+        %{}
+    end
   end
 
   defp to_voice_map(gid, uid, %Gateway.Voice.VoiceState{} = vs) do

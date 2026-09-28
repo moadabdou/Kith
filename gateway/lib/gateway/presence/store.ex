@@ -92,10 +92,34 @@ defmodule Gateway.Presence.Store do
   end
 
   @doc """
-  Direct ETS point lookup for a single user's presence.
-  Executed in caller process.
+  Point lookup for a single user's presence.
+  First checks local ETS. If not active locally, queries peer nodes in the cluster.
   """
   def get_presence(user_id) do
+    uid = to_string(user_id)
+
+    case get_presence_local(uid) do
+      {:ok, %{status: status} = presence} when status not in [:offline, "offline"] ->
+        {:ok, presence}
+
+      local_res ->
+        case Node.list() do
+          [] ->
+            local_res
+
+          peers ->
+            case fetch_peer_presence(peers, uid) do
+              {:ok, remote_presence} -> {:ok, remote_presence}
+              _ -> local_res
+            end
+        end
+    end
+  end
+
+  @doc """
+  Direct ETS point lookup strictly against the local node's ETS table.
+  """
+  def get_presence_local(user_id) do
     uid = to_string(user_id)
 
     case :ets.lookup(@table, uid) do
@@ -121,16 +145,100 @@ defmodule Gateway.Presence.Store do
   end
 
   @doc """
-  Direct ETS batched point lookups for multiple users (e.g. guild chunks).
-  Executed in caller process, returning `%{user_id => presence_map}`.
+  Batched point lookups for multiple users (e.g. guild chunks).
+  Checks local ETS and queries peer cluster nodes for any users that are
+  missing or offline locally, merging active sessions.
   """
   def get_presences(user_ids) when is_list(user_ids) do
+    local_presences = get_presences_local(user_ids)
+
+    case Node.list() do
+      [] ->
+        local_presences
+
+      peers ->
+        missing_ids =
+          Enum.filter(user_ids, fn uid ->
+            uid_str = to_string(uid)
+
+            case Map.get(local_presences, uid_str) do
+              nil -> true
+              %{status: :offline} -> true
+              %{status: "offline"} -> true
+              _ -> false
+            end
+          end)
+
+        if missing_ids == [] do
+          local_presences
+        else
+          peer_presences = fetch_peer_presences(peers, missing_ids)
+          merge_presences(local_presences, peer_presences)
+        end
+    end
+  end
+
+  @doc """
+  Batched point lookups strictly against the local node's ETS table.
+  """
+  def get_presences_local(user_ids) when is_list(user_ids) do
     Enum.reduce(user_ids, %{}, fn user_id, acc ->
-      case get_presence(user_id) do
+      case get_presence_local(user_id) do
         {:ok, presence} -> Map.put(acc, presence.user_id, presence)
         {:error, :not_found} -> acc
       end
     end)
+  end
+
+  defp fetch_peer_presence(peers, uid) do
+    case fetch_peer_presences(peers, [uid]) do
+      %{^uid => presence} when presence.status not in [:offline, "offline"] ->
+        {:ok, presence}
+
+      _ ->
+        {:error, :not_found}
+    end
+  end
+
+  defp fetch_peer_presences(peers, user_ids) do
+    try do
+      results = :erpc.multicall(peers, __MODULE__, :get_presences_local, [user_ids], 1000)
+
+      Enum.reduce(results, %{}, fn
+        {:ok, presence_map}, acc when is_map(presence_map) ->
+          Map.merge(acc, presence_map, fn _k, p1, p2 -> merge_user_presence(p1, p2) end)
+
+        _, acc ->
+          acc
+      end)
+    rescue
+      _ -> %{}
+    catch
+      _, _ -> %{}
+    end
+  end
+
+  defp merge_presences(local, peer) do
+    Map.merge(local, peer, fn _k, p1, p2 ->
+      merge_user_presence(p1, p2)
+    end)
+  end
+
+  defp merge_user_presence(p1, p2) do
+    combined_sessions = Map.merge(p1.sessions || %{}, p2.sessions || %{})
+    agg_status = resolve_status(combined_sessions, :offline)
+    agg_cs = resolve_client_status(combined_sessions, p1.client_status || %{})
+    agg_acts = extract_activities(combined_sessions)
+    last_act = max(p1.last_activity_at || 0, p2.last_activity_at || 0)
+
+    %{
+      user_id: p1.user_id,
+      status: agg_status,
+      client_status: agg_cs,
+      last_activity_at: last_act,
+      sessions: combined_sessions,
+      activities: agg_acts
+    }
   end
 
   @doc """

@@ -122,7 +122,7 @@ timings inside the predicted bounds.
   after `docker kill`, observed 5× — daemon stopped the restart-manager
   at kill time). All numbers describe permanent node loss, the harsher
   condition. Rejoin (`stop`/`start`) is a separate exercise.
-* **Presence stays node-local**; cross-node enrichment may miss.
+* **Presence is cluster-federated**: `Presence.Store.get_presences/1` aggregates across all cluster nodes (`:erpc.multicall`) with local ETS fast-path, so Op 8 `REQUEST_GUILD_MEMBERS` returns whole guild presence across any node.
+* **VoiceCache is cluster-replicated**: `VoiceCache` replicates mutations across cluster nodes and warms on miss from live Horde actors, ensuring identical `READY.voice_states` across all nodes.
 * No queue-group migration; netsplit safety bounded by lease TTL only.
-* `Mix test`: 167/167 green (incl. `clustering_test.exs`: dedup,
-  lease round-trip, re-subscribe, cold-cache warm).
+* `Mix test`: 235/235 green (incl. `voice_cache_test.exs`, `clustering_test.exs`: dedup, lease round-trip, re-subscribe, cold-cache warm).

@@ -64,6 +64,22 @@ defmodule Gateway.Presence.StoreTest do
     assert result["u2"].status == :idle
   end
 
+  test "get_presence_local and get_presences_local perform direct ETS reads" do
+    Store.put_presence("u_loc1", :online, %{"desktop" => "online"}, "s_loc1", self())
+    Store.put_presence("u_loc2", :dnd, %{"mobile" => "dnd"}, "s_loc2", self())
+
+    assert {:ok, p1} = Store.get_presence_local("u_loc1")
+    assert p1.status == :online
+    assert p1.client_status == %{"desktop" => "online"}
+
+    map = Store.get_presences_local(["u_loc1", "u_loc2", "absent"])
+    assert Map.has_key?(map, "u_loc1")
+    assert Map.has_key?(map, "u_loc2")
+    refute Map.has_key?(map, "absent")
+    assert map["u_loc1"].status == :online
+    assert map["u_loc2"].status == :dnd
+  end
+
   test "touch_activity updates timestamp" do
     user_id = "user_touch_1"
     session_id = "sess_touch_1"

@@ -71,8 +71,35 @@ Target: `kith.messages` table with TWCS compaction.
   - Recovery Time Objective (RTO): 1.35s (from network reconnect to `nodetool status` reporting `UN`). Gate <= 15s ✓.
   - Anti-entropy audit: 1,984 / 1,984 messages present on Node 1 (100%), Node 2 (100%), and Node 3 (100%).
   - Recovery Point Objective (RPO): 0 missing rows, 0 content mismatches (0 corruption). Gate RPO = 0 ✓.
-  - Post-healing stress recovery: 2,067.1 writes/sec at `LOCAL_QUORUM`. Write p50: 1.74ms, p95: 3.26ms, p99: 4.36ms (< 50ms gate ✓). Read p50: 1.57ms, p95: 3.40ms, p99: 5.26ms (< 50ms gate ✓).
   - Verdict: **PASS**. Results archived in `scripts/chaos/results/phase7_scylla_drill5.json`.
+
+## Phase 7f — Failure Drills: NATS JetStream leader kill & failover (Issue #97, Drill 6)
+
+Harness: `scripts/chaos/phase7_nats.sh` (`scripts/chaos/phase7_nats_chaos.go`).
+Topology: 3-node NATS cluster (`nats1`, `nats2`, `nats3`, Raft consensus, Stream `KITH_EVENTS_CHAOS`, R=3).
+Target: JetStream clustered event stream & durable pull consumer.
+
+### D6 — NATS JetStream leader kill & consumer stream auto-reconnect
+
+* Prediction:
+  - 3-node NATS JetStream cluster with stream replication $R=3$ maintains Raft consensus across `{nats1, nats2, nats3}`.
+  - Active Raft leader will be identified via `StreamInfo.Cluster.Leader`.
+  - Abrupt `docker kill -s SIGKILL` on the leader container mid-burst will trigger Raft leader election on surviving 2 nodes in $\le 5\text{s}$ ($\text{RTO} \le 5\text{s}$).
+  - Live publishers and consumers will auto-reconnect and resume stream deliveries in $\le 10\text{s}$.
+  - Zero event loss ($\text{RPO} = 0$): every message published and acknowledged will be preserved.
+  - Redelivered in-flight messages will be idempotently deduplicated (0 client-visible duplicates).
+  - Post-failover throughput and latency will recover to 100% with $p99 < 50\text{ms}$.
+  - Restarted victim node will rejoin the cluster and catch up with Raft log replication in $\le 15\text{s}$.
+* Actual:
+  - Initial Raft Leader: `nats3` -> Failover Leader: `nats2`.
+  - Cluster Raft Failover RTO: 4.31s (Gate $\le 5.0\text{s}$ ✓).
+  - Client Stream Reconnect RTO: 4.42s (Gate $\le 10.0\text{s}$ ✓).
+  - Published Messages: 1,924 | Acknowledged & Received: 1,924 | Lost: 0.
+  - Recovery Point Objective (RPO): 0 Events Lost (Gate $\text{RPO} = 0$ ✓).
+  - Idempotency & Deduplication: 0 client-visible duplicates (Gate 0 ✓).
+  - Post-failover stress burst (1,000 ops on 2 survivors): 5,245.4 msgs/sec. Pub $p50: 0.17\text{ms}, p95: 0.23\text{ms}, p99: 0.53\text{ms}$ ($< 50\text{ms}$ gate ✓). Sub $p50: 0.00\text{ms}, p95: 0.01\text{ms}, p99: 0.02\text{ms}$ ($< 50\text{ms}$ gate ✓).
+  - Node recovery & Raft catch-up: `nats3` restarted and resynced in 6.10s.
+  - Verdict: **PASS**. Results archived in `scripts/chaos/results/phase7_nats_drill6.json`.
 
 ### Environment notes (applies to all Phase 7 drills)
 

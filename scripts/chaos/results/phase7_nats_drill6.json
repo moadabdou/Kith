@@ -1,0 +1,53 @@
+{
+  "drill_name": "Drill 6: NATS JetStream Leader Kill \u0026 Auto-Reconnect",
+  "timestamp": "2026-09-28T04:16:17Z",
+  "initial_leader": "nats3",
+  "failover_leader": "nats2",
+  "baseline_pub_latency": {
+    "count": 300,
+    "min_ms": 0.121,
+    "p50_ms": 0.286,
+    "p95_ms": 0.782,
+    "p99_ms": 1.508,
+    "max_ms": 3.797,
+    "avg_ms": 0.356
+  },
+  "baseline_sub_latency": {
+    "count": 300,
+    "min_ms": 0.002,
+    "p50_ms": 0.094,
+    "p95_ms": 0.41,
+    "p99_ms": 1.488,
+    "max_ms": 1.992,
+    "avg_ms": 0.148
+  },
+  "burst_published_count": 1924,
+  "burst_received_count": 1924,
+  "cluster_rto_seconds": 4.31,
+  "client_rto_seconds": 4.42,
+  "rpo_events_lost": 0,
+  "redelivered_count": 0,
+  "client_visible_dupes": 0,
+  "stress_published_count": 1000,
+  "stress_throughput_ops_sec": 5245.4,
+  "stress_pub_latency": {
+    "count": 1000,
+    "min_ms": 0.143,
+    "p50_ms": 0.175,
+    "p95_ms": 0.229,
+    "p99_ms": 0.531,
+    "max_ms": 1.004,
+    "avg_ms": 0.187
+  },
+  "stress_sub_latency": {
+    "count": 1000,
+    "min_ms": 0.001,
+    "p50_ms": 0.002,
+    "p95_ms": 0.007,
+    "p99_ms": 0.024,
+    "max_ms": 0.35,
+    "avg_ms": 0.003
+  },
+  "node_recovery_seconds": 6.1,
+  "gate_verdict": "PASS"
+}

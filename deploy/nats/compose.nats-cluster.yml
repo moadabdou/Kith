@@ -1,0 +1,52 @@
+name: kith-nats-cluster
+
+services:
+  nats1:
+    image: nats:2.10-alpine
+    command: ["-c", "/etc/nats/nats.conf"]
+    ports:
+      - "127.0.0.1:4225:4222"
+      - "127.0.0.1:8225:8222"
+    volumes:
+      - ./config/nats1.conf:/etc/nats/nats.conf:ro
+      - nats1-data:/data/jetstream
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8222/healthz"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+
+  nats2:
+    image: nats:2.10-alpine
+    command: ["-c", "/etc/nats/nats.conf"]
+    ports:
+      - "127.0.0.1:4226:4222"
+      - "127.0.0.1:8226:8222"
+    volumes:
+      - ./config/nats2.conf:/etc/nats/nats.conf:ro
+      - nats2-data:/data/jetstream
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8222/healthz"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+
+  nats3:
+    image: nats:2.10-alpine
+    command: ["-c", "/etc/nats/nats.conf"]
+    ports:
+      - "127.0.0.1:4227:4222"
+      - "127.0.0.1:8227:8222"
+    volumes:
+      - ./config/nats3.conf:/etc/nats/nats.conf:ro
+      - nats3-data:/data/jetstream
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8222/healthz"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+
+volumes:
+  nats1-data:
+  nats2-data:
+  nats3-data:

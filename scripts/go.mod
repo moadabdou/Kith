@@ -8,6 +8,7 @@ require (
 	github.com/gocql/gocql v1.7.0
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/moadabdou/Kith/api v0.0.0-00010101000000-000000000000
+	github.com/nats-io/nats.go v1.54.0
 	golang.org/x/crypto v0.57.0
 )
 

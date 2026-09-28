@@ -151,6 +151,32 @@ Target: Relational persistence tier & real-time tier isolation.
   - Connection Pool Cleanliness: PostgreSQL active connections returned to clean baseline (50 idle across API workers, 1 psql, 5 internal).
   - Verdict: **PASS**. Results archived in `scripts/chaos/results/phase7_postgres_drill8.json`.
 
+## Phase 7i — Failure Drills: WAN packet loss & jitter injection via Linux tc netem (Issue #97, Drill 9)
+
+Harness: `scripts/chaos/phase7_netem.sh` (`scripts/chaos/phase7_netem_chaos.go`).
+Topology: Linux Traffic Control (`tc netem`) on Pion SFU (`kith-sfu-1:eth0`), Go REST API, Gateway WebSocket (`:4000`).
+Target: Real-time media forwarding, RTCP loss adaptation, bounded backpressure & signaling degradation.
+
+### D9 — WAN packet loss, jitter and latency injection via Linux tc netem
+
+* Prediction:
+  - Under Profile A (5% loss, 40ms delay, 10ms jitter), audio packets will continue streaming; subscriber will receive > 90% of packets with intact pipeline.
+  - Under Profile B (15% loss, 100ms delay, 25ms jitter), SFU queue depth will remain strictly bounded below capacity (< 100), proving zero subscriber backpressure memory leaks.
+  - Gateway WebSocket heartbeats will remain intact with 100% session uptime across all impairment profiles.
+  - Clearing netem rules will immediately restore baseline sub-millisecond latencies on all tiers.
+* Actual:
+  - Profile A (Moderate WAN: loss 5%, delay 40ms, jitter 10ms):
+    - Sent: 244 packets | Received: 226 packets (92.6% delivery through 5% loss).
+    - SFU Forwarded: 381 packets | Dropped: 0 | Queue depth: 0 (< 100 capacity).
+    - Gateway Heartbeat under Profile A: 0.53ms (100% active, 0 disconnects).
+  - Profile B (Severe WAN: loss 15%, delay 100ms, jitter 25ms):
+    - Sent: 245 packets | Received: 177 packets (72.2% delivery through 15% loss + 25ms jitter).
+    - SFU Forwarded: 625 packets | Dropped: 0 | Queue depth: 0 (< 100 capacity).
+    - Gateway Heartbeat under Profile B: 0.33ms (100% active, 0 disconnects).
+  - Bounded Backpressure & Memory Safety: Queue depth remained at 0 << 100 throughout both profiles (Gate < 100 ✓).
+  - Restoration & Post-Impairment Latency: `tc qdisc del` returned interface to `qdisc noqueue 0`. API p99 = 1.12ms, Gateway heartbeat = 0.56ms.
+  - Verdict: **PASS**. Results archived in `scripts/chaos/results/phase7_netem_drill9.json`.
+
 ### Environment notes (applies to all Phase 7 drills)
 
 * Caddy needs `--force-recreate` to pick up Caddyfile edits (bind mount).

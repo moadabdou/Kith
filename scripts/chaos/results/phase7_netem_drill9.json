@@ -1,0 +1,59 @@
+{
+  "drill_name": "Drill 9: WAN Packet Loss, Jitter \u0026 Latency Injection via Linux tc netem",
+  "issue": "#97",
+  "timestamp": "2026-09-28T06:25:18Z",
+  "baseline_heartbeat_ms": 0.630632,
+  "baseline_latency": {
+    "count": 30,
+    "min_ms": 0.369,
+    "p50_ms": 0.637,
+    "p95_ms": 1.207,
+    "p99_ms": 7.048,
+    "max_ms": 7.048,
+    "avg_ms": 0.893
+  },
+  "profile_a": {
+    "profile_name": "Profile A (Moderate WAN)",
+    "loss_percent": 5,
+    "delay_ms": 40,
+    "jitter_ms": 10,
+    "packets_sent": 244,
+    "packets_received": 226,
+    "packets_forwarded": 381,
+    "packets_dropped": 0,
+    "queue_depth": 0,
+    "rtcp_nacks": 0,
+    "fraction_lost": 0,
+    "gateway_heartbeat_ms": 0.534397,
+    "forwarding_passed": true,
+    "queue_bounded_passed": true
+  },
+  "profile_b": {
+    "profile_name": "Profile B (Severe WAN)",
+    "loss_percent": 15,
+    "delay_ms": 100,
+    "jitter_ms": 25,
+    "packets_sent": 245,
+    "packets_received": 177,
+    "packets_forwarded": 625,
+    "packets_dropped": 0,
+    "queue_depth": 0,
+    "rtcp_nacks": 0,
+    "fraction_lost": 0,
+    "gateway_heartbeat_ms": 0.32991200000000004,
+    "forwarding_passed": true,
+    "queue_bounded_passed": true
+  },
+  "post_restoration_latency": {
+    "count": 50,
+    "min_ms": 0.273,
+    "p50_ms": 0.631,
+    "p95_ms": 1.015,
+    "p99_ms": 1.12,
+    "max_ms": 1.12,
+    "avg_ms": 0.635
+  },
+  "bounded_backpressure_verified": true,
+  "media_forwarding_verified": true,
+  "gate_verdict": "PASS"
+}

@@ -381,8 +381,8 @@ services:
     environment:
       PORT: ${SFU2_PORT:-5001}
       LOG_LEVEL: ${SFU_LOG_LEVEL:-debug}
-      UDP_PORT_MIN: ${SFU2_UDP_PORT_MIN:-50100}
-      UDP_PORT_MAX: ${SFU2_UDP_PORT_MAX:-50120}
+      UDP_PORT_MIN: ${SFU2_UDP_PORT_MIN:-50300}
+      UDP_PORT_MAX: ${SFU2_UDP_PORT_MAX:-50320}
       JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me}
       STUN_SERVER: ${STUN_SERVER:-}
       NAT_1TO1_IPS: ${NAT_1TO1_IPS:-127.0.0.1}
@@ -392,7 +392,7 @@ services:
       - NET_ADMIN
     ports:
       - "127.0.0.1:5001:5001"
-      - "50100-50120:50100-50120/udp"
+      - "50300-50320:50300-50320/udp"
     restart: unless-stopped
     depends_on:
       nats:

@@ -156,7 +156,7 @@ func registerAndLogin(apiBase, username, password string) (*TestUser, error) {
 		return nil, fmt.Errorf("register request: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusCreated {
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusConflict {
 		b, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("register failed status %d: %s", resp.StatusCode, string(b))
 	}

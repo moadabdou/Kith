@@ -1,0 +1,14 @@
+{
+  "drill_name": "Drill 7: SFU Instance Crash & Voice Session Failover Re-Routing",
+  "issue": "#97",
+  "timestamp": "2026-09-28T05:08:37Z",
+  "placed_sfu": "sfu:5000",
+  "victim_container": "kith-sfu-1",
+  "socket_drop_seconds": 0.01,
+  "survivor_sfu": "sfu-2:5001",
+  "null_reallocate_observed_count": 0,
+  "post_kill_keyframe_worst_seconds": 0.21,
+  "target_keyframe_max_seconds": 2.0,
+  "steady_state_control_passed": true,
+  "gate_verdict": "PASS"
+}

@@ -78,7 +78,8 @@ func runPoolFailoverDrill(cfg Config) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	room, err := setupVideoRoom(cfg, ctx, "poolfailover", "PoolFailPass123!", 2)
+	prefix := fmt.Sprintf("pf%d", time.Now().Unix()%100000)
+	room, err := setupVideoRoom(cfg, ctx, prefix, "PoolFailPass123!", 2)
 	if err != nil {
 		return err
 	}

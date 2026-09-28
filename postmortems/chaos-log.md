@@ -101,6 +101,32 @@ Target: JetStream clustered event stream & durable pull consumer.
   - Node recovery & Raft catch-up: `nats3` restarted and resynced in 6.10s.
   - Verdict: **PASS**. Results archived in `scripts/chaos/results/phase7_nats_drill6.json`.
 
+## Phase 7g — Failure Drills: SFU instance crash & voice session channel failover re-routing (Issue #97, Drill 7)
+
+Harness: `scripts/chaos/phase7_sfu.sh` (`sfu/cmd/voice_bench -drill=pool_failover`).
+Topology: 2-instance SFU pool (`sfu:5000`, `sfu-2:5001`), Gateway channel hash placement (`:erlang.phash2(channel_id)`), 5s background health poller.
+Target: 1 WebRTC video publisher + 2 subscribers with 3-layer simulcast stream.
+
+### D7 — SFU instance crash mid-call with no restart & peer failover
+
+* Prediction:
+  - 1 publisher and 2 subscribers hash deterministically to the same SFU instance (`sfu:5000` or `sfu-2:5001`) with 100% pre-kill co-location.
+  - Abrupt `SIGKILL` of the placed container terminates client WebSocket connections in $< 1\text{s}$.
+  - Victim container stays down throughout the recovery phase (no process restart); recovery relies strictly on pool failover.
+  - Gateway routes clients to surviving peer SFU via confirm-probe fast lane or directed teardown (`endpoint: null` -> fresh allocation) with 100% post-kill co-location.
+  - Worst subscriber receives first post-kill video keyframe on the peer SFU in $\le 2.0\text{s}$.
+  - Steady-state control: 2x healthy Op 4 re-requests remain anchored on survivor; 0 actionable nulls across a 3s quiet window.
+* Actual:
+  - Pre-kill Placement: Placed on `sfu:5000` (all 3 members co-located pre-kill, 59 packets verified per subscriber).
+  - Victim Container: `kith-sfu-1` received `SIGKILL` at `05:08:34.073` and remained DOWN during failover.
+  - Socket Termination: Client observed socket drop in **0.01s** post-kill.
+  - Failover Routing: Fast-lane confirm probe immediately directed all 3 members (`pub`, `sub0`, `sub1`) to `sfu-2:5001` in **0.01s** (0 split-brain).
+  - Media Re-establishment: Peer SFU rejoin completed in **0.18s**.
+  - First Keyframe Latency: Sub0 = 0.21s, Sub1 = 0.21s. Worst subscriber = **0.21s** (Gate $\le 2.0\text{s}$ ✓).
+  - Steady-State Control: 2x re-Op 4 per member confirmed stable on `sfu-2:5001`; 0 actionable null pushes emitted across quiet window (Gate 0 ✓).
+  - Gateway Metric Delta: `gateway_sfu_flips_total{direction="down"}` +1 (2 -> 3), `gateway_sfu_failovers_total` +3 (0 -> 3 sessions).
+  - Verdict: **PASS**. Results archived in `scripts/chaos/results/phase7_sfu_drill7.json`.
+
 ### Environment notes (applies to all Phase 7 drills)
 
 * Caddy needs `--force-recreate` to pick up Caddyfile edits (bind mount).

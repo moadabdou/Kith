@@ -156,12 +156,41 @@ echo -e "${BLUE}--- gateway metrics delta (before -> after) ---${NC}"
 echo "BEFORE:"
 cat "${METRICS_BEFORE}"
 echo "AFTER:"
-curl -s http://127.0.0.1:4000/metrics | grep -E "sfu_flips|sfu_failovers|voice_intent|voice_placement" || true
+METRICS_AFTER="/tmp/phase7_sfu_metrics_after.txt"
+curl -s http://127.0.0.1:4000/metrics | grep -E "sfu_flips|sfu_failovers|voice_intent|voice_placement" | tee "${METRICS_AFTER}" || true
+
+RESULTS_DIR="${REPO_ROOT}/scripts/chaos/results"
+mkdir -p "${RESULTS_DIR}"
+RESULTS_JSON="${RESULTS_DIR}/phase7_sfu_drill7.json"
+
+SOCKET_DROP_SEC=$(grep -o 'socket termination from killed SFU ([0-9.]*s' "${DRILL_LOG}" | grep -o '[0-9.]*' || echo "0.0")
+SURVIVOR=$(grep -o 'Post-kill co-location: all 3 on [^ ]*' "${DRILL_LOG}" | awk '{print $NF}' | head -n 1 || echo "")
+WORST_KEYFRAME_SEC=$(grep -o 'Kill -> first video keyframe on peer SFU (worst sub): [0-9.]*' "${DRILL_LOG}" | awk '{print $NF}' | head -n 1 || echo "0.0")
+NULL_OBSERVED=$(grep -o 'Null-then-reallocate observed by [0-9]*/3' "${DRILL_LOG}" | grep -o '[0-9]*' | head -n 1 || echo "0")
+
+cat <<EOF > "${RESULTS_JSON}"
+{
+  "drill_name": "Drill 7: SFU Instance Crash & Voice Session Failover Re-Routing",
+  "issue": "#97",
+  "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+  "placed_sfu": "${PLACED_ON}",
+  "victim_container": "${VICTIM}",
+  "socket_drop_seconds": ${SOCKET_DROP_SEC:-0.0},
+  "survivor_sfu": "${SURVIVOR}",
+  "null_reallocate_observed_count": ${NULL_OBSERVED:-0},
+  "post_kill_keyframe_worst_seconds": ${WORST_KEYFRAME_SEC:-0.0},
+  "target_keyframe_max_seconds": 2.0,
+  "steady_state_control_passed": true,
+  "gate_verdict": "PASS"
+}
+EOF
 
 echo ""
 printf "${BOLD}${GREEN}╔══════════════════════════════════════════════════════════════════════╗${NC}\n"
-printf "${BOLD}${GREEN}║     PHASE 7d POOL FAILOVER SUITE PASSED!                             ║${NC}\n"
+printf "${BOLD}${GREEN}║     PHASE 7d / DRILL 7 POOL FAILOVER SUITE PASSED!                    ║${NC}\n"
 printf "${BOLD}${GREEN}╚══════════════════════════════════════════════════════════════════════╝${NC}\n"
-echo -e "1. ${GREEN}✓ Pool kill:${NC} victim ${VICTIM} stayed down; call co-located on peer, keyframe ≤ 2s."
+echo -e "1. ${GREEN}✓ Pool kill:${NC} victim ${VICTIM} stayed down; call co-located on peer (${SURVIVOR}), keyframe ${WORST_KEYFRAME_SEC}s (≤ 2.0s)."
 echo -e "2. ${GREEN}✓ Control:${NC} healthy re-requests stable, zero spurious nulls."
 echo -e "3. ${BLUE}Drill log:${NC} ${DRILL_LOG}"
+echo -e "4. ${BLUE}JSON report:${NC} ${RESULTS_JSON}"
+

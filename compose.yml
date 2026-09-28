@@ -323,6 +323,8 @@ services:
       VITE_API_BASE: /api
       # Observation override — must match the gateway's PRESENCE_IDLE_THRESHOLD_MS
       VITE_IDLE_THRESHOLD_MS: ${PRESENCE_IDLE_THRESHOLD_MS:-120000}
+    volumes:
+      - ./client/src:/app/src
     ports:
       - "127.0.0.1:5173:5173"
     healthcheck:

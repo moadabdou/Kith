@@ -38,6 +38,9 @@ describe('resolveSfuWsUrl', () => {
     // Phase 7d pool members (compose service names).
     expect(resolveSfuWsUrl('sfu:5000')).toBe('ws://192.168.1.50:5000/ws')
     expect(resolveSfuWsUrl('sfu-2:5001')).toBe('ws://192.168.1.50:5001/ws')
+    expect(resolveSfuWsUrl('ws://sfu-2:5001')).toBe('ws://192.168.1.50:5001/ws')
+    expect(resolveSfuWsUrl('ws://sfu-2:5001/ws')).toBe('ws://192.168.1.50:5001/ws')
+    expect(resolveSfuWsUrl('ws://sfu:5000')).toBe('ws://192.168.1.50:5000/ws')
 
     vi.unstubAllGlobals()
   })

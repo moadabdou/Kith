@@ -28,12 +28,14 @@ export interface SfuClientOptions {
 }
 
 export function resolveSfuWsUrl(endpoint: string): string {
-  if (endpoint.startsWith('ws://') || endpoint.startsWith('wss://')) {
-    return endpoint.endsWith('/ws') ? endpoint : `${endpoint.replace(/\/$/, '')}/ws`
-  }
+  const isHttps =
+    endpoint.startsWith('https://') ||
+    endpoint.startsWith('wss://') ||
+    (typeof window !== 'undefined' && window.location?.protocol === 'https:')
 
-  const isHttps = endpoint.startsWith('https://')
-  const clean = endpoint.replace(/^(http:\/\/|https:\/\/)/, '').replace(/\/.*$/, '')
+  const clean = endpoint
+    .replace(/^(ws:\/\/|wss:\/\/|http:\/\/|https:\/\/)/, '')
+    .replace(/\/.*$/, '')
   const parts = clean.split(':')
   let host = parts[0]
   const port = parts[1] || '5000'
@@ -54,10 +56,7 @@ export function resolveSfuWsUrl(endpoint: string): string {
     }
   }
 
-  const protocol =
-    isHttps || (typeof window !== 'undefined' && window.location?.protocol === 'https:')
-      ? 'wss:'
-      : 'ws:'
+  const protocol = isHttps ? 'wss:' : 'ws:'
   return `${protocol}//${host}:${port}/ws`
 }
 

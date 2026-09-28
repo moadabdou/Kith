@@ -7,6 +7,7 @@ import (
 
 	"github.com/moadabdou/Kith/api/internal/auth"
 	"github.com/moadabdou/Kith/api/internal/httpx"
+	"github.com/moadabdou/Kith/api/internal/media"
 	"github.com/moadabdou/Kith/api/pkg/errs"
 	"github.com/moadabdou/Kith/api/pkg/snowflake"
 )
@@ -46,6 +47,9 @@ func (h *Handler) writeErr(w http.ResponseWriter, err error) {
 	case errors.Is(err, ErrEditWindowOver):
 		errs.Write(w, &errs.Error{Status: http.StatusForbidden, Code: errs.CodeMissingPerms,
 			Message: "The edit window for this message has passed"})
+	case errors.Is(err, media.ErrAttachmentConflict):
+		errs.Write(w, &errs.Error{Status: http.StatusBadRequest, Code: errs.CodeInvalidFormBody,
+			Message: "Invalid or already linked attachment"})
 	case errors.Is(err, ErrContentRequired):
 		errs.Write(w, errs.FormBody("Invalid Form Body: content is required"))
 	default:
@@ -74,14 +78,19 @@ func (h *Handler) Send(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Content     string   `json:"content"`
-		Attachments []string `json:"attachments"`
+		Content       string   `json:"content"`
+		Attachments   []string `json:"attachments"`
+		AttachmentIDs []string `json:"attachment_ids"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		errs.Write(w, errs.InvalidJSON())
 		return
 	}
-	if e := validateContent(req.Content); e != nil {
+	attachmentIDs := req.Attachments
+	if len(attachmentIDs) == 0 && len(req.AttachmentIDs) > 0 {
+		attachmentIDs = req.AttachmentIDs
+	}
+	if e := validateContentOrAttachment(req.Content, len(attachmentIDs) > 0); e != nil {
 		errs.Write(w, e)
 		return
 	}
@@ -96,7 +105,7 @@ func (h *Handler) Send(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer h.Inflight.Release()
-	m, err := h.Svc.Send(r.Context(), mustUser(r), cid, req.Content, req.Attachments)
+	m, err := h.Svc.Send(r.Context(), mustUser(r), cid, req.Content, attachmentIDs)
 	if err != nil {
 		h.writeErr(w, err)
 		return
@@ -218,10 +227,18 @@ func pathID(r *http.Request, key string) (int64, bool) {
 // validateContent centralizes message-content validation in Discord's
 // 50035 field-detail shape.
 func validateContent(content string) *errs.Error {
+	return validateContentOrAttachment(content, false)
+}
+
+func validateContentOrAttachment(content string, hasAttachments bool) *errs.Error {
 	v := errs.NewValidator()
-	v.Check("content", content != "", errs.CodeRequired, "This field is required")
-	v.Check("content", len(content) <= maxContentLen, errs.CodeBadLength,
-		"Must be between 1 and 4000 in length.")
+	if !hasAttachments {
+		v.Check("content", content != "", errs.CodeRequired, "This field is required")
+	}
+	if content != "" {
+		v.Check("content", len(content) <= maxContentLen, errs.CodeBadLength,
+			"Must be between 1 and 4000 in length.")
+	}
 	return v.Err()
 }
 

@@ -20,6 +20,7 @@ import (
 	"github.com/moadabdou/Kith/api/internal/events"
 	"github.com/moadabdou/Kith/api/internal/guilds"
 	"github.com/moadabdou/Kith/api/internal/httpx"
+	"github.com/moadabdou/Kith/api/internal/media"
 	"github.com/moadabdou/Kith/api/internal/messages"
 	"github.com/moadabdou/Kith/api/internal/search"
 	"github.com/moadabdou/Kith/api/internal/users"
@@ -191,8 +192,44 @@ func main() {
 		slog.Info("message store initialized", "mode", "postgres_only", "store", "postgres")
 	}
 
+	// Media Storage & Pipeline (Phase 8, Issue #98)
+	s3Endpoint := envOr("S3_ENDPOINT", "minio:9000")
+	s3AccessKey := envOr("S3_ACCESS_KEY", "kithadmin")
+	s3SecretKey := envOr("S3_SECRET_KEY", "kithpassword123")
+	s3UseSSL := envOr("S3_USE_SSL", "false") == "true"
+	s3PublicURL := envOr("S3_PUBLIC_URL", "http://localhost:9000")
+	s3BucketAttachments := envOr("S3_BUCKET_ATTACHMENTS", "attachments")
+	maxUploadSizeBytes, _ := strconv.ParseInt(envOr("MAX_UPLOAD_SIZE_BYTES", "26214400"), 10, 64) // 25 MB
+
+	mediaStorage, err := media.NewMinIOStorage(media.StorageConfig{
+		Endpoint:  s3Endpoint,
+		AccessKey: s3AccessKey,
+		SecretKey: s3SecretKey,
+		UseSSL:    s3UseSSL,
+		PublicURL: s3PublicURL,
+	})
+	if err != nil {
+		slog.Error("failed to initialize minio storage", "endpoint", s3Endpoint, "error", err)
+		os.Exit(1)
+	}
+
+	mediaStore := media.NewPostgresStore(db, mediaStorage.PublicURL)
+
+	var mediaPub media.EventPublisher = media.NoopEventPublisher{}
+	if natsPub != nil {
+		if mp, err := media.NewNatsEventPublisher(natsPub.JetStream()); err == nil {
+			mediaPub = mp
+			slog.Info("media jetstream event publisher initialized", "stream", media.MediaStreamName)
+		} else {
+			slog.Warn("failed to initialize media jetstream publisher, falling back to noop", "error", err)
+		}
+	}
+
+	mediaService := media.NewService(db, mediaStore, mediaStorage, node, mediaPub, s3BucketAttachments, maxUploadSizeBytes)
+	mediaHandler := media.NewHandler(mediaService)
+
 	messagesHandler := messages.NewHandler(
-		messages.NewService(db, msgStore, node, publisher),
+		messages.NewService(db, msgStore, node, publisher, mediaStore),
 		envInt("API_MSG_MAX_INFLIGHT", messages.DefaultMaxInflight),
 	)
 	slog.Info("message write path configured",
@@ -314,6 +351,16 @@ func main() {
 		auth.RequireAuth(jwt, http.HandlerFunc(messagesHandler.Edit)))
 	mux.Handle("DELETE /api/channels/{cid}/messages/{mid}",
 		auth.RequireAuth(jwt, http.HandlerFunc(messagesHandler.Delete)))
+
+	// media attachments (Phase 8, Issue #98)
+	mux.Handle("POST /api/channels/{cid}/attachments",
+		auth.RequireAuth(jwt, http.HandlerFunc(mediaHandler.Upload)))
+	mux.Handle("POST /api/channels/{cid}/attachments/presign",
+		auth.RequireAuth(jwt, http.HandlerFunc(mediaHandler.Presign)))
+	mux.Handle("POST /api/channels/{cid}/attachments/{id}/complete",
+		auth.RequireAuth(jwt, http.HandlerFunc(mediaHandler.Complete)))
+	mux.Handle("GET /api/channels/{cid}/attachments/{id}",
+		auth.RequireAuth(jwt, http.HandlerFunc(mediaHandler.Get)))
 
 	// search — Search Rung 1: PostgreSQL pg_trgm full-text search (plan/04 §2, §4).
 	// Hard rate limit: 1 req/s per user to prevent search worker starvation.

@@ -13,6 +13,7 @@ erl_crash.dump
 *.beam
 
 /api/api
+/api/bin/
 
 *.log
 .DS_Store

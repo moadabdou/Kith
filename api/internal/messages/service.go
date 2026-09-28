@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/moadabdou/Kith/api/internal/events"
+	"github.com/moadabdou/Kith/api/internal/media"
 	"github.com/moadabdou/Kith/api/pkg/permissions"
 	"github.com/moadabdou/Kith/api/pkg/snowflake"
 )
@@ -34,13 +35,14 @@ const EditWindow = 15 * time.Minute
 // Message is the wire shape — the SAME struct is the MESSAGE_CREATE payload
 // and the REST response (DRY, plan/02 §3 step 8).
 type Message struct {
-	ID        string     `json:"id"`
-	ChannelID string     `json:"channel_id"`
-	GuildID   string     `json:"guild_id,omitempty"`
-	Author    AuthorRef  `json:"author"`
-	Content   string     `json:"content"`
-	CreatedAt time.Time  `json:"timestamp"`
-	EditedAt  *time.Time `json:"edited_timestamp"`
+	ID          string             `json:"id"`
+	ChannelID   string             `json:"channel_id"`
+	GuildID     string             `json:"guild_id,omitempty"`
+	Author      AuthorRef          `json:"author"`
+	Content     string             `json:"content"`
+	CreatedAt   time.Time          `json:"timestamp"`
+	EditedAt    *time.Time         `json:"edited_timestamp"`
+	Attachments []media.Attachment `json:"attachments,omitempty"`
 }
 
 type AuthorRef struct {
@@ -63,17 +65,22 @@ type MessageDeletePayload struct {
 }
 
 type Service struct {
-	db    *sql.DB
-	store Store
-	sf    *snowflake.Node
-	pub   events.Publisher
+	db         *sql.DB
+	store      Store
+	sf         *snowflake.Node
+	pub        events.Publisher
+	mediaStore media.Store
 }
 
-func NewService(db *sql.DB, store Store, sf *snowflake.Node, pub events.Publisher) *Service {
+func NewService(db *sql.DB, store Store, sf *snowflake.Node, pub events.Publisher, mediaStores ...media.Store) *Service {
 	if store == nil && db != nil {
 		store = NewPostgresStore(db)
 	}
-	return &Service{db: db, store: store, sf: sf, pub: pub}
+	var ms media.Store
+	if len(mediaStores) > 0 {
+		ms = mediaStores[0]
+	}
+	return &Service{db: db, store: store, sf: sf, pub: pub, mediaStore: ms}
 }
 
 // Send is the hot path (plan/02 §3): perm placeholder → snowflake →
@@ -94,10 +101,15 @@ func (s *Service) Send(ctx context.Context, userID, channelID int64, content str
 	if !permissions.Has(perms, permissions.SEND_MESSAGES) {
 		return nil, ErrMissingPermissions
 	}
+	var attIDs []string
 	if len(attachments) > 0 && len(attachments[0]) > 0 {
 		if !permissions.Has(perms, permissions.ATTACH_FILES) {
 			return nil, ErrMissingPermissions
 		}
+		attIDs = attachments[0]
+	}
+	if content == "" && len(attIDs) == 0 {
+		return nil, ErrContentRequired
 	}
 	if strings.Contains(content, "@everyone") || strings.Contains(content, "@here") {
 		if !permissions.Has(perms, permissions.MENTION_EVERYONE) {
@@ -120,8 +132,29 @@ func (s *Service) Send(ctx context.Context, userID, channelID int64, content str
 		m.GuildID = strconv.FormatInt(ref.GuildID, 10)
 	}
 
+	var parsedIDs []int64
+	if len(attIDs) > 0 && s.mediaStore != nil {
+		parsedIDs = make([]int64, 0, len(attIDs))
+		for _, rawID := range attIDs {
+			pID, err := strconv.ParseInt(rawID, 10, 64)
+			if err != nil || pID <= 0 {
+				return nil, media.ErrAttachmentConflict
+			}
+			parsedIDs = append(parsedIDs, pID)
+		}
+	}
+
 	if err := s.store.Insert(ctx, m); err != nil {
 		return nil, err
+	}
+
+	if len(parsedIDs) > 0 && s.mediaStore != nil {
+		linked, err := s.mediaStore.LinkAttachmentsToMessage(ctx, id, parsedIDs, channelID, userID)
+		if err != nil {
+			_ = s.store.Delete(ctx, channelID, id, userID)
+			return nil, err
+		}
+		m.Attachments = linked
 	}
 
 	// AFTER COMMIT — the single most important ordering in this file.
@@ -149,7 +182,12 @@ func (s *Service) List(ctx context.Context, userID, channelID int64, before Curs
 	if !permissions.Has(perms, permissions.READ_MESSAGE_HISTORY) {
 		return nil, ErrMissingPermissions
 	}
-	return s.store.List(ctx, channelID, before, limit)
+	msgs, err := s.store.List(ctx, channelID, before, limit)
+	if err != nil {
+		return nil, err
+	}
+	_ = s.hydrateAttachments(ctx, msgs)
+	return msgs, nil
 }
 
 // ListAfter returns messages in a channel newer than cursor position, ordered oldest-first (forward pagination).
@@ -164,7 +202,37 @@ func (s *Service) ListAfter(ctx context.Context, userID, channelID int64, after 
 	if !permissions.Has(perms, permissions.READ_MESSAGE_HISTORY) {
 		return nil, ErrMissingPermissions
 	}
-	return s.store.ListAfter(ctx, channelID, after, limit)
+	msgs, err := s.store.ListAfter(ctx, channelID, after, limit)
+	if err != nil {
+		return nil, err
+	}
+	_ = s.hydrateAttachments(ctx, msgs)
+	return msgs, nil
+}
+
+func (s *Service) hydrateAttachments(ctx context.Context, msgs []Message) error {
+	if s.mediaStore == nil || len(msgs) == 0 {
+		return nil
+	}
+	msgIDs := make([]int64, 0, len(msgs))
+	for _, m := range msgs {
+		if id, err := strconv.ParseInt(m.ID, 10, 64); err == nil && id > 0 {
+			msgIDs = append(msgIDs, id)
+		}
+	}
+	if len(msgIDs) == 0 {
+		return nil
+	}
+	attMap, err := s.mediaStore.GetAttachmentsForMessages(ctx, msgIDs)
+	if err != nil {
+		return err
+	}
+	for i := range msgs {
+		if atts, ok := attMap[msgs[i].ID]; ok {
+			msgs[i].Attachments = atts
+		}
+	}
+	return nil
 }
 
 // Edit patches a message's content. Author only, within the 15-minute

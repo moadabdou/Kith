@@ -1640,7 +1640,7 @@
         "x": 0,
         "y": 51
       },
-      "id": 200,
+      "id": 350,
       "title": "Search Indexer & NATS Consumer Lag (Phase 3)",
       "type": "row"
     },
@@ -1826,7 +1826,7 @@
         "y": 59
       },
       "id": 400,
-      "title": "SFU Service (Go / Pion)",
+      "title": "SFU Service - Instance 1 (sfu:5000)",
       "type": "row"
     },
     {
@@ -1883,7 +1883,7 @@
             "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "sfu_connected_peers",
+          "expr": "sfu_connected_peers{instance=\"sfu:5000\"}",
           "instant": true,
           "legendFormat": "Connected peers",
           "range": false,
@@ -1895,14 +1895,14 @@
             "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "sfu_active_rooms",
+          "expr": "sfu_active_rooms{instance=\"sfu:5000\"}",
           "instant": true,
           "legendFormat": "Active rooms",
           "range": false,
           "refId": "B"
         }
       ],
-      "title": "SFU Peers / Rooms",
+      "title": "SFU-1 Peers / Rooms",
       "type": "stat"
     },
     {
@@ -1985,7 +1985,7 @@
             "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "sum(rate(sfu_packets_forwarded_total[1m]))",
+          "expr": "rate(sfu_packets_forwarded_total{instance=\"sfu:5000\"}[1m])",
           "legendFormat": "forwarded pkt/s",
           "range": true,
           "refId": "A"
@@ -1996,13 +1996,13 @@
             "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "sum(rate(sfu_packets_dropped_total[1m]))",
+          "expr": "rate(sfu_packets_dropped_total{instance=\"sfu:5000\"}[1m])",
           "legendFormat": "dropped pkt/s",
           "range": true,
           "refId": "B"
         }
       ],
-      "title": "SFU Forwarded vs Dropped",
+      "title": "SFU-1 Forwarded vs Dropped",
       "type": "timeseries"
     },
     {
@@ -2093,13 +2093,13 @@
             "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "sfu_sub_queue_depth",
+          "expr": "sfu_sub_queue_depth{instance=\"sfu:5000\"}",
           "legendFormat": "queue depth",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "SFU Subscriber Queue Depth",
+      "title": "SFU-1 Subscriber Queue Depth",
       "type": "timeseries"
     },
     {
@@ -2182,7 +2182,7 @@
             "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "sum(rate(sfu_rtcp_nack_total[1m]))",
+          "expr": "rate(sfu_rtcp_nack_total{instance=\"sfu:5000\"}[1m])",
           "legendFormat": "NACK received",
           "range": true,
           "refId": "A"
@@ -2193,7 +2193,7 @@
             "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "sum(rate(sfu_rtcp_nack_forwarded_total[1m]))",
+          "expr": "rate(sfu_rtcp_nack_forwarded_total{instance=\"sfu:5000\"}[1m])",
           "legendFormat": "NACK forwarded",
           "range": true,
           "refId": "B"
@@ -2204,7 +2204,7 @@
             "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "sum(rate(sfu_rtx_repaired_total[1m]))",
+          "expr": "rate(sfu_rtx_repaired_total{instance=\"sfu:5000\"}[1m])",
           "legendFormat": "RTX repaired",
           "range": true,
           "refId": "C"
@@ -2215,7 +2215,7 @@
             "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "sum(rate(sfu_rtx_forwarded_total[1m]))",
+          "expr": "rate(sfu_rtx_forwarded_total{instance=\"sfu:5000\"}[1m])",
           "legendFormat": "RTX forwarded",
           "range": true,
           "refId": "D"
@@ -2226,13 +2226,13 @@
             "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "sum(rate(sfu_rtx_unmatched_total[1m]))",
+          "expr": "rate(sfu_rtx_unmatched_total{instance=\"sfu:5000\"}[1m])",
           "legendFormat": "RTX unmatched",
           "range": true,
           "refId": "E"
         }
       ],
-      "title": "SFU NACK / RTX Repair Rates",
+      "title": "SFU-1 NACK / RTX Repair Rates",
       "type": "timeseries"
     },
     {
@@ -2315,7 +2315,7 @@
             "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "sum(rate(sfu_rtcp_pli_total[1m]))",
+          "expr": "rate(sfu_rtcp_pli_total{instance=\"sfu:5000\"}[1m])",
           "legendFormat": "PLI in",
           "range": true,
           "refId": "A"
@@ -2326,7 +2326,7 @@
             "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "sum(rate(sfu_rtcp_fir_total[1m]))",
+          "expr": "rate(sfu_rtcp_fir_total{instance=\"sfu:5000\"}[1m])",
           "legendFormat": "FIR in",
           "range": true,
           "refId": "B"
@@ -2337,7 +2337,7 @@
             "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "sum(rate(sfu_pli_requests_received_total[1m]))",
+          "expr": "rate(sfu_pli_requests_received_total{instance=\"sfu:5000\"}[1m])",
           "legendFormat": "limiter in",
           "range": true,
           "refId": "C"
@@ -2348,13 +2348,13 @@
             "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "sum(rate(sfu_pli_requests_forwarded_total[1m]))",
+          "expr": "rate(sfu_pli_requests_forwarded_total{instance=\"sfu:5000\"}[1m])",
           "legendFormat": "limiter out",
           "range": true,
           "refId": "D"
         }
       ],
-      "title": "SFU PLI / FIR Rates",
+      "title": "SFU-1 PLI / FIR Rates",
       "type": "timeseries"
     },
     {
@@ -2437,13 +2437,13 @@
             "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "sfu_layer_distribution",
+          "expr": "sfu_layer_distribution{instance=\"sfu:5000\"}",
           "legendFormat": "layer {{layer}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "SFU Layer Distribution",
+      "title": "SFU-1 Layer Distribution",
       "type": "timeseries"
     },
     {
@@ -2526,13 +2526,13 @@
             "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "sum by (direction) (rate(sfu_layer_switches_total[1m]))",
+          "expr": "sum by (direction) (rate(sfu_layer_switches_total{instance=\"sfu:5000\"}[1m]))",
           "legendFormat": "{{direction}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "SFU Layer Switches",
+      "title": "SFU-1 Layer Switches",
       "type": "timeseries"
     },
     {
@@ -2623,13 +2623,13 @@
             "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "sfu_fraction_lost",
+          "expr": "sfu_fraction_lost{instance=\"sfu:5000\"}",
           "legendFormat": "fraction lost",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "SFU Fraction Lost",
+      "title": "SFU-1 Fraction Lost",
       "type": "timeseries"
     },
     {
@@ -2639,6 +2639,821 @@
         "w": 24,
         "x": 0,
         "y": 87
+      },
+      "id": 450,
+      "title": "SFU Service - Instance 2 (sfu-2:5001)",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "description": "Live PeerConnections and Room actors. Phase 6 ref: 11-peer storm peaked ~30 MB RSS / 8 MB heap; gauges must return to 0 at idle (layer-distribution leak fix, postmortem phase-6 \u00a78.3).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 0,
+        "y": 88
+      },
+      "id": 41,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "code",
+          "expr": "sfu_connected_peers{instance=\"sfu-2:5001\"}",
+          "instant": true,
+          "legendFormat": "Connected peers",
+          "range": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "code",
+          "expr": "sfu_active_rooms{instance=\"sfu-2:5001\"}",
+          "instant": true,
+          "legendFormat": "Active rooms",
+          "range": false,
+          "refId": "B"
+        }
+      ],
+      "title": "SFU-2 Peers / Rooms",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "description": "RTP packets written to downlinks vs dropped on queue saturation. Phase 6 ref: 0 drops (synthetic 30 fps never fills the 100-packet inbox). Drop ratio = drops / forwarded.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "fillOpacity": 15,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "normal",
+              "mode": "none"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "pps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 10,
+        "x": 4,
+        "y": 88
+      },
+      "id": 42,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "code",
+          "expr": "rate(sfu_packets_forwarded_total{instance=\"sfu-2:5001\"}[1m])",
+          "legendFormat": "forwarded pkt/s",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "code",
+          "expr": "rate(sfu_packets_dropped_total{instance=\"sfu-2:5001\"}[1m])",
+          "legendFormat": "dropped pkt/s",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "SFU-2 Forwarded vs Dropped",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "description": "Aggregated depth of subscriber packet queues (backpressure signal). Phase 6 ref: 0 throughout the suite. Inbox cap is 100 packets; sustained values above 0 mean the forwarder cannot keep up.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "fillOpacity": 15,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "normal",
+              "mode": "none"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 50
+              },
+              {
+                "color": "red",
+                "value": 100
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 10,
+        "x": 14,
+        "y": 88
+      },
+      "id": 43,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "code",
+          "expr": "sfu_sub_queue_depth{instance=\"sfu-2:5001\"}",
+          "legendFormat": "queue depth",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "SFU-2 Subscriber Queue Depth",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "description": "Viewer NACKs received vs translated+forwarded, plus RTX repair outcomes. NACK >= 20/s forces a layer DOWN (layer_selector.go); unmatched repairs have no reverse seq mapping.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "fillOpacity": 15,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "normal",
+              "mode": "none"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 95
+      },
+      "id": 44,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "code",
+          "expr": "rate(sfu_rtcp_nack_total{instance=\"sfu-2:5001\"}[1m])",
+          "legendFormat": "NACK received",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "code",
+          "expr": "rate(sfu_rtcp_nack_forwarded_total{instance=\"sfu-2:5001\"}[1m])",
+          "legendFormat": "NACK forwarded",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "code",
+          "expr": "rate(sfu_rtx_repaired_total{instance=\"sfu-2:5001\"}[1m])",
+          "legendFormat": "RTX repaired",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "code",
+          "expr": "rate(sfu_rtx_forwarded_total{instance=\"sfu-2:5001\"}[1m])",
+          "legendFormat": "RTX forwarded",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "code",
+          "expr": "rate(sfu_rtx_unmatched_total{instance=\"sfu-2:5001\"}[1m])",
+          "legendFormat": "RTX unmatched",
+          "range": true,
+          "refId": "E"
+        }
+      ],
+      "title": "SFU-2 NACK / RTX Repair Rates",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "description": "Viewer keyframe requests (PLI/FIR) in vs limiter output to publishers. Phase 6 ref: 30 received -> 2 forwarded (15:1, 500 ms limiter). Storm ratio = received / forwarded.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "fillOpacity": 15,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "normal",
+              "mode": "none"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 95
+      },
+      "id": 45,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "code",
+          "expr": "rate(sfu_rtcp_pli_total{instance=\"sfu-2:5001\"}[1m])",
+          "legendFormat": "PLI in",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "code",
+          "expr": "rate(sfu_rtcp_fir_total{instance=\"sfu-2:5001\"}[1m])",
+          "legendFormat": "FIR in",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "code",
+          "expr": "rate(sfu_pli_requests_received_total{instance=\"sfu-2:5001\"}[1m])",
+          "legendFormat": "limiter in",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "code",
+          "expr": "rate(sfu_pli_requests_forwarded_total{instance=\"sfu-2:5001\"}[1m])",
+          "legendFormat": "limiter out",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "SFU-2 PLI / FIR Rates",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "description": "Video downlinks per simulcast layer right now. Phase 6 ref: f=1, h=1, q=1 distinct layers under clean/degraded/severe profiles. Must return to 0 at idle.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "fillOpacity": 15,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "normal",
+              "mode": "none"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 102
+      },
+      "id": 46,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "code",
+          "expr": "sfu_layer_distribution{instance=\"sfu-2:5001\"}",
+          "legendFormat": "layer {{layer}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "SFU-2 Layer Distribution",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "description": "Simulcast layer switch events by direction. Phase 6 ref: 3 DOWN / 0 UP, bounded, no flap (8-switch budget). 10 s cooldown per (sub, pub); UP needs 5 clean windows.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "fillOpacity": 15,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "normal",
+              "mode": "none"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 102
+      },
+      "id": 47,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "code",
+          "expr": "sum by (direction) (rate(sfu_layer_switches_total{instance=\"sfu-2:5001\"}[1m]))",
+          "legendFormat": "{{direction}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "SFU-2 Layer Switches",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "description": "Latest average packet-loss fraction from subscriber Receiver Reports. Static gates from layer_selector.go: DOWN at >= 5% loss EWMA, UP only at <= 1% over 5 windows.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "fillOpacity": 15,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "normal",
+              "mode": "none"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.01
+              },
+              {
+                "color": "red",
+                "value": 0.05
+              }
+            ]
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 109
+      },
+      "id": 48,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.1.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "code",
+          "expr": "sfu_fraction_lost{instance=\"sfu-2:5001\"}",
+          "legendFormat": "fraction lost",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "SFU-2 Fraction Lost",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 115
       },
       "id": 500,
       "title": "SLOs & Egress (Phase 7a)",
@@ -2702,7 +3517,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 88
+        "y": 116
       },
       "id": 29,
       "options": {
@@ -2785,7 +3600,7 @@
         "h": 7,
         "w": 10,
         "x": 0,
-        "y": 95
+        "y": 123
       },
       "id": 30,
       "options": {
@@ -2878,7 +3693,7 @@
         "h": 7,
         "w": 14,
         "x": 10,
-        "y": 95
+        "y": 123
       },
       "id": 31,
       "options": {
@@ -2919,7 +3734,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 102
+        "y": 130
       },
       "id": 600,
       "title": "Gateway Clustering (Phase 7c)",
@@ -2979,7 +3794,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 103
+        "y": 131
       },
       "id": 32,
       "options": {
@@ -3079,7 +3894,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 103
+        "y": 131
       },
       "id": 33,
       "options": {
@@ -3179,7 +3994,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 110
+        "y": 138
       },
       "id": 34,
       "options": {
@@ -3290,7 +4105,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 110
+        "y": 138
       },
       "id": 35,
       "options": {
@@ -3387,7 +4202,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 88
+        "y": 116
       },
       "id": 36,
       "options": {
@@ -3479,5 +4294,5 @@
   "timezone": "browser",
   "title": "Kith / Overview",
   "uid": "kith-overview",
-  "version": 1
+  "version": 2
 }

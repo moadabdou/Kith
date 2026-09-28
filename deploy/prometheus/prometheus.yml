@@ -23,4 +23,4 @@ scrape_configs:
       - targets: ["meilisearch:7700"]
   - job_name: sfu
     static_configs:
-      - targets: ["sfu:5000"]
+      - targets: ["sfu:5000", "sfu-2:5001"]

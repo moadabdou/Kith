@@ -1,0 +1,40 @@
+{
+  "drill_name": "Drill 8: PostgreSQL Connection Pool Exhaustion \u0026 Fast Recovery",
+  "issue": "#97",
+  "timestamp": "2026-09-28T05:41:25Z",
+  "postgres_max_connections": 200,
+  "baseline_active_connections": 56,
+  "baseline_latency": {
+    "count": 50,
+    "min_ms": 0.128,
+    "p50_ms": 0.164,
+    "p95_ms": 1.067,
+    "p99_ms": 7.851,
+    "max_ms": 7.851,
+    "avg_ms": 0.375
+  },
+  "hogged_connections_attempted": 159,
+  "hogged_connections_established": 150,
+  "starvation_error_observed": "failed to connect to `user=discord database=discord`: 127.0.0.1:5432 (127.0.0.1): server error: FATAL: sorry, too many clients already (SQLSTATE 53300)",
+  "api_readyz_status_during_starve": 200,
+  "gateway_tier_isolation_verified": true,
+  "gateway_heartbeat_latency_ms": 0.18315900000000002,
+  "recovery_rto_seconds": 0.243,
+  "target_rto_max_seconds": 3,
+  "semaphore_total_requests": 100,
+  "semaphore_shed_rate_limited_count": 95,
+  "postgres_connections_post_heal": 56,
+  "post_stress_ops": 500,
+  "post_stress_success_count": 500,
+  "post_stress_error_count": 0,
+  "post_stress_latency": {
+    "count": 500,
+    "min_ms": 0.123,
+    "p50_ms": 0.168,
+    "p95_ms": 0.344,
+    "p99_ms": 0.68,
+    "max_ms": 1.205,
+    "avg_ms": 0.195
+  },
+  "gate_verdict": "PASS"
+}

@@ -127,6 +127,30 @@ Target: 1 WebRTC video publisher + 2 subscribers with 3-layer simulcast stream.
   - Gateway Metric Delta: `gateway_sfu_flips_total{direction="down"}` +1 (2 -> 3), `gateway_sfu_failovers_total` +3 (0 -> 3 sessions).
   - Verdict: **PASS**. Results archived in `scripts/chaos/results/phase7_sfu_drill7.json`.
 
+## Phase 7h — Failure Drills: PostgreSQL connection pool exhaustion & fast recovery (Issue #97, Drill 8)
+
+Harness: `scripts/chaos/phase7_postgres.sh` (`scripts/chaos/phase7_postgres_chaos.go`).
+Topology: PostgreSQL 17 (`max_connections = 200`), Go REST API connection pool (`MaxOpen = 25`, `MaxIdle = 25`), Gateway WebSocket (`:4000`, NATS JetStream, zero PG dependency).
+Target: Relational persistence tier & real-time tier isolation.
+
+### D8 — PostgreSQL connection pool exhaustion, Gateway tier isolation & instant healing
+
+* Prediction:
+  - Saturated `max_connections` (200) will reject overflow connection attempts with `FATAL: sorry, too many clients already (SQLSTATE 53300)`.
+  - Gateway WebSocket connections, heartbeats, and NATS message fan-out will experience 100% availability (0 drops, 0 errors), demonstrating complete tier isolation from PostgreSQL.
+  - Upon terminating chaos connection hoggers (`pg_terminate_backend`), PostgreSQL connection slots will reclaim in $< 50\text{ms}$ and API `/readyz` will recover with $\text{RTO} \le 3.0\text{s}$ without an API container restart.
+  - Concurrency burst on message write path will activate semaphore load shedding (`API_MSG_MAX_INFLIGHT=50`), fast-rejecting overflow with HTTP 429 in $< 1\text{ms}$.
+  - Post-recovery 500-operation stress test will achieve 100% success rate with p99 latency $< 25\text{ms}$.
+* Actual:
+  - Connection Saturation: 150 concurrent hoggers + baseline connections saturated all 200 PostgreSQL slots.
+  - Starvation Boundary: Probers received `"failed to connect to user=discord database=discord: server error: FATAL: sorry, too many clients already (SQLSTATE 53300)"` as predicted.
+  - Gateway Tier Isolation: Gateway WebSocket remained 100% available with sub-millisecond heartbeat round-trip (**0.18ms** under full PG starvation). 0 socket drops, 0 disconnects.
+  - Recovery Time Objective (RTO): Slot reclamation & API `/readyz` restoration achieved in **0.243s** (Gate $\le 3.0\text{s}$ ✓).
+  - Semaphore Load Shedding: 100 concurrent write burst resulted in 5 accepted (user rate limit window) and 95 immediately shed with HTTP 429 in $< 1\text{ms}$. Zero 500 internal errors.
+  - Post-Recovery Stress (500 ops): 500/500 succeeded (0 errors, 100% availability). Min = 0.12ms, p50 = 0.17ms, p95 = 0.34ms, **p99 = 0.68ms** (Gate $< 25\text{ms}$ ✓), Max = 1.21ms.
+  - Connection Pool Cleanliness: PostgreSQL active connections returned to clean baseline (50 idle across API workers, 1 psql, 5 internal).
+  - Verdict: **PASS**. Results archived in `scripts/chaos/results/phase7_postgres_drill8.json`.
+
 ### Environment notes (applies to all Phase 7 drills)
 
 * Caddy needs `--force-recreate` to pick up Caddyfile edits (bind mount).

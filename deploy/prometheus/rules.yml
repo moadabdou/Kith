@@ -44,6 +44,63 @@ groups:
           summary: "Send-to-render p99 proxy slow burn above 150ms SLO"
           description: "30m-window proxy above 150ms for 30m."
 
+  - name: kith-slo-burn-rate
+    interval: 15s
+    rules:
+      # API Availability SLO (Target: 99.9%, Error Budget: 0.1% = 0.001)
+      # Multi-window multi-burn-rate alerting (Google SRE Workbook Ch 5):
+      # - Fast burn: 2% budget consumed over 1h -> burn rate 14.4 (1h window + 5m short window)
+      # - Slow burn: 5% budget consumed over 6h -> burn rate 6.0 (6h window + 30m short window)
+      - record: job:api_requests:rate5m
+        expr: sum(rate(api_http_requests_total[5m]))
+      - record: job:api_errors:rate5m
+        expr: sum(rate(api_http_requests_total{code=~"5.."}[5m]))
+      - record: job:api_burn_rate:5m
+        expr: (job:api_errors:rate5m / clamp_min(job:api_requests:rate5m, 0.001)) / 0.001
+
+      - record: job:api_requests:rate30m
+        expr: sum(rate(api_http_requests_total[30m]))
+      - record: job:api_errors:rate30m
+        expr: sum(rate(api_http_requests_total{code=~"5.."}[30m]))
+      - record: job:api_burn_rate:30m
+        expr: (job:api_errors:rate30m / clamp_min(job:api_requests:rate30m, 0.001)) / 0.001
+
+      - record: job:api_requests:rate1h
+        expr: sum(rate(api_http_requests_total[1h]))
+      - record: job:api_errors:rate1h
+        expr: sum(rate(api_http_requests_total{code=~"5.."}[1h]))
+      - record: job:api_burn_rate:1h
+        expr: (job:api_errors:rate1h / clamp_min(job:api_requests:rate1h, 0.001)) / 0.001
+
+      - record: job:api_requests:rate6h
+        expr: sum(rate(api_http_requests_total[6h]))
+      - record: job:api_errors:rate6h
+        expr: sum(rate(api_http_requests_total{code=~"5.."}[6h]))
+      - record: job:api_burn_rate:6h
+        expr: (job:api_errors:rate6h / clamp_min(job:api_requests:rate6h, 0.001)) / 0.001
+
+      - alert: SLOApiAvailabilityBudgetFastBurn
+        expr: (job:api_burn_rate:1h > 14.4) and (job:api_burn_rate:5m > 14.4)
+        for: 2m
+        labels:
+          severity: critical
+          slo: api-availability-99.9
+        annotations:
+          summary: "API Availability SLO fast burn: 2% of budget consumed over 1h"
+          description: "API 5xx error rate is burning 30-day error budget at 14.4x rate across both 1h and 5m windows (>2% budget burn in 1 hour)."
+          runbook: "Check API pod health, PostgreSQL error logs, and downstream dependency saturation."
+
+      - alert: SLOApiAvailabilityBudgetSlowBurn
+        expr: (job:api_burn_rate:6h > 6.0) and (job:api_burn_rate:30m > 6.0)
+        for: 15m
+        labels:
+          severity: warning
+          slo: api-availability-99.9
+        annotations:
+          summary: "API Availability SLO slow burn: 5% of budget consumed over 6h"
+          description: "API 5xx error rate is burning 30-day error budget at 6.0x rate across both 6h and 30m windows (>5% budget burn in 6 hours)."
+          runbook: "Check slow leak errors, pool exhaustion warnings, and intermittent timeout trends."
+
   - name: kith-egress
     interval: 30s
     rules:

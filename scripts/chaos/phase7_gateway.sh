@@ -112,6 +112,20 @@ bench_actor_back() { # $1 = survivor container, $2 = T_KILL_ISO, $3 = timeout s
   echo 99
 }
 
+# Wait for survivor actor to acquire the single-dispatcher Redis lease
+# (honoring the 10s TTL handover window from the killed node).
+bench_lease_acquired() { # $1 = survivor container, $2 = T_KILL_ISO, $3 = timeout s
+  local kill_sec="${2:0:19}"
+  for _ in $(seq 1 "$3"); do
+    LATEST=$(docker logs --timestamps "$1" 2>/dev/null | grep -E "Actor \[${GUILD_ID}\] acquired dispatch lease" | tail -1 | cut -d' ' -f1 | cut -c1-19)
+    if [ -n "${LATEST}" ] && [[ "${LATEST}" > "${kill_sec}" || "${LATEST}" == "${kill_sec}" ]]; then
+      echo $(( $(date +%s) - $(date -d "$2" +%s) )); return 0
+    fi
+    sleep 1
+  done
+  echo 99
+}
+
 victim_restart_watch() { # $1 = victim container, $2 = timeout s -> status line
   for _ in $(seq 1 "$2"); do
     ST=$(docker ps --filter "name=$1" --format '{{.Status}}')
@@ -232,11 +246,11 @@ drill4_timing() {
   # not fire after docker kill), so the fresh cohort targets the SURVIVOR
   # only — this measures failover resync, not rejoin.
   if [ "${HOLDER}" = "gw2" ]; then VICTIM=kith-gateway-2-1; SPORT=4000; SURVIVOR_CONTAINER=kith-gateway-1; COHORT_WS='ws://127.0.0.1:4000/ws'; else VICTIM=kith-gateway-1; SPORT=4001; SURVIVOR_CONTAINER=kith-gateway-2-1; COHORT_WS='ws://127.0.0.1:4001/ws'; fi
-  T_KILL=$(date +%s)
+  T_KILL=$(date +%s); T_KILL_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   docker kill "${VICTIM}" >/dev/null
   echo "killed ${VICTIM} at ${T_KILL}; starting fresh cohort immediately (it creates the actor itself by subscribing)"
   WS_URLS="${COHORT_WS}" CLIENTS=4 TOKEN="${BTOK}" \
-    RUN_SECONDS=25 TAG=d4 node "${DRIVER}" > "${RESULTS_DIR}/phase7_d4.json" 2>"${RESULTS_DIR}/phase7_d4.log" &
+    RUN_SECONDS=40 TAG=d4 node "${DRIVER}" > "${RESULTS_DIR}/phase7_d4.json" 2>"${RESULTS_DIR}/phase7_d4.log" &
   DRV=$!
   # READY-gated posts (D3 pattern): traffic must exist when clients can hear
   # it, not at a fixed offset.
@@ -244,6 +258,8 @@ drill4_timing() {
     grep -q "clients READY" "${RESULTS_DIR}/phase7_d4.log" 2>/dev/null && break
     sleep 0.5
   done
+  LEASE_IN=$(bench_lease_acquired "${SURVIVOR_CONTAINER}" "${T_KILL_ISO}" 30)
+  echo "survivor acquired dispatch lease in ${LEASE_IN}s"
   for i in 1 2 3; do post_msg "d4-$i" "${API_BASE}" >/dev/null; sleep 1; done
   wait "${DRV}"
   python3 -c "

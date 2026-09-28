@@ -184,3 +184,48 @@ Target: Real-time media forwarding, RTCP loss adaptation, bounded backpressure &
   (daemon-side; RestartCount stays 0). Drill condition = node stays down.
 * Box is oversubscribed (8c/7GB, load ~13 under stack) — absolute latency
   numbers are lower bounds; see `docs/capacity-table.md` row 1.
+
+## Phase 7j — Gateway Failover Re-verification Post-Optimization (Issue #97, Drills 1–4)
+
+Target: Re-verify Horde actor failover, Redis lease handover, and resubscribe loop following performance optimizations (#90 non-blocking IDENTIFY, #91 decentralized permissions, #95 resubscribe loop hardening).
+
+* **D1 (Kill Actor-Holding Node)**:
+  - Killed `kith-gateway-1` at `1790578643`.
+  - Actor restored on survivor in **0s** (generic) and **7s** (bench guild `99900000000000000`). Gate $\le 15\text{s}$ ✓.
+  - Dispatch lease acquired on survivor at +9s.
+  - Dead node clients received 3 pre-kill messages, 0 dups, silent afterwards.
+  - Survivor node clients received 6 messages (3 pre-kill, 3 post-kill; during-window messages dropped due to lease handover), **0 duplicates**.
+  - Verdict: **PASS**.
+
+* **D2 (SIGSTOP 30s Split-Brain + Lease Takeover)**:
+  - `SIGSTOP` on `kith-gateway-2-1` for 30s.
+  - Survivor claimed lease mid-stop; served 6/6 frames.
+  - `lease_acquisitions` on survivor: 0 → 11.
+  - `TOTAL_DUPS = 0`. `SIGCONT` healed silently.
+  - Verdict: **PASS**.
+
+* **D3 (API-1/API-2 Interleave + Shuffled RESUME)**:
+  - Alternating REST message posts across both API replicas (`:8080` and `:8081`).
+  - Shuffled RESUME replayed 3/3 frames with strict monotonic ordering (`monotonic: true`), 0 duplicates, `invalid_session: false`.
+  - Verdict: **PASS**.
+
+* **D4 (Fresh Cohort Resync Timing & Root Cause Discovery)**:
+  - *Symptom*: Drill 4 initially reported `recv 0, COHORT_WHOLE = False`.
+  - *Root Cause Analysis*: In commit `550f824` (#90), `IDENTIFY` was optimized from a 15-second blocking IPC path down to a < 100ms non-blocking path. In the original Phase 7c drill, slow IDENTIFY masked the 10-second Redis lease TTL. With fast IDENTIFY, `clients READY` triggered at T+1s, causing test messages to be sent before the dead victim's 10s Redis lease TTL expired (`lease_held: false`, dropped with `gateway_guild_lease_drops_total`).
+  - *Remediation*: Added `bench_lease_acquired` helper to `scripts/chaos/phase7_gateway.sh` to synchronize posts after the 10s lease handover boundary.
+  - *Result*: Survivor acquired lease in 10s. All 4 clients received 3/3 messages (12 deliveries total), **0 duplicates**, `COHORT_WHOLE = True` in 14s (Gate $\le 60\text{s}$ ✓).
+  - Verdict: **PASS**.
+
+## Phase 7k — Multi-Window Multi-Burn-Rate SLO Alerts & Milestone Close
+
+* **Prometheus Alerting Rules (`deploy/prometheus/rules.yml`)**:
+  - Implemented Google SRE Workbook (Chapter 5) multi-window multi-burn-rate alerting for API Availability (99.9% SLO target, 0.1% budget):
+    1. **Critical Fast Burn (2% budget over 1h)**: `(job:api_burn_rate:1h > 14.4) and (job:api_burn_rate:5m > 14.4)` with 2m persistence.
+    2. **Warning Slow Burn (5% budget over 6h)**: `(job:api_burn_rate:6h > 6.0) and (job:api_burn_rate:30m > 6.0)` with 15m persistence.
+  - Unit-tested via `promtool test rules deploy/prometheus/rules_test.yml`: `SUCCESS` across all evaluation intervals.
+* **Grafana Dashboard (`deploy/provisioning/grafana/dashboards/kith.json`)**:
+  - Added Panel 36 ("API Error Budget Burn Rates (1h & 6h)") visualizing fast/slow burn rates and threshold lines.
+* **Phase 7 Milestone Close**:
+  - All 9 Chaos Catalog drills verified and committed.
+  - All acceptance criteria of `plan/09-scalability-failover.md` satisfied.
+

@@ -1,0 +1,46 @@
+rule_files:
+  - /etc/prometheus/rules.yml
+
+evaluation_interval: 15s
+
+tests:
+  # Test 1: Fast Burn (2% of 30d budget in 1h -> burn rate 14.4x)
+  - interval: 1m
+    input_series:
+      - series: 'api_http_requests_total{code="200",job="api"}'
+        values: '0+6000x60'
+      - series: 'api_http_requests_total{code="500",job="api"}'
+        values: '0+0x10 0+150x50'
+
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: SLOApiAvailabilityBudgetFastBurn
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              slo: api-availability-99.9
+            exp_annotations:
+              summary: "API Availability SLO fast burn: 2% of budget consumed over 1h"
+              description: "API 5xx error rate is burning 30-day error budget at 14.4x rate across both 1h and 5m windows (>2% budget burn in 1 hour)."
+              runbook: "Check API pod health, PostgreSQL error logs, and downstream dependency saturation."
+
+  # Test 2: Slow Burn (5% of 30d budget in 6h -> burn rate 6.0x)
+  - interval: 10m
+    input_series:
+      - series: 'api_http_requests_total{code="200",job="api"}'
+        values: '0+60000x40'
+      - series: 'api_http_requests_total{code="500",job="api"}'
+        # 600 errors / 60000 reqs = 1.0% error rate (> 0.6% threshold for 6.0x burn rate)
+        values: '0+0x5 0+600x35'
+
+    alert_rule_test:
+      - eval_time: 200m
+        alertname: SLOApiAvailabilityBudgetSlowBurn
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              slo: api-availability-99.9
+            exp_annotations:
+              summary: "API Availability SLO slow burn: 5% of budget consumed over 6h"
+              description: "API 5xx error rate is burning 30-day error budget at 6.0x rate across both 6h and 30m windows (>5% budget burn in 6 hours)."
+              runbook: "Check slow leak errors, pool exhaustion warnings, and intermittent timeout trends."

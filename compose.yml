@@ -502,10 +502,36 @@ services:
       mc alias set local http://minio:9000 $${MINIO_ROOT_USER:-kithadmin} $${MINIO_ROOT_PASSWORD:-kithpassword123};
       mc mb --ignore-existing local/attachments;
       mc mb --ignore-existing local/avatars;
-      mc anonymous set download local/attachments;
+      mc anonymous set public local/attachments;
       mc anonymous set download local/avatars;
       exit 0;
       "
+
+  media-worker:
+    build:
+      context: ./media-worker
+      network: host
+    environment:
+      RUST_LOG: ${RUST_LOG:-info,media_worker=debug}
+      DATABASE_URL: postgres://${POSTGRES_USER:-discord}:${POSTGRES_PASSWORD:-discord}@postgres:5432/${POSTGRES_DB:-discord}?sslmode=disable
+      NATS_URL: ${NATS_URL:-nats://nats:4222}
+      NATS_STREAM: ${NATS_STREAM:-KITH_MEDIA}
+      NATS_SUBJECT: ${NATS_SUBJECT:-kith.media.upload}
+      NATS_DURABLE: ${NATS_DURABLE:-media-worker-group}
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-kithadmin}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-kithpassword123}
+      S3_BUCKET_ATTACHMENTS: ${S3_BUCKET_ATTACHMENTS:-attachments}
+      S3_PUBLIC_URL: ${S3_PUBLIC_URL:-http://localhost:9000}
+      RAYON_NUM_THREADS: ${RAYON_NUM_THREADS:-4}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   pgdata:

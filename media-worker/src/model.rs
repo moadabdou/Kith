@@ -43,5 +43,7 @@ pub struct ThumbnailOutput {
 pub struct ProcessedMedia {
     pub width: u32,
     pub height: u32,
+    pub sanitized_bytes: Option<Vec<u8>>,
     pub thumbnails: Vec<ThumbnailOutput>,
 }
+

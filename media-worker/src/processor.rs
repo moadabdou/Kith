@@ -39,9 +39,15 @@ pub fn process_image(raw_bytes: &[u8], content_type: &str) -> Result<ProcessedMe
         return Err(ProcessorError::UnsupportedFormat(content_type.to_string()));
     }
 
-    // 1. Decompression Bomb Guard: Probe header dimensions before allocating pixel buffer
-    let reader = image::ImageReader::new(Cursor::new(raw_bytes))
+    // 1. Decompression Bomb Guard: Configure strict limits & probe header dimensions before allocating pixel buffer
+    let mut reader = image::ImageReader::new(Cursor::new(raw_bytes))
         .with_guessed_format()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_DIMENSION);
+    limits.max_image_height = Some(MAX_DIMENSION);
+    limits.max_alloc = Some(128 * 1024 * 1024); // 128 MB max memory budget
+    reader.limits(limits);
+
     let (orig_width, orig_height) = reader.into_dimensions()?;
 
     if orig_width > MAX_DIMENSION
@@ -54,10 +60,33 @@ pub fn process_image(raw_bytes: &[u8], content_type: &str) -> Result<ProcessedMe
         });
     }
 
-    // 2. Decode image buffer (stripping EXIF metadata during re-encoding)
-    let img = image::load_from_memory(raw_bytes)?;
+    // 2. Decode image buffer within limits (DynamicImage contains pure pixel buffer, stripping all EXIF/GPS chunks)
+    let mut decode_reader = image::ImageReader::new(Cursor::new(raw_bytes))
+        .with_guessed_format()?;
+    let mut decode_limits = image::Limits::default();
+    decode_limits.max_image_width = Some(MAX_DIMENSION);
+    decode_limits.max_image_height = Some(MAX_DIMENSION);
+    decode_limits.max_alloc = Some(128 * 1024 * 1024);
+    decode_reader.limits(decode_limits);
 
-    // 3. Parallel thumbnail generation across standard tiers using Rayon
+    let img = decode_reader.decode()?;
+
+    // 3. Generate sanitized full-resolution image without EXIF/GPS metadata
+    let mut sanitized_buf = Cursor::new(Vec::new());
+    let format = match content_type {
+        "image/png" => ImageFormat::Png,
+        "image/jpeg" => ImageFormat::Jpeg,
+        "image/webp" => ImageFormat::WebP,
+        _ => ImageFormat::Jpeg,
+    };
+    let _ = img.write_to(&mut sanitized_buf, format);
+    let sanitized_bytes = if !sanitized_buf.get_ref().is_empty() {
+        Some(sanitized_buf.into_inner())
+    } else {
+        None
+    };
+
+    // 4. Parallel thumbnail generation across standard tiers using Rayon
     let thumbnails: Result<Vec<ThumbnailOutput>, ProcessorError> = THUMBNAIL_TIERS
         .par_iter()
         .map(|&tier| {
@@ -91,6 +120,7 @@ pub fn process_image(raw_bytes: &[u8], content_type: &str) -> Result<ProcessedMe
     Ok(ProcessedMedia {
         width: orig_width,
         height: orig_height,
+        sanitized_bytes,
         thumbnails,
     })
 }

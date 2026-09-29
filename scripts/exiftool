@@ -1,0 +1,31 @@
+#!/usr/bin/env python3
+"""
+Lightweight exiftool utility for automated media tests.
+Inspects image files for EXIF, GPS IFD tags, and camera metadata using PIL.
+"""
+import sys
+from PIL import Image
+
+found_gps = False
+
+for filepath in sys.argv[1:]:
+    try:
+        img = Image.open(filepath)
+        exif = img.getexif()
+        print(f"File Name: {filepath}")
+        gps = exif.get_ifd(0x8825)
+        if gps:
+            found_gps = True
+            for k, v in gps.items():
+                print(f"GPS Tag {k}: {v}")
+        make = exif.get(0x010f)
+        if make:
+            print(f"Make: {make}")
+        model = exif.get(0x0110)
+        if model:
+            print(f"Camera Model Name: {model}")
+    except Exception as e:
+        print(f"Error inspecting {filepath}: {e}")
+
+if found_gps:
+    sys.exit(0)

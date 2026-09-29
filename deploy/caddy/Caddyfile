@@ -1,4 +1,16 @@
+{
+	order cache before rewrite
+	cache
+}
+
 cdn.localhost, :80 {
+	cache {
+		regex {
+			exclude "/api/.*"
+			exclude "/ws.*"
+		}
+	}
+
 	handle /api/* {
 		reverse_proxy api:8080 api-2:8080
 	}
@@ -6,10 +18,7 @@ cdn.localhost, :80 {
 		reverse_proxy gateway:4000 gateway-2:4000
 	}
 	handle /attachments/* {
-		reverse_proxy api:8080 api-2:8080 {
-			header_down Cache-Control "public, max-age=31536000, immutable"
-			header_down Accept-Ranges "bytes"
-		}
+		reverse_proxy api:8080 api-2:8080
 	}
 	handle /avatars/* {
 		reverse_proxy minio:9000 {

@@ -426,7 +426,9 @@ services:
       retries: 10
 
   caddy:
-    image: caddy:2-alpine
+    build:
+      context: ./deploy/caddy
+    image: kith-caddy:latest
     ports:
       - "80:80"
     volumes:

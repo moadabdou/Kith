@@ -228,6 +228,20 @@ func main() {
 	mediaSigner := media.NewURLSigner([]byte(jwtSecret), 24*time.Hour)
 	mediaService := media.NewService(db, mediaStore, mediaStorage, node, mediaPub, s3BucketAttachments, maxUploadSizeBytes)
 	mediaService.SetSigner(mediaSigner)
+
+	// Abandoned Upload Garbage Collection background ticker (Phase 8, Issue #102)
+	gcIntervalStr := envOr("MEDIA_GC_INTERVAL", "1h")
+	if gcInterval, err := time.ParseDuration(gcIntervalStr); err == nil && gcInterval > 0 {
+		go func() {
+			ticker := time.NewTicker(gcInterval)
+			defer ticker.Stop()
+			for range ticker.C {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				_, _, _ = mediaService.PruneAbandonedUploads(ctx, 24*time.Hour, false)
+				cancel()
+			}
+		}()
+	}
 	mediaHandler := media.NewHandler(mediaService)
 
 	messagesSvc := messages.NewService(db, msgStore, node, publisher, mediaStore)

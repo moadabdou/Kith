@@ -49,6 +49,7 @@ impl Consumer {
                 durable_name: Some(self.cfg.durable_name.clone()),
                 filter_subject: self.cfg.consumer_subject.clone(),
                 ack_policy: AckPolicy::Explicit,
+                ack_wait: std::time::Duration::from_secs(5),
                 max_deliver: 3,
                 ..Default::default()
             })
@@ -182,11 +183,18 @@ impl Consumer {
             Err(e) => {
                 error!("Image processing failed for attachment {}: {:?}", attachment_id, e);
                 self.db.update_failed(attachment_id).await?;
-                return Err(anyhow::anyhow!("Processing failed: {}", e));
+                return Ok(()); // Cleanly ACK message so unprocessable media does not loop
             }
         };
 
-        // 3. Upload thumbnails to MinIO
+        // 3. Upload sanitized full image (EXIF stripped) if available
+        if let Some(clean_bytes) = processed.sanitized_bytes {
+            if let Err(e) = self.storage.upload_object(&p.s3_bucket, &p.s3_key, clean_bytes, &p.content_type).await {
+                warn!("Failed to overwrite S3 object with EXIF-stripped image: {:?}", e);
+            }
+        }
+
+        // 4. Upload thumbnails to MinIO
         let mut thumbnail_map: HashMap<String, ThumbnailInfo> = HashMap::new();
 
         for thumb in processed.thumbnails {

@@ -197,7 +197,7 @@ func main() {
 	s3AccessKey := envOr("S3_ACCESS_KEY", "kithadmin")
 	s3SecretKey := envOr("S3_SECRET_KEY", "kithpassword123")
 	s3UseSSL := envOr("S3_USE_SSL", "false") == "true"
-	s3PublicURL := envOr("S3_PUBLIC_URL", "http://localhost:9000")
+	s3PublicURL := envOr("S3_PUBLIC_URL", "http://localhost")
 	s3BucketAttachments := envOr("S3_BUCKET_ATTACHMENTS", "attachments")
 	maxUploadSizeBytes, _ := strconv.ParseInt(envOr("MAX_UPLOAD_SIZE_BYTES", "26214400"), 10, 64) // 25 MB
 
@@ -225,11 +225,15 @@ func main() {
 		}
 	}
 
+	mediaSigner := media.NewURLSigner([]byte(jwtSecret), 24*time.Hour)
 	mediaService := media.NewService(db, mediaStore, mediaStorage, node, mediaPub, s3BucketAttachments, maxUploadSizeBytes)
+	mediaService.SetSigner(mediaSigner)
 	mediaHandler := media.NewHandler(mediaService)
 
+	messagesSvc := messages.NewService(db, msgStore, node, publisher, mediaStore)
+	messagesSvc.SetSigner(mediaSigner)
 	messagesHandler := messages.NewHandler(
-		messages.NewService(db, msgStore, node, publisher, mediaStore),
+		messagesSvc,
 		envInt("API_MSG_MAX_INFLIGHT", messages.DefaultMaxInflight),
 	)
 	slog.Info("message write path configured",
@@ -361,6 +365,9 @@ func main() {
 		auth.RequireAuth(jwt, http.HandlerFunc(mediaHandler.Complete)))
 	mux.Handle("GET /api/channels/{cid}/attachments/{id}",
 		auth.RequireAuth(jwt, http.HandlerFunc(mediaHandler.Get)))
+	mux.HandleFunc("GET /attachments/{cid}/{aid}/{filename}", mediaHandler.ServeAttachment)
+	mux.HandleFunc("GET /attachments/attachments/{cid}/{aid}/{filename}", mediaHandler.ServeAttachment)
+	mux.HandleFunc("GET /api/media/attachments/{cid}/{aid}/{filename}", mediaHandler.ServeAttachment)
 
 	// search — Search Rung 1: PostgreSQL pg_trgm full-text search (plan/04 §2, §4).
 	// Hard rate limit: 1 req/s per user to prevent search worker starvation.

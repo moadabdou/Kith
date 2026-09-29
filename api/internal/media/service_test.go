@@ -47,6 +47,28 @@ func (m *memoryStorage) GetObject(ctx context.Context, bucket, key string) (io.R
 	return io.NopCloser(bytes.NewReader(data)), nil
 }
 
+type memoryReadSeekCloser struct {
+	*bytes.Reader
+}
+
+func (m *memoryReadSeekCloser) Close() error {
+	return nil
+}
+
+func (m *memoryStorage) GetSeekableObject(ctx context.Context, bucket, key string) (io.ReadSeekCloser, minio.ObjectInfo, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	data, ok := m.objects[bucket+"/"+key]
+	if !ok {
+		return nil, minio.ObjectInfo{}, fmt.Errorf("not found")
+	}
+	info := minio.ObjectInfo{
+		Size: int64(len(data)),
+		Key:  key,
+	}
+	return &memoryReadSeekCloser{Reader: bytes.NewReader(data)}, info, nil
+}
+
 func (m *memoryStorage) StatObject(ctx context.Context, bucket, key string) (minio.ObjectInfo, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

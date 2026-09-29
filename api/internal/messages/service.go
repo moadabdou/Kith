@@ -70,6 +70,7 @@ type Service struct {
 	sf         *snowflake.Node
 	pub        events.Publisher
 	mediaStore media.Store
+	signer     *media.URLSigner
 }
 
 func NewService(db *sql.DB, store Store, sf *snowflake.Node, pub events.Publisher, mediaStores ...media.Store) *Service {
@@ -81,6 +82,11 @@ func NewService(db *sql.DB, store Store, sf *snowflake.Node, pub events.Publishe
 		ms = mediaStores[0]
 	}
 	return &Service{db: db, store: store, sf: sf, pub: pub, mediaStore: ms}
+}
+
+// SetSigner sets the media URLSigner for signing attachments in private channels.
+func (s *Service) SetSigner(signer *media.URLSigner) {
+	s.signer = signer
 }
 
 // Send is the hot path (plan/02 §3): perm placeholder → snowflake →
@@ -154,6 +160,11 @@ func (s *Service) Send(ctx context.Context, userID, channelID int64, content str
 			_ = s.store.Delete(ctx, channelID, id, userID)
 			return nil, err
 		}
+		if s.signer != nil && s.isChannelPrivate(ctx, channelID, ref.GuildID) {
+			for j := range linked {
+				s.signer.SignAttachment(&linked[j], true, 24*time.Hour)
+			}
+		}
 		m.Attachments = linked
 	}
 
@@ -172,7 +183,7 @@ func (s *Service) Send(ctx context.Context, userID, channelID int64, content str
 // List returns messages in a channel, newest-first, paginated by cursor:
 // before returns messages older than that cursor position across partition buckets (plan/03 §4–5).
 func (s *Service) List(ctx context.Context, userID, channelID int64, before Cursor, limit int) ([]Message, error) {
-	_, perms, err := s.requireChannelPerms(ctx, userID, channelID)
+	ref, perms, err := s.requireChannelPerms(ctx, userID, channelID)
 	if err != nil {
 		return nil, err
 	}
@@ -186,13 +197,13 @@ func (s *Service) List(ctx context.Context, userID, channelID int64, before Curs
 	if err != nil {
 		return nil, err
 	}
-	_ = s.hydrateAttachments(ctx, msgs)
+	_ = s.hydrateAttachments(ctx, msgs, channelID, ref.GuildID)
 	return msgs, nil
 }
 
 // ListAfter returns messages in a channel newer than cursor position, ordered oldest-first (forward pagination).
 func (s *Service) ListAfter(ctx context.Context, userID, channelID int64, after Cursor, limit int) ([]Message, error) {
-	_, perms, err := s.requireChannelPerms(ctx, userID, channelID)
+	ref, perms, err := s.requireChannelPerms(ctx, userID, channelID)
 	if err != nil {
 		return nil, err
 	}
@@ -206,11 +217,11 @@ func (s *Service) ListAfter(ctx context.Context, userID, channelID int64, after 
 	if err != nil {
 		return nil, err
 	}
-	_ = s.hydrateAttachments(ctx, msgs)
+	_ = s.hydrateAttachments(ctx, msgs, channelID, ref.GuildID)
 	return msgs, nil
 }
 
-func (s *Service) hydrateAttachments(ctx context.Context, msgs []Message) error {
+func (s *Service) hydrateAttachments(ctx context.Context, msgs []Message, channelID, guildID int64) error {
 	if s.mediaStore == nil || len(msgs) == 0 {
 		return nil
 	}
@@ -227,12 +238,35 @@ func (s *Service) hydrateAttachments(ctx context.Context, msgs []Message) error 
 	if err != nil {
 		return err
 	}
+	isPrivate := s.isChannelPrivate(ctx, channelID, guildID)
 	for i := range msgs {
 		if atts, ok := attMap[msgs[i].ID]; ok {
+			if s.signer != nil && isPrivate {
+				for j := range atts {
+					s.signer.SignAttachment(&atts[j], true, 24*time.Hour)
+				}
+			}
 			msgs[i].Attachments = atts
 		}
 	}
 	return nil
+}
+
+func (s *Service) isChannelPrivate(ctx context.Context, channelID, guildID int64) bool {
+	if guildID == 0 {
+		return true
+	}
+	if s.db == nil {
+		return false
+	}
+	var deny uint64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT deny FROM channel_overwrites 
+		WHERE channel_id = $1 AND target_id = $2`, channelID, guildID).Scan(&deny)
+	if err == nil {
+		return permissions.Has(deny, permissions.VIEW_CHANNEL)
+	}
+	return false
 }
 
 // Edit patches a message's content. Author only, within the 15-minute

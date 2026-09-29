@@ -40,6 +40,7 @@ type Service struct {
 	pub           EventPublisher
 	bucket        string
 	maxUploadSize int64
+	signer        *URLSigner
 }
 
 // NewService constructs a media pipeline service.
@@ -70,6 +71,59 @@ func NewService(
 		bucket:        bucket,
 		maxUploadSize: maxUploadSize,
 	}
+}
+
+// SetSigner attaches an HMAC URLSigner for private media link generation and verification.
+func (s *Service) SetSigner(signer *URLSigner) {
+	s.signer = signer
+}
+
+// Signer returns the configured URLSigner.
+func (s *Service) Signer() *URLSigner {
+	return s.signer
+}
+
+// Storage returns the underlying Storage implementation.
+func (s *Service) Storage() Storage {
+	return s.storage
+}
+
+// Bucket returns the attachments S3 bucket name.
+func (s *Service) Bucket() string {
+	return s.bucket
+}
+
+// IsChannelPrivate determines if a channel is private (DM or guild channel denying @everyone VIEW_CHANNEL).
+func (s *Service) IsChannelPrivate(ctx context.Context, channelID int64) (bool, error) {
+	if s.db == nil {
+		return false, nil
+	}
+
+	var guildIDNull sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `SELECT guild_id FROM channels WHERE id = $1`, channelID).Scan(&guildIDNull)
+	if errors.Is(err, sql.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !guildIDNull.Valid {
+		// DM or standalone channel is always private
+		return true, nil
+	}
+
+	guildID := guildIDNull.Int64
+	var deny uint64
+	err = s.db.QueryRowContext(ctx, `
+		SELECT deny FROM channel_overwrites 
+		WHERE channel_id = $1 AND target_id = $2`, channelID, guildID).Scan(&deny)
+	if err == nil {
+		if permissions.Has(deny, permissions.VIEW_CHANNEL) {
+			return true, nil
+		}
+	}
+
+	return false, nil
 }
 
 // UploadAttachment handles direct multipart stream ingestion (Option A).

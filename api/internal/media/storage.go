@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/minio/minio-go/v7"
@@ -15,6 +16,7 @@ import (
 type Storage interface {
 	PutObject(ctx context.Context, bucket, key string, reader io.Reader, size int64, contentType string) error
 	GetObject(ctx context.Context, bucket, key string) (io.ReadCloser, error)
+	GetSeekableObject(ctx context.Context, bucket, key string) (io.ReadSeekCloser, minio.ObjectInfo, error)
 	StatObject(ctx context.Context, bucket, key string) (minio.ObjectInfo, error)
 	RemoveObject(ctx context.Context, bucket, key string) error
 	CopyObject(ctx context.Context, dstBucket, dstKey, srcBucket, srcKey string) error
@@ -82,6 +84,19 @@ func (s *MinIOStorage) GetObject(ctx context.Context, bucket, key string) (io.Re
 	return obj, nil
 }
 
+func (s *MinIOStorage) GetSeekableObject(ctx context.Context, bucket, key string) (io.ReadSeekCloser, minio.ObjectInfo, error) {
+	obj, err := s.client.GetObject(ctx, bucket, key, minio.GetObjectOptions{})
+	if err != nil {
+		return nil, minio.ObjectInfo{}, fmt.Errorf("minio: get seekable object failed: %w", err)
+	}
+	info, err := obj.Stat()
+	if err != nil {
+		_ = obj.Close()
+		return nil, minio.ObjectInfo{}, fmt.Errorf("minio: stat seekable object failed: %w", err)
+	}
+	return obj, info, nil
+}
+
 func (s *MinIOStorage) StatObject(ctx context.Context, bucket, key string) (minio.ObjectInfo, error) {
 	info, err := s.client.StatObject(ctx, bucket, key, minio.StatObjectOptions{})
 	if err != nil {
@@ -132,5 +147,12 @@ func (s *MinIOStorage) PresignedGetURL(ctx context.Context, bucket, key string, 
 }
 
 func (s *MinIOStorage) PublicURL(bucket, key string) string {
+	key = strings.TrimPrefix(key, "/")
+	if bucket != "" && strings.HasPrefix(key, bucket+"/") {
+		return fmt.Sprintf("%s/%s", s.publicURL, key)
+	}
+	if bucket == "" {
+		return fmt.Sprintf("%s/%s", s.publicURL, key)
+	}
 	return fmt.Sprintf("%s/%s/%s", s.publicURL, bucket, key)
 }

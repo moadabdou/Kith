@@ -216,3 +216,70 @@ func parseChannelID(r *http.Request) (int64, error) {
 	}
 	return id, nil
 }
+
+// ServeAttachment handles edge delivery of media attachments with signature verification and byte-range support:
+// GET /attachments/{cid}/{aid}/{filename}
+// GET /api/media/attachments/{cid}/{aid}/{filename}
+func (h *Handler) ServeAttachment(w http.ResponseWriter, r *http.Request) {
+	channelID, err := parseChannelID(r)
+	if err != nil {
+		errs.Write(w, errs.UnknownChannel())
+		return
+	}
+
+	aidStr := r.PathValue("aid")
+	if aidStr == "" {
+		aidStr = r.PathValue("id")
+	}
+	filename := r.PathValue("filename")
+
+	// 1. Signature Verification
+	signer := h.Svc.Signer()
+	hasSig := r.URL.Query().Get("hm") != ""
+
+	if hasSig && signer != nil {
+		if err := signer.VerifyURL(r.URL); err != nil {
+			errs.Write(w, &errs.Error{
+				Status:  http.StatusForbidden,
+				Code:    40003,
+				Message: fmt.Sprintf("Invalid or expired media signature: %v", err),
+			})
+			return
+		}
+	} else {
+		// If unsigned, check if channel requires signed URLs
+		isPrivate, err := h.Svc.IsChannelPrivate(r.Context(), channelID)
+		if err == nil && isPrivate {
+			errs.Write(w, &errs.Error{
+				Status:  http.StatusForbidden,
+				Code:    40003,
+				Message: "Access denied: signed URL required for private channel media",
+			})
+			return
+		}
+	}
+
+	// 2. Resolve S3 key: attachments/{channel_id}/{attachment_id}/{filename}
+	s3Key := fmt.Sprintf("attachments/%d/%s/%s", channelID, aidStr, filename)
+
+	obj, info, err := h.Svc.Storage().GetSeekableObject(r.Context(), h.Svc.Bucket(), s3Key)
+	if err != nil {
+		errs.Write(w, &errs.Error{
+			Status:  http.StatusNotFound,
+			Code:    10008,
+			Message: "Unknown Attachment",
+		})
+		return
+	}
+	defer obj.Close()
+
+	// 3. Set caching headers for content-addressed immutable media
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	w.Header().Set("Accept-Ranges", "bytes")
+	if info.ContentType != "" {
+		w.Header().Set("Content-Type", info.ContentType)
+	}
+
+	// 4. Stream content using http.ServeContent (natively handles Range: bytes=X-Y -> HTTP 206)
+	http.ServeContent(w, r, filename, info.LastModified, obj)
+}

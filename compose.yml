@@ -151,7 +151,7 @@ services:
       S3_BUCKET_ATTACHMENTS: ${S3_BUCKET_ATTACHMENTS:-attachments}
       S3_BUCKET_AVATARS: ${S3_BUCKET_AVATARS:-avatars}
       S3_USE_SSL: ${S3_USE_SSL:-false}
-      S3_PUBLIC_URL: ${S3_PUBLIC_URL:-http://localhost:9000}
+      S3_PUBLIC_URL: ${S3_PUBLIC_URL:-http://localhost}
       MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-26214400}
     ports:
       - "127.0.0.1:8080:8080"
@@ -209,7 +209,7 @@ services:
       S3_BUCKET_ATTACHMENTS: ${S3_BUCKET_ATTACHMENTS:-attachments}
       S3_BUCKET_AVATARS: ${S3_BUCKET_AVATARS:-avatars}
       S3_USE_SSL: ${S3_USE_SSL:-false}
-      S3_PUBLIC_URL: ${S3_PUBLIC_URL:-http://localhost:9000}
+      S3_PUBLIC_URL: ${S3_PUBLIC_URL:-http://localhost}
       MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-26214400}
     ports:
       - "127.0.0.1:${API2_PORT:-8081}:8080"
@@ -522,7 +522,7 @@ services:
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:-kithadmin}
       S3_SECRET_KEY: ${S3_SECRET_KEY:-kithpassword123}
       S3_BUCKET_ATTACHMENTS: ${S3_BUCKET_ATTACHMENTS:-attachments}
-      S3_PUBLIC_URL: ${S3_PUBLIC_URL:-http://localhost:9000}
+      S3_PUBLIC_URL: ${S3_PUBLIC_URL:-http://localhost}
       RAYON_NUM_THREADS: ${RAYON_NUM_THREADS:-4}
     depends_on:
       postgres:

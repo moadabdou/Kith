@@ -21,12 +21,13 @@ impl Database {
         Ok(Self { pool })
     }
 
-    /// Updates the attachment status to ready with computed dimensions and thumbnails metadata.
+    /// Updates the attachment status to ready with computed dimensions, duration, and thumbnails metadata.
     pub async fn update_ready(
         &self,
         attachment_id: i64,
         width: u32,
         height: u32,
+        duration_seconds: Option<f64>,
         thumbnails: &HashMap<String, ThumbnailInfo>,
     ) -> Result<()> {
         let thumbnails_json = serde_json::to_value(thumbnails)
@@ -38,13 +39,15 @@ impl Database {
             SET status = 'ready',
                 width = $2,
                 height = $3,
-                thumbnails = $4
+                duration_seconds = $4,
+                thumbnails = $5
             WHERE id = $1
             "#,
         )
         .bind(attachment_id)
         .bind(width as i32)
         .bind(height as i32)
+        .bind(duration_seconds)
         .bind(thumbnails_json)
         .execute(&self.pool)
         .await

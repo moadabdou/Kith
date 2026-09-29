@@ -4,6 +4,7 @@ mod db;
 mod model;
 mod processor;
 mod storage;
+mod video;
 
 use anyhow::Result;
 use tracing::info;

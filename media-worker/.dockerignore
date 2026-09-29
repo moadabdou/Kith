@@ -1,5 +1,2 @@
-target/*
-!target/release/
-target/release/*
-!target/release/media-worker
+target/
 .cargo_cache/

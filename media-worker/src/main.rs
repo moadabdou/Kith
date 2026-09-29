@@ -40,18 +40,21 @@ async fn main() -> Result<()> {
     let storage = storage::Storage::new(&cfg);
     info!("MinIO storage client initialized for endpoint: {}", cfg.s3_endpoint);
 
-    // 6. Start JetStream consumer
+    // 6. Start JetStream consumer with graceful shutdown handling
     let consumer = consumer::Consumer::new(cfg, storage, db);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
-    tokio::select! {
-        res = consumer.run() => {
-            if let Err(e) = res {
-                tracing::error!("Consumer exited with error: {:?}", e);
-            }
+    tokio::spawn(async move {
+        if let Ok(()) = tokio::signal::ctrl_c().await {
+            info!("Shutdown signal received (Ctrl+C). Initiating graceful shutdown...");
+            let _ = shutdown_tx.send(true);
         }
-        _ = tokio::signal::ctrl_c() => {
-            info!("Shutdown signal received. Exiting media worker...");
-        }
+    });
+
+    if let Err(e) = consumer.run(shutdown_rx).await {
+        tracing::error!("Consumer exited with error: {:?}", e);
+    } else {
+        info!("Media worker shutdown cleanly.");
     }
 
     Ok(())

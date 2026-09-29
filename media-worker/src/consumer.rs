@@ -24,7 +24,7 @@ impl Consumer {
         Self { cfg, storage, db }
     }
 
-    pub async fn run(&self) -> Result<()> {
+    pub async fn run(&self, mut shutdown: tokio::sync::watch::Receiver<bool>) -> Result<()> {
         info!(
             "Connecting to NATS at {} for stream {}",
             self.cfg.nats_url, self.cfg.stream_name
@@ -64,19 +64,36 @@ impl Consumer {
             .await
             .context("Failed to establish JetStream message stream")?;
 
-        while let Some(msg_res) = messages.next().await {
-            let msg = match msg_res {
-                Ok(m) => m,
-                Err(e) => {
-                    warn!("Transient error pulling message from JetStream: {:?}", e);
-                    continue;
+        loop {
+            if *shutdown.borrow() {
+                info!("Shutdown initiated. Exiting consumer loop.");
+                break;
+            }
+
+            let msg = tokio::select! {
+                res = shutdown.changed() => {
+                    if res.is_ok() && *shutdown.borrow() {
+                        info!("Shutdown signal received. Stopping pull consumer and exiting gracefully.");
+                    }
+                    break;
+                }
+                msg_opt = messages.next() => {
+                    match msg_opt {
+                        Some(Ok(m)) => m,
+                        Some(Err(e)) => {
+                            warn!("Transient error pulling message from JetStream: {:?}", e);
+                            continue;
+                        }
+                        None => {
+                            info!("Message stream closed.");
+                            break;
+                        }
+                    }
                 }
             };
 
             if let Err(e) = self.handle_message(&msg.payload).await {
                 error!("Error processing media event: {:?}", e);
-                // In case of error, we can NAK or ACK depending on error type
-                // If it's a permanent failure, we already marked DB failed and will ACK
             }
 
             if let Err(e) = msg.ack().await {

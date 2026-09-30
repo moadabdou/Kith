@@ -275,7 +275,7 @@ func main() {
 	}
 	mediaHandler := media.NewHandler(mediaService)
 
-	messagesSvc := messages.NewService(db, msgStore, node, publisher, mediaStore)
+	messagesSvc := messages.NewService(db, msgStore, node, publisher, mediaService)
 	messagesSvc.SetSigner(mediaSigner)
 	messagesHandler := messages.NewHandler(
 		messagesSvc,
@@ -424,8 +424,6 @@ func main() {
 		auth.RequireAuth(jwt, http.HandlerFunc(mediaHandler.Upload)))
 	mux.Handle("POST /api/channels/{cid}/attachments/presign",
 		auth.RequireAuth(jwt, http.HandlerFunc(mediaHandler.Presign)))
-	mux.Handle("POST /api/channels/{cid}/attachments/{id}/complete",
-		auth.RequireAuth(jwt, http.HandlerFunc(mediaHandler.Complete)))
 	mux.Handle("GET /api/channels/{cid}/attachments/{id}",
 		auth.RequireAuth(jwt, http.HandlerFunc(mediaHandler.Get)))
 	mux.HandleFunc("GET /attachments/{cid}/{aid}/{filename}", mediaHandler.ServeAttachment)

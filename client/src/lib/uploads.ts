@@ -2,10 +2,10 @@ import { api } from '../api'
 
 // Discord-style client upload pipeline (Phase 8 media):
 //   presign (REST) -> PUT bytes direct to storage (XHR, progress) ->
-//   complete at send time (REST) -> send message with attachment ids.
+//   send message with attachment ids (finalized atomically in POST /messages).
 //
 // PUT happens at selection time so progress is visible immediately;
-// complete runs at send time so cancelled/forgotten uploads never finalize
+// finalization runs at send time so cancelled/forgotten uploads never finalize
 // (the server's abandoned-upload pruner reaps the staging rows).
 
 export type PendingState = 'presigning' | 'uploading' | 'uploaded' | 'error' | 'cancelled'

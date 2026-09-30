@@ -64,20 +64,26 @@ type MessageDeletePayload struct {
 	GuildID   string `json:"guild_id,omitempty"`
 }
 
+// MediaLinker abstracts attachment linking and retrieval for messages.
+type MediaLinker interface {
+	GetAttachmentsForMessages(ctx context.Context, messageIDs []int64) (map[string][]media.Attachment, error)
+	LinkAttachmentsToMessage(ctx context.Context, messageID int64, attachmentIDs []int64, channelID, uploaderID int64) ([]media.Attachment, error)
+}
+
 type Service struct {
 	db         *sql.DB
 	store      Store
 	sf         *snowflake.Node
 	pub        events.Publisher
-	mediaStore media.Store
+	mediaStore MediaLinker
 	signer     *media.URLSigner
 }
 
-func NewService(db *sql.DB, store Store, sf *snowflake.Node, pub events.Publisher, mediaStores ...media.Store) *Service {
+func NewService(db *sql.DB, store Store, sf *snowflake.Node, pub events.Publisher, mediaStores ...MediaLinker) *Service {
 	if store == nil && db != nil {
 		store = NewPostgresStore(db)
 	}
-	var ms media.Store
+	var ms MediaLinker
 	if len(mediaStores) > 0 {
 		ms = mediaStores[0]
 	}
@@ -155,7 +161,14 @@ func (s *Service) Send(ctx context.Context, userID, channelID int64, content str
 	}
 
 	if len(parsedIDs) > 0 && s.mediaStore != nil {
-		linked, err := s.mediaStore.LinkAttachmentsToMessage(ctx, id, parsedIDs, channelID, userID)
+		var linked []media.Attachment
+		if linker, ok := s.mediaStore.(interface {
+			FinalizeAndLink(ctx context.Context, messageID int64, attachmentIDs []int64, channelID, uploaderID, guildID int64) ([]media.Attachment, error)
+		}); ok {
+			linked, err = linker.FinalizeAndLink(ctx, id, parsedIDs, channelID, userID, ref.GuildID)
+		} else {
+			linked, err = s.mediaStore.LinkAttachmentsToMessage(ctx, id, parsedIDs, channelID, userID)
+		}
 		if err != nil {
 			_ = s.store.Delete(ctx, channelID, id, userID)
 			return nil, err

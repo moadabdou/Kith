@@ -368,43 +368,49 @@ func TestPresignedUploadLifecycle(t *testing.T) {
 	pngHeader := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89")
 	storage.objects["attachments/"+presignResp.S3Key] = pngHeader
 
-	// Step 3: Complete upload
+	// Step 3: Finalize and link upload atomically at send time (Discord model)
 	var attID int64
 	fmt.Sscanf(presignResp.ID, "%d", &attID)
 
-	completed, err := svc.CompletePresignedUpload(
+	linked, err := svc.FinalizeAndLink(
 		context.Background(),
-		1001, 2002,
-		attID,
+		9999,
+		[]int64{attID},
+		2002, 1001,
+		3003,
 	)
 	if err != nil {
-		t.Fatalf("complete upload failed: %v", err)
+		t.Fatalf("finalize and link failed: %v", err)
 	}
 
+	if len(linked) != 1 {
+		t.Fatalf("expected 1 linked attachment, got %d", len(linked))
+	}
+	completed := linked[0]
 	if completed.Status != StatusPending {
 		t.Errorf("expected status pending, got %q", completed.Status)
 	}
 	if completed.SHA256 == "" {
 		t.Errorf("expected sha256 to be computed")
 	}
+	if completed.MessageID == nil || *completed.MessageID != "9999" {
+		t.Errorf("expected message_id 9999, got %v", completed.MessageID)
+	}
 
-	// Verify event dispatched
+	// Verify event dispatched with message_id and guild_id stamped
 	if len(pub.events) != 1 {
-		t.Errorf("expected 1 event dispatched, got %d", len(pub.events))
+		t.Fatalf("expected 1 event dispatched, got %d", len(pub.events))
 	}
-
-	// Step 4: Link to message
-	linked, err := svc.LinkAttachments(context.Background(), 9999, []int64{attID}, 2002, 1001)
-	if err != nil {
-		t.Fatalf("link attachments failed: %v", err)
+	if pub.events[0].MessageID != "9999" {
+		t.Errorf("expected event MessageID 9999, got %q", pub.events[0].MessageID)
 	}
-	if len(linked) != 1 || linked[0].MessageID == nil || *linked[0].MessageID != "9999" {
-		t.Errorf("link mismatch: %+v", linked)
+	if pub.events[0].GuildID != "3003" {
+		t.Errorf("expected event GuildID 3003, got %q", pub.events[0].GuildID)
 	}
 
 	// Trying to link already-linked attachment should fail
-	_, err = svc.LinkAttachments(context.Background(), 8888, []int64{attID}, 2002, 1001)
-	if err != ErrAttachmentConflict {
-		t.Errorf("expected ErrAttachmentConflict on double link, got %v", err)
+	_, err = svc.FinalizeAndLink(context.Background(), 8888, []int64{attID}, 2002, 1001, 3003)
+	if err != ErrAttachmentConflict && err != ErrAttachmentNotFound {
+		t.Errorf("expected conflict on double link, got %v", err)
 	}
 }

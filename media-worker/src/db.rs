@@ -72,34 +72,4 @@ impl Database {
 
         Ok(())
     }
-
-    /// Returns the linked (message_id, channel_id) for live-update routing.
-    /// message_id is NULL until the uploader sends the message (presign ->
-    /// PUT -> complete all precede send), so callers must skip the event
-    /// when it is absent: the send response already carries final state.
-    pub async fn message_link(&self, attachment_id: i64) -> Result<Option<(i64, i64)>> {
-        let row: Option<(Option<i64>, i64)> = sqlx::query_as(
-            r#"SELECT message_id, channel_id FROM attachments WHERE id = $1"#,
-        )
-        .bind(attachment_id)
-        .fetch_optional(&self.pool)
-        .await
-        .context("Failed to look up attachment message link")?;
-
-        Ok(row.and_then(|(message_id, channel_id)| message_id.map(|mid| (mid, channel_id))))
-    }
-
-    /// Returns the guild owning a channel, if any (DM/standalone channels
-    /// have none and need no guild-scoped fan-out).
-    pub async fn channel_guild(&self, channel_id: i64) -> Result<Option<i64>> {
-        let row: Option<(Option<i64>,)> = sqlx::query_as(
-            r#"SELECT guild_id FROM channels WHERE id = $1"#,
-        )
-        .bind(channel_id)
-        .fetch_optional(&self.pool)
-        .await
-        .context("Failed to look up channel guild")?;
-
-        Ok(row.and_then(|(guild_id,)| guild_id))
-    }
 }

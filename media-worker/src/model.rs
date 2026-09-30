@@ -10,7 +10,9 @@ pub struct MediaEvent {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct FileUploadPayload {
     pub attachment_id: String,
+    pub message_id: Option<String>,
     pub channel_id: String,
+    pub guild_id: Option<String>,
     pub uploader_id: String,
     pub filename: String,
     pub content_type: String,

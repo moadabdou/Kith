@@ -6,7 +6,6 @@ import type { Attachment } from '../../types'
 vi.mock('../../api', () => ({
   api: {
     presignAttachment: vi.fn(),
-    completeAttachment: vi.fn(),
     getAttachment: vi.fn(),
   },
 }))

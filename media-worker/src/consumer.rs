@@ -136,40 +136,14 @@ impl Consumer {
             attachment_id, p.filename, p.content_type, p.byte_size
         );
 
-        // Resolve the rendered message for live-update routing. Best-effort:
-        // message_id is NULL until the uploader sends the message, in which
-        // case the send response already carries final state and no event
-        // is needed. Never fail the job over a notify-path lookup.
-        let link: Option<(String, String, String)> = match self.db.message_link(attachment_id).await {
-            Ok(Some((message_id, channel_id))) => {
-                match self.db.channel_guild(channel_id).await {
-                    Ok(Some(guild_id)) => Some((
-                        guild_id.to_string(),
-                        channel_id.to_string(),
-                        message_id.to_string(),
-                    )),
-                    Ok(None) => None,
-                    Err(e) => {
-                        warn!("Live-update guild lookup failed for attachment {}: {:?}", attachment_id, e);
-                        None
-                    }
-                }
-            }
-            Ok(None) => None,
-            Err(e) => {
-                warn!("Live-update link lookup failed for attachment {}: {:?}", attachment_id, e);
-                None
-            }
-        };
-
         if is_supported_image(&p.content_type) {
             match self.handle_image(attachment_id, &p).await {
                 Ok(()) => {}
                 Err(e) => {
                     // S3 download failure already marked the row failed above;
                     // still notify so the tile flips instead of hanging.
-                    if let Some((guild_id, channel_id, message_id)) = &link {
-                        self.notify_message_updated(nats, guild_id, channel_id, message_id).await;
+                    if let (Some(message_id), Some(guild_id)) = (&p.message_id, &p.guild_id) {
+                        self.notify_message_updated(nats, guild_id, &p.channel_id, message_id).await;
                     }
                     return Err(e);
                 }
@@ -178,8 +152,8 @@ impl Consumer {
             match self.handle_video(attachment_id, &p).await {
                 Ok(()) => {}
                 Err(e) => {
-                    if let Some((guild_id, channel_id, message_id)) = &link {
-                        self.notify_message_updated(nats, guild_id, channel_id, message_id).await;
+                    if let (Some(message_id), Some(guild_id)) = (&p.message_id, &p.guild_id) {
+                        self.notify_message_updated(nats, guild_id, &p.channel_id, message_id).await;
                     }
                     return Err(e);
                 }
@@ -194,8 +168,8 @@ impl Consumer {
                 .await?;
         }
 
-        if let Some((guild_id, channel_id, message_id)) = &link {
-            self.notify_message_updated(nats, guild_id, channel_id, message_id).await;
+        if let (Some(message_id), Some(guild_id)) = (&p.message_id, &p.guild_id) {
+            self.notify_message_updated(nats, guild_id, &p.channel_id, message_id).await;
         }
 
         Ok(())

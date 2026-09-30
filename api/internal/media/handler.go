@@ -112,39 +112,6 @@ func (h *Handler) Presign(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusCreated, resp)
 }
 
-// Complete finalizes a presigned upload once the client has PUT the object to S3:
-// POST /api/channels/{cid}/attachments/{id}/complete
-func (h *Handler) Complete(w http.ResponseWriter, r *http.Request) {
-	channelID, err := parseChannelID(r)
-	if err != nil {
-		errs.Write(w, errs.UnknownChannel())
-		return
-	}
-
-	attachmentID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil || attachmentID <= 0 {
-		errs.Write(w, &errs.Error{
-			Status:  http.StatusBadRequest,
-			Code:    errs.CodeInvalidFormBody,
-			Message: "Invalid attachment id",
-		})
-		return
-	}
-
-	userID, ok := auth.UserIDFrom(r.Context())
-	if !ok || userID == 0 {
-		errs.Write(w, errs.Unauthorized())
-		return
-	}
-
-	att, err := h.Svc.CompletePresignedUpload(r.Context(), userID, channelID, attachmentID)
-	if err != nil {
-		h.writeError(w, err)
-		return
-	}
-
-	httpx.JSON(w, http.StatusOK, att)
-}
 
 // Get fetches attachment metadata:
 // GET /api/channels/{cid}/attachments/{id}

@@ -269,12 +269,6 @@ class ApiClient {
     })
   }
 
-  async completeAttachment(channelId: string, attachmentId: string): Promise<Attachment> {
-    return this.request<Attachment>(`/channels/${channelId}/attachments/${attachmentId}/complete`, {
-      method: 'POST',
-    })
-  }
-
   async getAttachment(channelId: string, attachmentId: string): Promise<Attachment> {
     return this.request<Attachment>(`/channels/${channelId}/attachments/${attachmentId}`)
   }

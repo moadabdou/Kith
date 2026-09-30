@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/moadabdou/Kith/api/pkg/permissions"
@@ -315,104 +316,140 @@ func (s *Service) CreatePresignedUpload(
 	}, nil
 }
 
-// CompletePresignedUpload verifies the completed upload in MinIO, sniffs MIME,
-// computes SHA-256, moves to the content-addressed key, and dispatches the worker event.
-func (s *Service) CompletePresignedUpload(
+// FinalizeAndLink finalizes staged uploads in S3 and links attachments to a message in Postgres.
+// If an attachment is staged, it is verified in object storage, content-addressed, and linked.
+// If it is pending processing, it is dispatched to JetStream with message_id and guild_id stamped.
+func (s *Service) FinalizeAndLink(
 	ctx context.Context,
-	userID, channelID, attachmentID int64,
-) (*Attachment, error) {
-	att, err := s.store.GetAttachment(ctx, attachmentID)
-	if err != nil {
-		return nil, err
+	messageID int64,
+	attachmentIDs []int64,
+	channelID, uploaderID, guildID int64,
+) ([]Attachment, error) {
+	if len(attachmentIDs) == 0 {
+		return []Attachment{}, nil
 	}
 
-	if att.ChannelID != strconv.FormatInt(channelID, 10) || att.UploaderID != strconv.FormatInt(userID, 10) {
-		return nil, ErrUnauthorized
+	chanIDStr := strconv.FormatInt(channelID, 10)
+	userIDStr := strconv.FormatInt(uploaderID, 10)
+	msgIDStr := strconv.FormatInt(messageID, 10)
+	var guildIDStr string
+	if guildID > 0 {
+		guildIDStr = strconv.FormatInt(guildID, 10)
 	}
 
-	// 1. Verify object exists in storage
-	info, err := s.storage.StatObject(ctx, s.bucket, att.S3Key)
-	if err != nil {
-		return nil, fmt.Errorf("media: staged object not found in storage: %w", err)
-	}
+	var result []Attachment
 
-	if info.Size > s.maxUploadSize {
-		_ = s.storage.RemoveObject(ctx, s.bucket, att.S3Key)
-		return nil, ErrFileTooLarge
-	}
-
-	// 2. Read object from storage to sniff MIME and compute SHA-256
-	objReader, err := s.storage.GetObject(ctx, s.bucket, att.S3Key)
-	if err != nil {
-		return nil, fmt.Errorf("media: get staged object failed: %w", err)
-	}
-	defer objReader.Close()
-
-	head := make([]byte, 512)
-	n, err := io.ReadFull(objReader, head)
-	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("media: read staged header: %w", err)
-	}
-	head = head[:n]
-
-	contentType, ext, cleanFilename, err := DetectAndValidateMIME(head, att.Filename)
-	if err != nil {
-		_ = s.storage.RemoveObject(ctx, s.bucket, att.S3Key)
-		_ = s.store.UpdateAttachmentStatus(ctx, attachmentID, StatusFailed, nil, nil, nil, nil)
-		return nil, err
-	}
-
-	// 3. Compute SHA-256
-	hasher := sha256.New()
-	hasher.Write(head)
-	if _, err := io.Copy(hasher, objReader); err != nil {
-		return nil, fmt.Errorf("media: hash computation failed: %w", err)
-	}
-	sha256Hex := hex.EncodeToString(hasher.Sum(nil))
-
-	// 4. Move to content-addressed immutable path
-	finalKey := FormatAttachmentKey(att.ChannelID, att.ID, sha256Hex, ext)
-	if finalKey != att.S3Key {
-		err = s.storage.CopyObject(ctx, s.bucket, finalKey, s.bucket, att.S3Key)
+	for _, attID := range attachmentIDs {
+		att, err := s.store.GetAttachment(ctx, attID)
 		if err != nil {
-			return nil, fmt.Errorf("media: copy to content-addressed key failed: %w", err)
+			return nil, err
 		}
-		_ = s.storage.RemoveObject(ctx, s.bucket, att.S3Key)
+
+		if att.ChannelID != chanIDStr || att.UploaderID != userIDStr {
+			return nil, ErrUnauthorized
+		}
+
+		// If the upload is staged, finalize it in object storage
+		if strings.Contains(att.S3Key, "/staged") {
+			info, err := s.storage.StatObject(ctx, s.bucket, att.S3Key)
+			if err != nil {
+				return nil, fmt.Errorf("media: staged object not found in storage: %w", err)
+			}
+
+			if info.Size > s.maxUploadSize {
+				_ = s.storage.RemoveObject(ctx, s.bucket, att.S3Key)
+				return nil, ErrFileTooLarge
+			}
+
+			objReader, err := s.storage.GetObject(ctx, s.bucket, att.S3Key)
+			if err != nil {
+				return nil, fmt.Errorf("media: get staged object failed: %w", err)
+			}
+
+			head := make([]byte, 512)
+			n, err := io.ReadFull(objReader, head)
+			if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+				objReader.Close()
+				return nil, fmt.Errorf("media: read staged header: %w", err)
+			}
+			head = head[:n]
+
+			contentType, ext, cleanFilename, err := DetectAndValidateMIME(head, att.Filename)
+			if err != nil {
+				objReader.Close()
+				_ = s.storage.RemoveObject(ctx, s.bucket, att.S3Key)
+				_ = s.store.UpdateAttachmentStatus(ctx, attID, StatusFailed, nil, nil, nil, nil)
+				return nil, err
+			}
+
+			hasher := sha256.New()
+			hasher.Write(head)
+			if _, err := io.Copy(hasher, objReader); err != nil {
+				objReader.Close()
+				return nil, fmt.Errorf("media: hash computation failed: %w", err)
+			}
+			objReader.Close()
+			sha256Hex := hex.EncodeToString(hasher.Sum(nil))
+
+			finalKey := FormatAttachmentKey(att.ChannelID, att.ID, sha256Hex, ext)
+			if finalKey != att.S3Key {
+				err = s.storage.CopyObject(ctx, s.bucket, finalKey, s.bucket, att.S3Key)
+				if err != nil {
+					return nil, fmt.Errorf("media: copy to content-addressed key failed: %w", err)
+				}
+				_ = s.storage.RemoveObject(ctx, s.bucket, att.S3Key)
+			}
+
+			if err := s.store.UpdateCompletedUpload(ctx, attID, finalKey, sha256Hex, contentType, info.Size, cleanFilename, StatusPending); err != nil {
+				return nil, fmt.Errorf("media: update attachment db record: %w", err)
+			}
+
+			att.S3Key = finalKey
+			att.SHA256 = sha256Hex
+			att.ContentType = contentType
+			att.ByteSize = info.Size
+			att.Filename = cleanFilename
+			att.Status = StatusPending
+		}
+
+		// Link attachment to message in DB
+		linked, err := s.store.LinkAttachmentsToMessage(ctx, messageID, []int64{attID}, channelID, uploaderID)
+		if err != nil {
+			return nil, err
+		}
+		if len(linked) == 0 {
+			return nil, ErrAttachmentNotFound
+		}
+		linkedAtt := linked[0]
+		linkedAtt.URL = s.storage.PublicURL(s.bucket, linkedAtt.S3Key)
+
+		// Dispatch JetStream event with message_id and guild_id stamped
+		if linkedAtt.Status == StatusPending {
+			if err := s.pub.PublishUpload(ctx, FileUploadPayload{
+				AttachmentID: linkedAtt.ID,
+				MessageID:    msgIDStr,
+				ChannelID:    linkedAtt.ChannelID,
+				GuildID:      guildIDStr,
+				UploaderID:   linkedAtt.UploaderID,
+				Filename:     linkedAtt.Filename,
+				ContentType:  linkedAtt.ContentType,
+				ByteSize:     linkedAtt.ByteSize,
+				SHA256:       linkedAtt.SHA256,
+				S3Bucket:     linkedAtt.S3Bucket,
+				S3Key:        linkedAtt.S3Key,
+			}); err != nil {
+				slog.ErrorContext(ctx, "failed to publish upload event to jetstream",
+					"attachment_id", linkedAtt.ID,
+					"message_id", msgIDStr,
+					"error", err,
+				)
+			}
+		}
+
+		result = append(result, linkedAtt)
 	}
 
-	// 5. Update DB record
-	att.S3Key = finalKey
-	att.SHA256 = sha256Hex
-	att.ContentType = contentType
-	att.ByteSize = info.Size
-	att.Filename = cleanFilename
-	att.Status = StatusPending
-
-	if err := s.store.UpdateCompletedUpload(ctx, attachmentID, finalKey, sha256Hex, contentType, info.Size, cleanFilename, StatusPending); err != nil {
-		return nil, fmt.Errorf("media: update attachment db record: %w", err)
-	}
-
-	att.URL = s.storage.PublicURL(s.bucket, finalKey)
-
-	// 6. Publish FILE_UPLOAD event
-	if err := s.pub.PublishUpload(ctx, FileUploadPayload{
-		AttachmentID: att.ID,
-		ChannelID:    att.ChannelID,
-		UploaderID:   att.UploaderID,
-		Filename:     att.Filename,
-		ContentType:  att.ContentType,
-		ByteSize:     att.ByteSize,
-		SHA256:       att.SHA256,
-		S3Bucket:     att.S3Bucket,
-		S3Key:        att.S3Key,
-	}); err != nil {
-		slog.ErrorContext(ctx, "failed to publish upload event to jetstream",
-			"attachment_id", att.ID,
-			"error", err,
-		)
-	}
-
-	return att, nil
+	return result, nil
 }
 
 // GetAttachment fetches an attachment by snowflake ID.
@@ -420,8 +457,23 @@ func (s *Service) GetAttachment(ctx context.Context, id int64) (*Attachment, err
 	return s.store.GetAttachment(ctx, id)
 }
 
+// GetAttachmentsForMessages delegates to the underlying store.
+func (s *Service) GetAttachmentsForMessages(ctx context.Context, messageIDs []int64) (map[string][]Attachment, error) {
+	return s.store.GetAttachmentsForMessages(ctx, messageIDs)
+}
+
 // LinkAttachments validates ownership and links attachments to a message.
 func (s *Service) LinkAttachments(
+	ctx context.Context,
+	messageID int64,
+	attachmentIDs []int64,
+	channelID, uploaderID int64,
+) ([]Attachment, error) {
+	return s.store.LinkAttachmentsToMessage(ctx, messageID, attachmentIDs, channelID, uploaderID)
+}
+
+// LinkAttachmentsToMessage matches Store interface.
+func (s *Service) LinkAttachmentsToMessage(
 	ctx context.Context,
 	messageID int64,
 	attachmentIDs []int64,

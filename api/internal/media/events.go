@@ -22,7 +22,9 @@ const (
 // FileUploadPayload is dispatched to the media worker queue when an attachment upload completes.
 type FileUploadPayload struct {
 	AttachmentID string `json:"attachment_id"`
+	MessageID    string `json:"message_id,omitempty"`
 	ChannelID    string `json:"channel_id"`
+	GuildID      string `json:"guild_id,omitempty"`
 	UploaderID   string `json:"uploader_id"`
 	Filename     string `json:"filename"`
 	ContentType  string `json:"content_type"`

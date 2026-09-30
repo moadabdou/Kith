@@ -625,7 +625,6 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
 
     const unsubscribe = subscribeToMessages((newMsg: Message) => {
       if (newMsg.channel_id === channelId) {
-        api.ackMessage(channelId, newMsg.id).catch(() => {})
         setMessages((prev) => {
           if (prev.some((m) => m.id === newMsg.id)) {
             return prev
@@ -761,19 +760,15 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
     setError(null)
 
     try {
-      // Complete presigned uploads at send time so cancelled/forgotten
-      // staging rows never finalize (server pruner reaps them).
-      const completed = await Promise.all(
-        readyUploads.map((p) => {
-          if (!p.attachmentId) throw new Error(`Attachment ${p.filename} was never uploaded`)
-          return api.completeAttachment(channelId, p.attachmentId)
-        })
-      )
+      const attIDs = readyUploads.map((p) => {
+        if (!p.attachmentId) throw new Error(`Attachment ${p.filename} was never uploaded`)
+        return p.attachmentId
+      })
       const sent = await api.sendMessage(
         guildId,
         channelId,
         content,
-        completed.length > 0 ? completed.map((a) => a.id) : undefined
+        attIDs.length > 0 ? attIDs : undefined
       )
       setInputText('')
       setPending([])

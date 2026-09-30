@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from 'react'
+import { useState, useEffect, type CSSProperties } from 'react'
 import { FileText, Film, Loader2, Music } from 'lucide-react'
 import { api } from '../../api'
 import { formatBytes, kindOf } from '../../lib/uploads'
@@ -23,15 +23,62 @@ function constrainedStyle(a: Attachment): CSSProperties | undefined {
 }
 
 export function AttachmentView({ attachment, channelId }: AttachmentViewProps) {
+  const [current, setCurrent] = useState(() => attachment)
   const [src, setSrc] = useState(() => srcOf(attachment))
   const [refreshed, setRefreshed] = useState(false)
   const [lightbox, setLightbox] = useState(false)
 
-  if (attachment.status !== 'ready') {
+  // Keep internal state in sync with parent updates
+  useEffect(() => {
+    setCurrent(attachment)
+    setSrc(srcOf(attachment))
+  }, [attachment])
+
+  // Bounded fallback timer (2s, 5s) if mounted as pending (safety net for severe lag / socket drops)
+  useEffect(() => {
+    if (current.status !== 'pending') return
+
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout>
+    const delays = [2000, 5000]
+    let attempt = 0
+
+    const check = () => {
+      if (cancelled || attempt >= delays.length) return
+      const delay = delays[attempt++]
+
+      timer = setTimeout(() => {
+        if (cancelled) return
+        api
+          .getAttachment(channelId, current.id)
+          .then((fresh) => {
+            if (cancelled) return
+            if (fresh.status !== 'pending') {
+              setCurrent(fresh)
+              setSrc(srcOf(fresh))
+              return
+            }
+            check()
+          })
+          .catch(() => {
+            if (!cancelled) check()
+          })
+      }, delay)
+    }
+
+    check()
+
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [current.id, current.status, channelId])
+
+  if (current.status !== 'ready') {
     return (
       <div className="attachment attachment-pending">
         <Loader2 size={16} className="spin" />
-        <span>{attachment.status === 'failed' ? 'Processing failed' : 'Processing…'}</span>
+        <span>{current.status === 'failed' ? 'Processing failed' : 'Processing…'}</span>
       </div>
     )
   }
@@ -42,7 +89,7 @@ export function AttachmentView({ attachment, channelId }: AttachmentViewProps) {
     if (refreshed) return
     setRefreshed(true)
     api
-      .getAttachment(channelId, attachment.id)
+      .getAttachment(channelId, current.id)
       .then((fresh) => {
         const next = srcOf(fresh)
         if (next && next !== src) setSrc(next)
@@ -50,7 +97,7 @@ export function AttachmentView({ attachment, channelId }: AttachmentViewProps) {
       .catch(() => {})
   }
 
-  const kind = kindOf(attachment.content_type, attachment.filename)
+  const kind = kindOf(current.content_type, current.filename)
 
   if (kind === 'image') {
     return (
@@ -59,13 +106,13 @@ export function AttachmentView({ attachment, channelId }: AttachmentViewProps) {
           type="button"
           className="attachment attachment-image"
           onClick={() => setLightbox(true)}
-          title={`${attachment.filename} · ${formatBytes(attachment.size)} (click to expand)`}
+          title={`${current.filename} · ${formatBytes(current.size)} (click to expand)`}
         >
-          <img src={src} alt={attachment.filename} loading="lazy" style={constrainedStyle(attachment)} onError={refreshOnce} />
+          <img src={src} alt={current.filename} loading="lazy" style={constrainedStyle(current)} onError={refreshOnce} />
         </button>
         {lightbox && (
-          <div className="attachment-lightbox" onClick={() => setLightbox(false)} role="dialog" aria-label={attachment.filename}>
-            <img src={src} alt={attachment.filename} onError={refreshOnce} />
+          <div className="attachment-lightbox" onClick={() => setLightbox(false)} role="dialog" aria-label={current.filename}>
+            <img src={src} alt={current.filename} onError={refreshOnce} />
           </div>
         )}
       </>
@@ -73,15 +120,15 @@ export function AttachmentView({ attachment, channelId }: AttachmentViewProps) {
   }
 
   if (kind === 'video') {
-    const poster = posterOf(attachment)
+    const poster = posterOf(current)
     return (
       <div className="attachment attachment-video">
         <div className="attachment-video-badge" title="Video">
           <Film size={14} />
         </div>
         <video src={src} poster={poster} controls preload="metadata" onError={refreshOnce} />
-        <a className="attachment-name" href={src} download={attachment.filename} title={`Download ${attachment.filename}`}>
-          {attachment.filename} · {formatBytes(attachment.size)}
+        <a className="attachment-name" href={src} download={current.filename} title={`Download ${current.filename}`}>
+          {current.filename} · {formatBytes(current.size)}
         </a>
       </div>
     )
@@ -92,8 +139,8 @@ export function AttachmentView({ attachment, channelId }: AttachmentViewProps) {
       <div className="attachment attachment-audio">
         <Music size={16} />
         <div className="attachment-audio-body">
-          <span className="attachment-name" title={attachment.filename}>
-            {attachment.filename}
+          <span className="attachment-name" title={current.filename}>
+            {current.filename}
           </span>
           <audio src={src} controls preload="metadata" onError={refreshOnce} />
         </div>
@@ -105,13 +152,13 @@ export function AttachmentView({ attachment, channelId }: AttachmentViewProps) {
     <a
       className="attachment attachment-file"
       href={src}
-      download={attachment.filename}
-      title={`Download ${attachment.filename} (${formatBytes(attachment.size)})`}
+      download={current.filename}
+      title={`Download ${current.filename} (${formatBytes(current.size)})`}
     >
       <FileText size={20} />
       <span className="attachment-file-meta">
-        <span className="attachment-name">{attachment.filename}</span>
-        <span className="attachment-size">{formatBytes(attachment.size)}</span>
+        <span className="attachment-name">{current.filename}</span>
+        <span className="attachment-size">{formatBytes(current.size)}</span>
       </span>
     </a>
   )

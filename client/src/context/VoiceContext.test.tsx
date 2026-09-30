@@ -851,8 +851,6 @@ describe('VoiceContext Client Integration (Phase 5c / Issue #74)', () => {
       )
     })
 
-    const sfu = sfuClientInstances[0]
-
     // Fast lane: fresh allocation on the survivor arrives FIRST (confirm
     // path answered before the poller flipped + null-push went out).
     await act(async () => {

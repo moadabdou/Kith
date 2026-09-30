@@ -1,4 +1,4 @@
-import type { AuthResponse, Channel, ChannelOverwrite, Guild, Member, Message, Role, SearchFilters, SearchResponse, User } from './types'
+import type { AuthResponse, Channel, ChannelOverwrite, Guild, Member, Message, ReadState, Role, SearchFilters, SearchResponse, User } from './types'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api'
 
@@ -285,6 +285,22 @@ class ApiClient {
     return this.request<Guild>(`/invites/${encodeURIComponent(cleanCode)}/join`, {
       method: 'POST',
     })
+  }
+
+  // ── Read States (Issue #103) ──────────────────────
+  async ackMessage(channelId: string, messageId: string, manual = false, mentionCount = 0): Promise<void> {
+    await this.request<void>(`/channels/${channelId}/messages/${messageId}/ack`, {
+      method: 'POST',
+      body: JSON.stringify({ manual, mention_count: mentionCount }),
+    })
+  }
+
+  async getReadStates(): Promise<ReadState[]> {
+    return this.request<ReadState[]>('/users/@me/read-states')
+  }
+
+  async getChannelReadState(channelId: string): Promise<ReadState> {
+    return this.request<ReadState>(`/channels/${channelId}/read-state`)
   }
 }
 

@@ -202,3 +202,15 @@ export interface VoiceServerUpdatePayload {
       already failed over via the confirm fast lane ignore a stale null. */
   dead_endpoint?: string | null
 }
+
+export interface ReadState {
+  channel_id: string
+  last_read_message_id: string
+  mention_count: number
+  last_pin_timestamp?: string
+}
+
+export interface MessageAckPayload {
+  channel_id: string
+  message_id: string
+}

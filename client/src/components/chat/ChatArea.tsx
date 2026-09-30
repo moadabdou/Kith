@@ -363,6 +363,10 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
         setLoadingOlder(false)
         setError(null)
 
+        if (msgs.length > 0) {
+          api.ackMessage(channelId, msgs[0].id).catch(() => {})
+        }
+
         // If there is a pending jump message waiting for channel switch
         if (pendingJumpId) {
           const target = pendingJumpId
@@ -515,6 +519,7 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
 
     const unsubscribe = subscribeToMessages((newMsg: Message) => {
       if (newMsg.channel_id === channelId) {
+        api.ackMessage(channelId, newMsg.id).catch(() => {})
         setMessages((prev) => {
           if (prev.some((m) => m.id === newMsg.id)) {
             return prev

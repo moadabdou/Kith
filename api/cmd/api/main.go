@@ -22,6 +22,7 @@ import (
 	"github.com/moadabdou/Kith/api/internal/httpx"
 	"github.com/moadabdou/Kith/api/internal/media"
 	"github.com/moadabdou/Kith/api/internal/messages"
+	"github.com/moadabdou/Kith/api/internal/readstates"
 	"github.com/moadabdou/Kith/api/internal/search"
 	"github.com/moadabdou/Kith/api/internal/users"
 	"github.com/moadabdou/Kith/api/pkg/ratelimit"
@@ -169,16 +170,19 @@ func main() {
 	}
 	mode := messages.ParseDualWriteMode(storeModeRaw)
 
+	var scyllaSession *gocql.Session
 	var msgStore messages.Store
 	switch mode {
 	case messages.ModeScyllaOnly:
-		scyllaStore, scyllaSession := initScylla()
+		var scyllaStore *messages.ScyllaStore
+		scyllaStore, scyllaSession = initScylla()
 		defer scyllaSession.Close()
 		msgStore = scyllaStore
 		slog.Info("message store initialized", "mode", "scylla_only", "store", "scylla")
 	case messages.ModeDualWritePGPrimary, messages.ModeDualWriteScyllaPrimary:
 		pgStore := messages.NewPostgresStore(db)
-		scyllaStore, scyllaSession := initScylla()
+		var scyllaStore *messages.ScyllaStore
+		scyllaStore, scyllaSession = initScylla()
 		defer scyllaSession.Close()
 		dualStore := messages.NewDualWriteStore(mode, pgStore, scyllaStore)
 		msgStore = dualStore
@@ -191,6 +195,32 @@ func main() {
 		msgStore = messages.NewPostgresStore(db)
 		slog.Info("message store initialized", "mode", "postgres_only", "store", "postgres")
 	}
+
+	// Read States Store (Phase 8, Issue #103)
+	var readStatesStore readstates.Store
+	if scyllaSession != nil {
+		readStatesStore = readstates.NewScyllaStore(scyllaSession)
+		slog.Info("read states store initialized", "store", "scylla")
+	} else if scyllaHosts := os.Getenv("SCYLLA_HOSTS"); scyllaHosts != "" {
+		session, err := messages.NewScyllaSession(messages.ScyllaConfig{
+			Hosts:       strings.Split(scyllaHosts, ","),
+			Keyspace:    envOr("SCYLLA_KEYSPACE", "kith"),
+			Consistency: messages.ParseConsistency(envOr("SCYLLA_CONSISTENCY", "LOCAL_QUORUM")),
+		})
+		if err == nil {
+			defer session.Close()
+			readStatesStore = readstates.NewScyllaStore(session)
+			slog.Info("read states store initialized", "store", "scylla")
+		} else {
+			slog.Warn("failed to connect to scylladb for read states, falling back to memory", "error", err)
+			readStatesStore = readstates.NewMemoryStore()
+		}
+	} else {
+		readStatesStore = readstates.NewMemoryStore()
+		slog.Info("read states store initialized", "store", "memory")
+	}
+	readStatesSvc := readstates.NewService(db, readStatesStore, publisher)
+	readStatesHandler := readstates.NewHandler(readStatesSvc)
 
 	// Media Storage & Pipeline (Phase 8, Issue #98)
 	s3Endpoint := envOr("S3_ENDPOINT", "minio:9000")
@@ -369,6 +399,20 @@ func main() {
 		auth.RequireAuth(jwt, http.HandlerFunc(messagesHandler.Edit)))
 	mux.Handle("DELETE /api/channels/{cid}/messages/{mid}",
 		auth.RequireAuth(jwt, http.HandlerFunc(messagesHandler.Delete)))
+
+	// read states (Phase 8, Issue #103)
+	mux.Handle("POST /api/channels/{id}/messages/{mid}/ack",
+		auth.RequireAuth(jwt, http.HandlerFunc(readStatesHandler.Ack)))
+	mux.Handle("POST /channels/{id}/messages/{mid}/ack",
+		auth.RequireAuth(jwt, http.HandlerFunc(readStatesHandler.Ack)))
+	mux.Handle("GET /api/users/@me/read-states",
+		auth.RequireAuth(jwt, http.HandlerFunc(readStatesHandler.GetUserReadStates)))
+	mux.Handle("GET /users/@me/read-states",
+		auth.RequireAuth(jwt, http.HandlerFunc(readStatesHandler.GetUserReadStates)))
+	mux.Handle("GET /api/channels/{id}/read-state",
+		auth.RequireAuth(jwt, http.HandlerFunc(readStatesHandler.GetChannelReadState)))
+	mux.Handle("GET /channels/{id}/read-state",
+		auth.RequireAuth(jwt, http.HandlerFunc(readStatesHandler.GetChannelReadState)))
 
 	// media attachments (Phase 8, Issue #98)
 	mux.Handle("POST /api/channels/{cid}/attachments",

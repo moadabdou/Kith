@@ -5,6 +5,7 @@ import type {
   MemberRemovePayload,
   MemberUpdatePayload,
   Message,
+  MessageAckPayload,
   PresenceUpdatePayload,
   RoleDeletePayload,
   RoleEventPayload,
@@ -180,6 +181,10 @@ export class GatewayClient {
 
   public onMessage(callback: (msg: Message) => void): () => void {
     return this.on('MESSAGE_CREATE', callback)
+  }
+
+  public onMessageAck(callback: (ack: MessageAckPayload) => void): () => void {
+    return this.on('MESSAGE_ACK', callback)
   }
 
   public onSessionReset(callback: () => void): () => void {

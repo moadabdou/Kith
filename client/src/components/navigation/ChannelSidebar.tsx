@@ -62,6 +62,8 @@ export function ChannelSidebar({
     subscribeToMemberUpdates,
     subscribeToRoleUpdates,
     subscribeToRoleDeletes,
+    subscribeToMessages,
+    subscribeToMessageAcks,
   } = useGateway()
   const {
     activeVoice,
@@ -76,6 +78,82 @@ export function ChannelSidebar({
 
   const [userPermissions, setUserPermissions] = useState<bigint | null>(null)
   const [guildMembers, setGuildMembers] = useState<Map<string, Member>>(new Map())
+  const [readStates, setReadStates] = useState<Record<string, string>>({}) // channel_id -> last_read_message_id
+  const [channelLatestMessage, setChannelLatestMessage] = useState<Record<string, string>>({}) // channel_id -> latest_message_id
+
+  // Load initial read states from API
+  useEffect(() => {
+    if (!user) return
+    let active = true
+    api.getReadStates().then((states) => {
+      if (!active) return
+      const map: Record<string, string> = {}
+      for (const s of states) {
+        if (s.channel_id && s.last_read_message_id) {
+          map[s.channel_id] = s.last_read_message_id
+        }
+      }
+      setReadStates(map)
+    }).catch((err) => console.error('Failed to load read states:', err))
+
+    return () => {
+      active = false
+    }
+  }, [user])
+
+  // Track latest message snowflakes and message ack events in real time
+  useEffect(() => {
+    const unsubMsg = subscribeToMessages((msg) => {
+      setChannelLatestMessage((prev) => {
+        const cur = prev[msg.channel_id]
+        if (!cur || BigInt(msg.id) > BigInt(cur)) {
+          return { ...prev, [msg.channel_id]: msg.id }
+        }
+        return prev
+      })
+      if (selectedChannelId === msg.channel_id) {
+        api.ackMessage(msg.channel_id, msg.id).catch(() => {})
+        setReadStates((prev) => ({ ...prev, [msg.channel_id]: msg.id }))
+      }
+    })
+
+    const unsubAck = subscribeToMessageAcks((ack) => {
+      setReadStates((prev) => {
+        const cur = prev[ack.channel_id]
+        if (!cur || BigInt(ack.message_id) > BigInt(cur)) {
+          return { ...prev, [ack.channel_id]: ack.message_id }
+        }
+        return prev
+      })
+    })
+
+    return () => {
+      unsubMsg()
+      unsubAck()
+    }
+  }, [subscribeToMessages, subscribeToMessageAcks, selectedChannelId])
+
+  const isChannelUnread = (channelId: string): boolean => {
+    if (selectedChannelId === channelId) return false
+    const latest = channelLatestMessage[channelId]
+    if (!latest) return false
+    const lastRead = readStates[channelId]
+    if (!lastRead) return true
+    try {
+      return BigInt(latest) > BigInt(lastRead)
+    } catch {
+      return latest > lastRead
+    }
+  }
+
+  const handleSelectChannel = (channelId: string) => {
+    onSelectChannel(channelId)
+    const latestId = channelLatestMessage[channelId]
+    if (latestId) {
+      api.ackMessage(channelId, latestId).catch(() => {})
+      setReadStates((prev) => ({ ...prev, [channelId]: latestId }))
+    }
+  }
 
   // Load guild members for voice avatar/display name resolution
   useEffect(() => {
@@ -249,14 +327,16 @@ export function ChannelSidebar({
             {textChannels.map((channel) => {
               const isActive = selectedChannelId === channel.id
               const isPrivate = isPrivateChannel(channel, currentGuild.id)
+              const isUnread = isChannelUnread(channel.id)
               return (
                 <div
                   key={channel.id}
-                  className={`channel-item ${isActive ? 'active' : ''}`}
-                  onClick={() => onSelectChannel(channel.id)}
+                  className={`channel-item ${isActive ? 'active' : ''} ${isUnread ? 'unread' : ''}`}
+                  onClick={() => handleSelectChannel(channel.id)}
                   title={isPrivate ? `${channel.name} (Private Channel)` : channel.name}
-                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'relative' }}
                 >
+                  {isUnread && <span className="channel-unread-pill" />}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden' }}>
                     {isPrivate ? <Lock size={18} /> : <Hash size={18} />}
                     <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>

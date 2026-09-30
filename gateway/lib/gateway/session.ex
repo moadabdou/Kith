@@ -228,8 +228,17 @@ defmodule Gateway.Session do
     # Issue #90: subscriptions run OFF the IDENTIFY critical path.
     # Each guild is isolated — a failure schedules the existing
     # :resubscribe backoff (1s, 3s) and never crashes the session.
+    # Phase 8 (Issue #103): Also subscribe to user's virtual guild "user_#{user_id}"
+    # for strictly self-targeted events (e.g. MESSAGE_ACK) with zero peer leakage.
+    subscription_ids =
+      if state.user_id do
+        ["user_#{state.user_id}" | state.guild_ids]
+      else
+        state.guild_ids
+      end
+
     lane_monitors =
-      Enum.reduce(state.guild_ids, %{}, fn gid, acc ->
+      Enum.reduce(subscription_ids, %{}, fn gid, acc ->
         case subscribe_guild(gid, state.session_id, state.user_id, nil, acc) do
           {:ok, monitors} ->
             monitors
@@ -256,13 +265,13 @@ defmodule Gateway.Session do
       )
     end
 
-    actor_monitors = monitor_actors(state.guild_ids, %{})
+    actor_monitors = monitor_actors(subscription_ids, %{})
 
     # Phase 7c: Horde registry replicas converge asynchronously (~300ms
     # CRDT sync). Any guild with no monitor yet (actor just created on
     # another node) is rechecked through the resubscribe path, which
     # subscribes (idempotent) and monitors once visible.
-    for gid <- state.guild_ids, not Map.has_key?(actor_monitors, to_string(gid)) do
+    for gid <- subscription_ids, not Map.has_key?(actor_monitors, to_string(gid)) do
       Process.send_after(self(), {:resubscribe, to_string(gid), 0}, 1_000)
     end
 
@@ -608,6 +617,10 @@ defmodule Gateway.Session do
     Enum.each(state.guild_ids, fn gid ->
       Gateway.Guild.Actor.unsubscribe_async(gid, state.session_id)
     end)
+
+    if state.user_id do
+      Gateway.Guild.Actor.unsubscribe_async("user_#{state.user_id}", state.session_id)
+    end
 
     # Step 4b: leave message lanes too (same fire-and-forget discipline).
     Enum.each(state.lane_monitors, fn {_gid, {key, _p, _r}} ->

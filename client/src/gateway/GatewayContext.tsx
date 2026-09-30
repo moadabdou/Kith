@@ -7,6 +7,7 @@ import type {
   MemberRemovePayload,
   MemberUpdatePayload,
   Message,
+  MessageAckPayload,
   PresenceUpdatePayload,
   RoleDeletePayload,
   RoleEventPayload,
@@ -46,6 +47,10 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
 
   const subscribeToMessages = (callback: (msg: Message) => void) => {
     return gatewayClient.onMessage(callback)
+  }
+
+  const subscribeToMessageAcks = (callback: (ack: MessageAckPayload) => void) => {
+    return gatewayClient.onMessageAck(callback)
   }
 
   const onSessionReset = (callback: () => void) => {
@@ -143,6 +148,7 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
         reconnectCountdownMs: reconnectState?.countdownMs ?? null,
         reconnectNow,
         subscribeToMessages,
+        subscribeToMessageAcks,
         onSessionReset,
         subscribeToReady,
         requestGuildMembers,

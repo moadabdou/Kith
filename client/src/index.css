@@ -211,6 +211,21 @@ body {
   color: var(--text-header);
 }
 
+.channel-item.unread {
+  color: var(--text-header, #ffffff);
+  font-weight: 700;
+  position: relative;
+}
+
+.channel-unread-pill {
+  position: absolute;
+  left: -8px;
+  width: 4px;
+  height: 8px;
+  border-radius: 0 4px 4px 0;
+  background-color: var(--text-header, #ffffff);
+}
+
 .channel-item .channel-settings-btn {
   opacity: 0;
   transition: opacity 0.15s ease, color 0.15s ease;

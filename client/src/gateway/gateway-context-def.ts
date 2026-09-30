@@ -6,6 +6,7 @@ import type {
   MemberRemovePayload,
   MemberUpdatePayload,
   Message,
+  MessageAckPayload,
   PresenceUpdatePayload,
   RoleDeletePayload,
   RoleEventPayload,
@@ -29,6 +30,7 @@ export interface GatewayContextValue {
   reconnectCountdownMs: number | null
   reconnectNow: () => void
   subscribeToMessages: (callback: (msg: Message) => void) => () => void
+  subscribeToMessageAcks: (callback: (ack: MessageAckPayload) => void) => () => void
   onSessionReset: (callback: () => void) => () => void
   subscribeToReady: (callback: (data?: any) => void) => () => void
   requestGuildMembers: (guildId: string, opts?: RequestGuildMembersOptions) => void

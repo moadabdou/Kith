@@ -1,4 +1,4 @@
-import type { AuthResponse, Channel, ChannelOverwrite, Guild, Member, Message, ReadState, Role, SearchFilters, SearchResponse, User } from './types'
+import type { AuthResponse, Channel, ChannelLatest, ChannelOverwrite, Guild, Member, Message, ReadState, Role, SearchFilters, SearchResponse, User } from './types'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api'
 
@@ -297,6 +297,10 @@ class ApiClient {
 
   async getReadStates(): Promise<ReadState[]> {
     return this.request<ReadState[]>('/users/@me/read-states')
+  }
+
+  async getChannelsLatest(guildId: string): Promise<ChannelLatest[]> {
+    return this.request<ChannelLatest[]>(`/guilds/${guildId}/channels/latest`)
   }
 
   async getChannelReadState(channelId: string): Promise<ReadState> {

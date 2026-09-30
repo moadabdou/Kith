@@ -210,6 +210,11 @@ export interface ReadState {
   last_pin_timestamp?: string
 }
 
+export interface ChannelLatest {
+  channel_id: string
+  last_message_id: string
+}
+
 export interface MessageAckPayload {
   channel_id: string
   message_id: string

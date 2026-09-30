@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
   Hash,
   Headphones,
@@ -24,7 +24,7 @@ import {
   MANAGE_ROLES,
   VIEW_CHANNEL,
 } from '../../lib/permissions'
-import type { Channel, Guild, Member } from '../../types'
+import type { Channel, ChannelLatest, Guild, Member, ReadState } from '../../types'
 import { VoiceStatusBar } from '../voice/VoiceStatusBar'
 
 interface ChannelSidebarProps {
@@ -47,6 +47,34 @@ function isPrivateChannel(channel: Channel, guildId?: string): boolean {
   return hasPermission(everyoneOw.deny, VIEW_CHANNEL)
 }
 
+// Snowflake-aware max comparison with lexicographic fallback for malformed ids.
+function isSnowflakeNewer(a: string, b: string): boolean {
+  try {
+    return BigInt(a) > BigInt(b)
+  } catch {
+    return a > b
+  }
+}
+
+// Max-wins merge of [channel_id, message_id] pairs into a cursor map so a
+// stale hydration response never clobbers a newer live event value.
+function mergeMaxIds(
+  prev: Record<string, string>,
+  pairs: Array<readonly [string, string]>
+): Record<string, string> {
+  let changed = false
+  const next = { ...prev }
+  for (const [key, id] of pairs) {
+    if (!key || !id) continue
+    const cur = next[key]
+    if (!cur || isSnowflakeNewer(id, cur)) {
+      next[key] = id
+      changed = true
+    }
+  }
+  return changed ? next : prev
+}
+
 export function ChannelSidebar({
   currentGuild,
   channels,
@@ -64,6 +92,8 @@ export function ChannelSidebar({
     subscribeToRoleDeletes,
     subscribeToMessages,
     subscribeToMessageAcks,
+    subscribeToReady,
+    onSessionReset,
   } = useGateway()
   const {
     activeVoice,
@@ -81,32 +111,66 @@ export function ChannelSidebar({
   const [readStates, setReadStates] = useState<Record<string, string>>({}) // channel_id -> last_read_message_id
   const [channelLatestMessage, setChannelLatestMessage] = useState<Record<string, string>>({}) // channel_id -> latest_message_id
 
-  // Load initial read states from API
+  const guildId = currentGuild?.id
+
+  // Applies a hydration payload with max-wins merges so stale responses never
+  // regress cursor maps already advanced by live gateway events.
+  const applyHydration = useCallback((states: ReadState[], latest: ChannelLatest[]) => {
+    setReadStates((prev) =>
+      mergeMaxIds(
+        prev,
+        states.map((s) => [s.channel_id, s.last_read_message_id] as const)
+      )
+    )
+    setChannelLatestMessage((prev) =>
+      mergeMaxIds(
+        prev,
+        latest.map((l) => [l.channel_id, l.last_message_id] as const)
+      )
+    )
+  }, [])
+
+  // Hydrate both halves of the unread comparison on login / guild switch:
+  // read states (Scylla) + latest-message cursors (bulk endpoint). Without the
+  // latest half, badges stay clear until the next live MESSAGE_CREATE (#105).
   useEffect(() => {
-    if (!user) return
+    if (!user || !guildId) return
     let active = true
-    api.getReadStates().then((states) => {
-      if (!active) return
-      const map: Record<string, string> = {}
-      for (const s of states) {
-        if (s.channel_id && s.last_read_message_id) {
-          map[s.channel_id] = s.last_read_message_id
-        }
-      }
-      setReadStates(map)
-    }).catch((err) => console.error('Failed to load read states:', err))
+    Promise.all([api.getReadStates(), api.getChannelsLatest(guildId)])
+      .then(([states, latest]) => {
+        if (!active) return
+        applyHydration(states, latest)
+      })
+      .catch((err) => console.error('Failed to hydrate unread state:', err))
 
     return () => {
       active = false
     }
-  }, [user])
+  }, [user, guildId, applyHydration])
+
+  // Re-hydrate after gateway READY / session reset: replayed or missed events
+  // may have moved cursors while the socket was down.
+  useEffect(() => {
+    if (!user || !guildId) return
+    const rehydrate = () => {
+      Promise.all([api.getReadStates(), api.getChannelsLatest(guildId)])
+        .then(([states, latest]) => applyHydration(states, latest))
+        .catch((err) => console.error('Failed to rehydrate unread state:', err))
+    }
+    const unsubReady = subscribeToReady(() => rehydrate())
+    const unsubReset = onSessionReset(() => rehydrate())
+    return () => {
+      unsubReady()
+      unsubReset()
+    }
+  }, [user, guildId, applyHydration, subscribeToReady, onSessionReset])
 
   // Track latest message snowflakes and message ack events in real time
   useEffect(() => {
     const unsubMsg = subscribeToMessages((msg) => {
       setChannelLatestMessage((prev) => {
         const cur = prev[msg.channel_id]
-        if (!cur || BigInt(msg.id) > BigInt(cur)) {
+        if (!cur || isSnowflakeNewer(msg.id, cur)) {
           return { ...prev, [msg.channel_id]: msg.id }
         }
         return prev
@@ -120,7 +184,7 @@ export function ChannelSidebar({
     const unsubAck = subscribeToMessageAcks((ack) => {
       setReadStates((prev) => {
         const cur = prev[ack.channel_id]
-        if (!cur || BigInt(ack.message_id) > BigInt(cur)) {
+        if (!cur || isSnowflakeNewer(ack.message_id, cur)) {
           return { ...prev, [ack.channel_id]: ack.message_id }
         }
         return prev
@@ -139,11 +203,7 @@ export function ChannelSidebar({
     if (!latest) return false
     const lastRead = readStates[channelId]
     if (!lastRead) return true
-    try {
-      return BigInt(latest) > BigInt(lastRead)
-    } catch {
-      return latest > lastRead
-    }
+    return isSnowflakeNewer(latest, lastRead)
   }
 
   const handleSelectChannel = (channelId: string) => {

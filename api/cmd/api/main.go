@@ -393,6 +393,10 @@ func main() {
 		auth.RequireAuth(jwt, msgLimiter.Middleware(postMessageKey, "post-messages", http.HandlerFunc(messagesHandler.Send))))
 	mux.Handle("GET /api/guilds/{id}/channels/{cid}/messages",
 		auth.RequireAuth(jwt, http.HandlerFunc(messagesHandler.List)))
+	mux.Handle("GET /api/guilds/{id}/channels/latest",
+		auth.RequireAuth(jwt, http.HandlerFunc(messagesHandler.ChannelsLatest)))
+	mux.Handle("GET /guilds/{id}/channels/latest",
+		auth.RequireAuth(jwt, http.HandlerFunc(messagesHandler.ChannelsLatest)))
 	mux.Handle("GET /api/channels/{cid}/messages",
 		auth.RequireAuth(jwt, http.HandlerFunc(messagesHandler.List)))
 	mux.Handle("PATCH /api/channels/{cid}/messages/{mid}",

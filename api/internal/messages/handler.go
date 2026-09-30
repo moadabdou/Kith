@@ -166,6 +166,24 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, msgs)
 }
 
+// ChannelsLatest handles GET /api/guilds/{id}/channels/latest (Issue #105):
+// bulk newest-message cursor per readable text channel so the client can
+// hydrate unread badges on login/refresh in one round trip instead of N
+// per-channel history fetches.
+func (h *Handler) ChannelsLatest(w http.ResponseWriter, r *http.Request) {
+	gid, ok := pathID(r, "id")
+	if !ok {
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad guild id"))
+		return
+	}
+	latest, err := h.Svc.GetChannelsLatest(r.Context(), mustUser(r), gid)
+	if err != nil {
+		h.writeErr(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, latest)
+}
+
 // Edit handles PATCH /api/channels/{cid}/messages/{mid}.
 func (h *Handler) Edit(w http.ResponseWriter, r *http.Request) {
 	cid, ok := pathID(r, "cid")

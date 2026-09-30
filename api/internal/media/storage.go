@@ -32,22 +32,52 @@ type StorageConfig struct {
 	SecretKey string
 	UseSSL    bool
 	PublicURL string
+	// PublicEndpoint is the browser-reachable host:port of the object
+	// store (e.g. "localhost:9000"). Browsers cannot resolve the
+	// container-network Endpoint ("minio:9000"), and SigV4 signs the
+	// Host header, so presigned URLs minted for the internal endpoint
+	// would be both unreachable and invalid. When set, presigned URLs
+	// are minted through a client bound to PublicEndpoint (same creds,
+	// same region, same path style — only the host differs), while all
+	// server-side operations keep using the internal client.
+	PublicEndpoint string
 }
 
 // MinIOStorage implements Storage using the official MinIO Go SDK.
 type MinIOStorage struct {
-	client    *minio.Client
-	publicURL string
+	client       *minio.Client
+	publicClient *minio.Client
+	publicURL    string
 }
+
+// minioRegion pins the signature region so the SDK never performs a
+// bucket-location lookup. The lookup dials the endpoint host, which is
+// wrong for the public client (from inside the API container "localhost"
+// is itself, not MinIO) and wasteful for the internal one. MinIO's
+// default region is us-east-1.
+const minioRegion = "us-east-1"
 
 // NewMinIOStorage initializes a MinIO client connection.
 func NewMinIOStorage(cfg StorageConfig) (*MinIOStorage, error) {
 	client, err := minio.New(cfg.Endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
 		Secure: cfg.UseSSL,
+		Region: minioRegion,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("minio: failed to initialize client: %w", err)
+	}
+
+	var publicClient *minio.Client
+	if pub := normalizeEndpoint(cfg.PublicEndpoint); pub != "" && pub != cfg.Endpoint {
+		publicClient, err = minio.New(pub, &minio.Options{
+			Creds:  credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
+			Secure: cfg.UseSSL,
+			Region: minioRegion,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("minio: failed to initialize public client: %w", err)
+		}
 	}
 
 	pubURL := cfg.PublicURL
@@ -60,9 +90,19 @@ func NewMinIOStorage(cfg StorageConfig) (*MinIOStorage, error) {
 	}
 
 	return &MinIOStorage{
-		client:    client,
-		publicURL: pubURL,
+		client:       client,
+		publicClient: publicClient,
+		publicURL:    pubURL,
 	}, nil
+}
+
+// normalizeEndpoint strips an optional URL scheme so both "localhost:9000"
+// and "http://localhost:9000" configure the same endpoint.
+func normalizeEndpoint(ep string) string {
+	ep = strings.TrimSpace(ep)
+	ep = strings.TrimPrefix(ep, "https://")
+	ep = strings.TrimPrefix(ep, "http://")
+	return strings.TrimSuffix(ep, "/")
 }
 
 func (s *MinIOStorage) PutObject(ctx context.Context, bucket, key string, reader io.Reader, size int64, contentType string) error {
@@ -130,7 +170,14 @@ func (s *MinIOStorage) CopyObject(ctx context.Context, dstBucket, dstKey, srcBuc
 }
 
 func (s *MinIOStorage) PresignedPutURL(ctx context.Context, bucket, key string, expiry time.Duration) (string, error) {
-	u, err := s.client.PresignedPutObject(ctx, bucket, key, expiry)
+	// Browser uploads must target the public endpoint (see PublicEndpoint):
+	// the signature covers the Host header, so minting must happen on the
+	// exact host the browser will PUT to.
+	client := s.client
+	if s.publicClient != nil {
+		client = s.publicClient
+	}
+	u, err := client.PresignedPutObject(ctx, bucket, key, expiry)
 	if err != nil {
 		return "", fmt.Errorf("minio: presigned put failed: %w", err)
 	}

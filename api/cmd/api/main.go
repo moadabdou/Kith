@@ -229,14 +229,15 @@ func main() {
 	s3UseSSL := envOr("S3_USE_SSL", "false") == "true"
 	s3PublicURL := envOr("S3_PUBLIC_URL", "http://localhost")
 	s3BucketAttachments := envOr("S3_BUCKET_ATTACHMENTS", "attachments")
-	maxUploadSizeBytes, _ := strconv.ParseInt(envOr("MAX_UPLOAD_SIZE_BYTES", "26214400"), 10, 64) // 25 MB
+	maxUploadSizeBytes, _ := strconv.ParseInt(envOr("MAX_UPLOAD_BYTES", envOr("MAX_UPLOAD_SIZE_BYTES", "26214400")), 10, 64) // 25 MB
 
 	mediaStorage, err := media.NewMinIOStorage(media.StorageConfig{
-		Endpoint:  s3Endpoint,
-		AccessKey: s3AccessKey,
-		SecretKey: s3SecretKey,
-		UseSSL:    s3UseSSL,
-		PublicURL: s3PublicURL,
+		Endpoint:       s3Endpoint,
+		AccessKey:      s3AccessKey,
+		SecretKey:      s3SecretKey,
+		UseSSL:         s3UseSSL,
+		PublicURL:      s3PublicURL,
+		PublicEndpoint: envOr("S3_PUBLIC_ENDPOINT", "localhost:9000"),
 	})
 	if err != nil {
 		slog.Error("failed to initialize minio storage", "endpoint", s3Endpoint, "error", err)

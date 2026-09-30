@@ -49,6 +49,10 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
     return gatewayClient.onMessage(callback)
   }
 
+  const subscribeToMessageUpdates = (callback: (msg: Partial<Message> & { id: string; channel_id: string }) => void) => {
+    return gatewayClient.onMessageUpdate(callback)
+  }
+
   const subscribeToMessageAcks = (callback: (ack: MessageAckPayload) => void) => {
     return gatewayClient.onMessageAck(callback)
   }
@@ -148,6 +152,7 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
         reconnectCountdownMs: reconnectState?.countdownMs ?? null,
         reconnectNow,
         subscribeToMessages,
+        subscribeToMessageUpdates,
         subscribeToMessageAcks,
         onSessionReset,
         subscribeToReady,

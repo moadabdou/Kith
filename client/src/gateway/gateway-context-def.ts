@@ -30,6 +30,7 @@ export interface GatewayContextValue {
   reconnectCountdownMs: number | null
   reconnectNow: () => void
   subscribeToMessages: (callback: (msg: Message) => void) => () => void
+  subscribeToMessageUpdates: (callback: (msg: Partial<Message> & { id: string; channel_id: string }) => void) => () => void
   subscribeToMessageAcks: (callback: (ack: MessageAckPayload) => void) => () => void
   onSessionReset: (callback: () => void) => () => void
   subscribeToReady: (callback: (data?: any) => void) => () => void

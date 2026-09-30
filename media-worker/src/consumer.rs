@@ -35,7 +35,9 @@ impl Consumer {
             .await
             .context("Failed to connect to NATS server")?;
 
-        let js = jetstream::new(nats_client);
+        // Client is Arc-backed: cheap to clone for completion-event publishes
+        // alongside the JetStream consumer below.
+        let js = jetstream::new(nats_client.clone());
 
         // Ensure stream exists or get stream handle
         let stream = js
@@ -94,7 +96,7 @@ impl Consumer {
                 }
             };
 
-            if let Err(e) = self.handle_message(&msg.payload).await {
+            if let Err(e) = self.handle_message(&nats_client, &msg.payload).await {
                 error!("Error processing media event: {:?}", e);
             }
 
@@ -106,7 +108,7 @@ impl Consumer {
         Ok(())
     }
 
-    async fn handle_message(&self, payload_bytes: &[u8]) -> Result<()> {
+    async fn handle_message(&self, nats: &async_nats::Client, payload_bytes: &[u8]) -> Result<()> {
         let event: MediaEvent = match serde_json::from_slice(payload_bytes) {
             Ok(evt) => evt,
             Err(e) => {
@@ -134,10 +136,54 @@ impl Consumer {
             attachment_id, p.filename, p.content_type, p.byte_size
         );
 
+        // Resolve the rendered message for live-update routing. Best-effort:
+        // message_id is NULL until the uploader sends the message, in which
+        // case the send response already carries final state and no event
+        // is needed. Never fail the job over a notify-path lookup.
+        let link: Option<(String, String, String)> = match self.db.message_link(attachment_id).await {
+            Ok(Some((message_id, channel_id))) => {
+                match self.db.channel_guild(channel_id).await {
+                    Ok(Some(guild_id)) => Some((
+                        guild_id.to_string(),
+                        channel_id.to_string(),
+                        message_id.to_string(),
+                    )),
+                    Ok(None) => None,
+                    Err(e) => {
+                        warn!("Live-update guild lookup failed for attachment {}: {:?}", attachment_id, e);
+                        None
+                    }
+                }
+            }
+            Ok(None) => None,
+            Err(e) => {
+                warn!("Live-update link lookup failed for attachment {}: {:?}", attachment_id, e);
+                None
+            }
+        };
+
         if is_supported_image(&p.content_type) {
-            self.handle_image(attachment_id, &p).await?;
+            match self.handle_image(attachment_id, &p).await {
+                Ok(()) => {}
+                Err(e) => {
+                    // S3 download failure already marked the row failed above;
+                    // still notify so the tile flips instead of hanging.
+                    if let Some((guild_id, channel_id, message_id)) = &link {
+                        self.notify_message_updated(nats, guild_id, channel_id, message_id).await;
+                    }
+                    return Err(e);
+                }
+            }
         } else if is_supported_video(&p.content_type) {
-            self.handle_video(attachment_id, &p).await?;
+            match self.handle_video(attachment_id, &p).await {
+                Ok(()) => {}
+                Err(e) => {
+                    if let Some((guild_id, channel_id, message_id)) = &link {
+                        self.notify_message_updated(nats, guild_id, channel_id, message_id).await;
+                    }
+                    return Err(e);
+                }
+            }
         } else {
             info!(
                 "Content type '{}' is neither an image nor a video requiring processing. Marking ready.",
@@ -148,7 +194,40 @@ impl Consumer {
                 .await?;
         }
 
+        if let Some((guild_id, channel_id, message_id)) = &link {
+            self.notify_message_updated(nats, guild_id, channel_id, message_id).await;
+        }
+
         Ok(())
+    }
+
+    /// Publishes a MESSAGE_UPDATE hint so clients viewing the message flip
+    /// the attachment tile without a refresh. Slim payload (ids only): the
+    /// client refetches authoritative metadata (fresh signed URLs) via REST.
+    /// Best-effort by design — a failed publish must never fail the job.
+    /// The gateway already fans MESSAGE_UPDATE out on channel-scoped lanes,
+    /// so no gateway changes are required.
+    async fn notify_message_updated(
+        &self,
+        nats: &async_nats::Client,
+        guild_id: &str,
+        channel_id: &str,
+        message_id: &str,
+    ) {
+        let envelope = message_update_envelope(guild_id, channel_id, message_id);
+        let bytes = match serde_json::to_vec(&envelope) {
+            Ok(b) => b,
+            Err(e) => {
+                warn!("Failed to serialize MESSAGE_UPDATE for message {}: {:?}", message_id, e);
+                return;
+            }
+        };
+        let subject = format!("kith.events.{}", guild_id);
+        if let Err(e) = nats.publish(subject.clone(), bytes::Bytes::from(bytes)).await {
+            warn!("Failed to publish MESSAGE_UPDATE for message {}: {:?}", message_id, e);
+        } else {
+            info!("Published MESSAGE_UPDATE for message {} (attachment terminal).", message_id);
+        }
     }
 
     async fn handle_image(&self, attachment_id: i64, p: &FileUploadPayload) -> Result<()> {
@@ -335,5 +414,37 @@ impl Consumer {
         );
 
         Ok(())
+    }
+}
+
+/// Builds the gateway envelope for a processing-completion hint. Shape must
+/// match the API's events.Event contract the gateway bus parses:
+/// {type, version, guild_id, payload}. Slim payload (ids only) — the client
+/// refetches full metadata via REST. extract_channel_id() in the gateway
+/// reads payload["channel_id"], so no gateway changes are needed.
+fn message_update_envelope(guild_id: &str, channel_id: &str, message_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "MESSAGE_UPDATE",
+        "version": 1,
+        "guild_id": guild_id,
+        "payload": {
+            "id": message_id,
+            "channel_id": channel_id,
+        },
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::message_update_envelope;
+
+    #[test]
+    fn message_update_envelope_matches_gateway_contract() {
+        let v = message_update_envelope("100", "200", "300");
+        assert_eq!(v["type"], "MESSAGE_UPDATE");
+        assert_eq!(v["version"], 1);
+        assert_eq!(v["guild_id"], "100");
+        assert_eq!(v["payload"]["id"], "300");
+        assert_eq!(v["payload"]["channel_id"], "200");
     }
 }

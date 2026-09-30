@@ -1,4 +1,4 @@
-import type { AuthResponse, Channel, ChannelLatest, ChannelOverwrite, Guild, Member, Message, ReadState, Role, SearchFilters, SearchResponse, User } from './types'
+import type { Attachment, AuthResponse, Channel, ChannelLatest, ChannelOverwrite, Guild, Member, Message, PresignedUpload, ReadState, Role, SearchFilters, SearchResponse, User } from './types'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api'
 
@@ -246,11 +246,37 @@ class ApiClient {
     return this.request<Message[]>(`/guilds/${guildId}/channels/${channelId}/messages${query}`)
   }
 
-  async sendMessage(guildId: string, channelId: string, content: string): Promise<Message> {
+  async sendMessage(guildId: string, channelId: string, content: string, attachmentIds?: string[]): Promise<Message> {
     return this.request<Message>(`/guilds/${guildId}/channels/${channelId}/messages`, {
       method: 'POST',
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, attachment_ids: attachmentIds ?? [] }),
     })
+  }
+
+  // ── Attachments (Phase 8 media, Discord-style presigned flow) ──
+  // 1. presign -> 2. PUT bytes to upload_url -> 3. complete -> 4. send with ids
+  async presignAttachment(
+    channelId: string,
+    data: { filename: string; content_type: string; byte_size: number }
+  ): Promise<PresignedUpload> {
+    return this.request<PresignedUpload>(`/channels/${channelId}/attachments/presign`, {
+      method: 'POST',
+      body: JSON.stringify({
+        filename: data.filename,
+        content_type: data.content_type,
+        byte_size: data.byte_size,
+      }),
+    })
+  }
+
+  async completeAttachment(channelId: string, attachmentId: string): Promise<Attachment> {
+    return this.request<Attachment>(`/channels/${channelId}/attachments/${attachmentId}/complete`, {
+      method: 'POST',
+    })
+  }
+
+  async getAttachment(channelId: string, attachmentId: string): Promise<Attachment> {
+    return this.request<Attachment>(`/channels/${channelId}/attachments/${attachmentId}`)
   }
 
   // ── Search ─────────────────────────────────────────

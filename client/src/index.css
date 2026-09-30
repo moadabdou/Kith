@@ -697,6 +697,277 @@ body {
   cursor: not-allowed;
 }
 
+.attach-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s ease;
+  flex-shrink: 0;
+}
+
+.attach-btn:hover {
+  color: var(--brand);
+}
+
+/* Pending upload chips above the input bar */
+.pending-uploads {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 0;
+}
+
+.pending-upload {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background-color: var(--bg-chat-input);
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+  border-radius: 8px;
+  padding: 6px 8px;
+  min-width: 180px;
+  max-width: 260px;
+}
+
+.pending-upload-icon {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.pending-upload-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pending-upload-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-header);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pending-upload-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.pending-upload-error {
+  color: var(--danger);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pending-upload-bar {
+  display: block;
+  height: 4px;
+  border-radius: 2px;
+  background-color: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+.pending-upload-bar-fill {
+  display: block;
+  height: 100%;
+  background-color: var(--brand);
+  transition: width 0.15s linear;
+}
+
+.pending-upload-remove {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  padding: 2px;
+}
+
+.pending-upload-remove:hover {
+  color: var(--text-header);
+}
+
+.pending-upload-spinner {
+  color: var(--text-muted);
+}
+
+/* Message attachments */
+.message-attachments {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.attachment {
+  color: var(--text-normal);
+}
+
+.attachment-image {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: zoom-in;
+  display: block;
+  max-width: 100%;
+}
+
+.attachment-image img {
+  display: block;
+  max-width: 400px;
+  max-height: 350px;
+  width: auto;
+  height: auto;
+  border-radius: 8px;
+  object-fit: contain;
+  background-color: rgba(0, 0, 0, 0.3);
+}
+
+.attachment-video video {
+  display: block;
+  max-width: 400px;
+  max-height: 350px;
+  border-radius: 8px;
+  background-color: #000;
+}
+
+.attachment-video-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.attachment-audio {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background-color: rgba(0, 0, 0, 0.25);
+  border-radius: 8px;
+  padding: 8px 12px;
+  max-width: 400px;
+}
+
+.attachment-audio-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+
+.attachment-audio audio {
+  width: 100%;
+  max-width: 320px;
+  height: 32px;
+}
+
+.attachment-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  background-color: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+  border-radius: 8px;
+  padding: 10px 14px;
+  max-width: 400px;
+  color: var(--text-header);
+  text-decoration: none;
+}
+
+.attachment-file:hover {
+  background-color: rgba(0, 0, 0, 0.4);
+}
+
+.attachment-file-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.attachment-name {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+a.attachment-name {
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 12px;
+  font-weight: 400;
+  display: inline-block;
+  margin-top: 4px;
+}
+
+a.attachment-name:hover {
+  text-decoration: underline;
+}
+
+.attachment-size {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.attachment-pending {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-muted);
+  background-color: rgba(0, 0, 0, 0.25);
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+
+.attachment-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background-color: rgba(0, 0, 0, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: zoom-out;
+  padding: 32px;
+}
+
+.attachment-lightbox img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 8px;
+}
+
+/* Drag-drop overlay */
+.chat-drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: rgba(0, 0, 0, 0.6);
+  border: 2px dashed var(--brand);
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-header);
+  pointer-events: none;
+}
+
 /* Error Banner / Toast */
 .error-banner {
   background-color: var(--danger);

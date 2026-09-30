@@ -183,6 +183,10 @@ export class GatewayClient {
     return this.on('MESSAGE_CREATE', callback)
   }
 
+  public onMessageUpdate(callback: (msg: Partial<Message> & { id: string; channel_id: string }) => void): () => void {
+    return this.on('MESSAGE_UPDATE', callback)
+  }
+
   public onMessageAck(callback: (ack: MessageAckPayload) => void): () => void {
     return this.on('MESSAGE_ACK', callback)
   }

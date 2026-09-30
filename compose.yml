@@ -152,6 +152,7 @@ services:
       S3_BUCKET_AVATARS: ${S3_BUCKET_AVATARS:-avatars}
       S3_USE_SSL: ${S3_USE_SSL:-false}
       S3_PUBLIC_URL: ${S3_PUBLIC_URL:-http://localhost}
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-localhost:9000}
       MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-26214400}
     ports:
       - "127.0.0.1:8080:8080"
@@ -210,6 +211,7 @@ services:
       S3_BUCKET_AVATARS: ${S3_BUCKET_AVATARS:-avatars}
       S3_USE_SSL: ${S3_USE_SSL:-false}
       S3_PUBLIC_URL: ${S3_PUBLIC_URL:-http://localhost}
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-localhost:9000}
       MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-26214400}
     ports:
       - "127.0.0.1:${API2_PORT:-8081}:8080"

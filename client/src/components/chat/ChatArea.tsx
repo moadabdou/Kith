@@ -1,15 +1,24 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent } from 'react'
 import { AlertCircle, ArrowDown, Hash, Loader2 } from 'lucide-react'
 import { api } from '../../api'
 import { useAuth } from '../../context/useAuth'
 import { useGateway } from '../../gateway/useGateway'
 import { memberNameColor } from '../../lib/members'
-import { hasPermission, resolveChannelPermissions, SEND_MESSAGES } from '../../lib/permissions'
+import { ATTACH_FILES, hasPermission, resolveChannelPermissions, SEND_MESSAGES } from '../../lib/permissions'
+import { applyMessageUpdate } from '../../lib/message-updates'
 import { parseSearchQuery } from '../../lib/search'
+import {
+  MAX_PENDING_FILES,
+  nextUploadKey,
+  runPendingUpload,
+  validateFile,
+  type PendingUpload,
+} from '../../lib/uploads'
 import { remainingMs, typingDisplayName, typingIndicatorText } from '../../lib/typing'
 import type { Channel, Guild, Member, Message, Role, SearchFilters } from '../../types'
 import { SearchBar } from '../search/SearchBar'
 import { SearchResults } from '../search/SearchResults'
+import { AttachmentView } from './AttachmentView'
 import { MessageInput } from './MessageInput'
 
 interface ChatAreaProps {
@@ -29,6 +38,7 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
   const { user } = useAuth()
   const {
     subscribeToMessages,
+    subscribeToMessageUpdates,
     subscribeToTyping,
     sendTyping,
     connected,
@@ -39,6 +49,9 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
     subscribeToMemberUpdates,
   } = useGateway()
   const [messages, setMessages] = useState<Message[]>([])
+  // Latest-state mirror so event callbacks can snapshot without stale closures.
+  const messagesRef = useRef<Message[]>([])
+  messagesRef.current = messages
   const [inputText, setInputText] = useState('')
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -66,8 +79,128 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
   const [selectedChannelId, setSelectedChannelId] = useState<string>('')
   const [selectedAuthorId, setSelectedAuthorId] = useState<string>('')
   const [guildMembers, setGuildMembers] = useState<Member[]>([])
+  const [guildRoles, setGuildRoles] = useState<Role[]>([])
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null)
   const [pendingJumpId, setPendingJumpId] = useState<string | null>(null)
+
+  // Resolve channel-scoped permissions for the current user (null = unknown).
+  // Declared before the upload logic: addFiles gates on canAttach.
+  const channelPerms = useMemo<bigint | 'owner' | null>(() => {
+    if (!currentGuild || !currentChannel || !user) return null
+    // 1. Guild owner bypass
+    if (currentGuild.owner_id === user.id) return 'owner'
+
+    // 2. Identify member's assigned roles (plus @everyone role where id === guildId)
+    const currentMember = guildMembers.find((m) => m.user.id === user.id)
+    const assignedRoleIds = new Set(currentMember?.roles ?? [])
+
+    const memberRoles = guildRoles.filter(
+      (r) => r.id === currentGuild.id || assignedRoleIds.has(r.id)
+    )
+
+    return resolveChannelPermissions(
+      currentGuild.id,
+      currentGuild.owner_id,
+      user.id,
+      memberRoles,
+      currentChannel.permission_overwrites ?? []
+    )
+  }, [currentGuild, currentChannel, user, guildMembers, guildRoles])
+
+  const canSendMessages =
+    channelPerms === 'owner' || (channelPerms != null && hasPermission(channelPerms, SEND_MESSAGES))
+  const canAttach =
+    canSendMessages &&
+    (channelPerms === 'owner' || (channelPerms != null && hasPermission(channelPerms, ATTACH_FILES)))
+
+  // Pending attachment uploads (Discord-style presigned flow: PUT at selection,
+  // complete at send). Scoped to the visible channel — switching channels drops them.
+  const [pending, setPending] = useState<PendingUpload[]>([])
+  const [dragActive, setDragActive] = useState(false)
+  const xhrByKey = useRef(new Map<string, { abort: () => void }>())
+  const dragDepth = useRef(0)
+
+  const patchPending = useCallback((key: string, p: Partial<PendingUpload>) => {
+    setPending((prev) => prev.map((u) => (u.key === key ? { ...u, ...p } : u)))
+  }, [])
+
+  const kickUpload = useCallback(
+    (channelId: string, key: string, file: File) => {
+      runPendingUpload(
+        channelId,
+        file,
+        (p) => patchPending(key, p),
+        (h) => {
+          if (h) xhrByKey.current.set(key, h)
+          else xhrByKey.current.delete(key)
+        }
+      ).catch((err: any) => {
+        if (err?.name === 'AbortError') {
+          patchPending(key, { state: 'cancelled' })
+        } else {
+          patchPending(key, { state: 'error', error: err?.message || 'Upload failed' })
+        }
+      })
+    },
+    [patchPending]
+  )
+
+  const addFiles = useCallback(
+    (incoming: File[]) => {
+      if (!currentChannel || !canAttach || incoming.length === 0) return
+      const channelId = currentChannel.id
+      const room = MAX_PENDING_FILES - pending.length
+      if (room <= 0) {
+        setError(`You can attach up to ${MAX_PENDING_FILES} files`)
+        return
+      }
+      const accepted = incoming.slice(0, room)
+      if (accepted.length < incoming.length) {
+        setError(`You can attach up to ${MAX_PENDING_FILES} files`)
+      }
+      const starters: PendingUpload[] = accepted.map((file) => {
+        const problem = validateFile(file)
+        const base = {
+          key: nextUploadKey(),
+          file,
+          filename: file.name || 'attachment',
+          size: file.size,
+          contentType: file.type || 'application/octet-stream',
+          progress: 0,
+        }
+        return problem
+          ? { ...base, state: 'error' as const, error: problem }
+          : { ...base, state: 'presigning' as const }
+      })
+      setPending((prev) => [...prev, ...starters])
+      for (const s of starters) {
+        if (s.state !== 'error') void kickUpload(channelId, s.key, s.file)
+      }
+    },
+    [currentChannel, canAttach, pending.length, kickUpload]
+  )
+
+  const removePending = useCallback((key: string) => {
+    xhrByKey.current.get(key)?.abort()
+    xhrByKey.current.delete(key)
+    setPending((prev) => prev.filter((u) => u.key !== key))
+  }, [])
+
+  // Dropping pending uploads when the visible channel changes: staging rows
+  // belong to the channel they were presigned for (complete is channel-scoped).
+  useEffect(() => {
+    for (const h of xhrByKey.current.values()) {
+      try {
+        h.abort()
+      } catch {
+        // ignore
+      }
+    }
+    xhrByKey.current.clear()
+    setPending([])
+    setDragActive(false)
+    dragDepth.current = 0
+  }, [currentGuild?.id, currentChannel?.id])
 
   const scrollToBottom = (smooth = false) => {
     messagesEndRef.current?.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto' })
@@ -82,8 +215,6 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
   }, [])
 
   // Load guild members and roles when server changes
-  const [guildRoles, setGuildRoles] = useState<Role[]>([])
-
   useEffect(() => {
     if (!currentGuild) {
       setGuildMembers([])
@@ -148,31 +279,6 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
     subscribeToRoleDeletes,
     subscribeToMemberUpdates,
   ])
-
-  // Resolve channel-scoped permissions for the current user
-  const canSendMessages = useMemo(() => {
-    if (!currentGuild || !currentChannel || !user) return false
-    // 1. Guild owner bypass
-    if (currentGuild.owner_id === user.id) return true
-
-    // 2. Identify member's assigned roles (plus @everyone role where id === guildId)
-    const currentMember = guildMembers.find((m) => m.user.id === user.id)
-    const assignedRoleIds = new Set(currentMember?.roles ?? [])
-
-    const memberRoles = guildRoles.filter(
-      (r) => r.id === currentGuild.id || assignedRoleIds.has(r.id)
-    )
-
-    const resolved = resolveChannelPermissions(
-      currentGuild.id,
-      currentGuild.owner_id,
-      user.id,
-      memberRoles,
-      currentChannel.permission_overwrites ?? []
-    )
-
-    return hasPermission(resolved, SEND_MESSAGES)
-  }, [currentGuild, currentChannel, user, guildMembers, guildRoles])
 
   // Fast author member lookup for message history role colors and nicknames
   const memberByUserId = useMemo(() => {
@@ -542,6 +648,42 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
     return unsubscribe
   }, [currentChannel, subscribeToMessages, user?.id, isViewingHistory])
 
+  // Live processing-completion updates: the media worker publishes
+  // MESSAGE_UPDATE when an attachment flips terminal, so tiles render
+  // without a refresh (stale pending tiles otherwise hang forever).
+  useEffect(() => {
+    if (!currentChannel) return
+    const channelId = currentChannel.id
+
+    return subscribeToMessageUpdates((payload) => {
+      if (!payload || payload.channel_id !== channelId || !payload.id) return
+      setMessages((prev) => applyMessageUpdate(prev, payload))
+      const cached = messagesRef.current.find((m) => m.id === payload.id)
+      const stale = (cached?.attachments ?? []).filter(
+        (a) => a.status !== 'ready' && a.status !== 'failed'
+      )
+      for (const att of stale) {
+        api
+          .getAttachment(channelId, att.id)
+          .then((fresh) => {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === payload.id
+                  ? {
+                      ...m,
+                      attachments: (m.attachments ?? []).map((a) =>
+                        a.id === fresh.id ? fresh : a
+                      ),
+                    }
+                  : m
+              )
+            )
+          })
+          .catch(() => {})
+      }
+    })
+  }, [currentChannel, subscribeToMessageUpdates])
+
   const handleJumpToMessage = (msg: Message) => {
     // If message is in another channel, switch to that channel first
     if (currentChannel && msg.channel_id !== currentChannel.id) {
@@ -604,9 +746,12 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
     return onSessionReset(() => setTypers(new Map()))
   }, [onSessionReset])
 
+  const readyUploads = pending.filter((p) => p.state === 'uploaded')
+  const uploadsBlocked = pending.some((p) => p.state === 'presigning' || p.state === 'uploading')
+
   const handleSend = async (e: FormEvent) => {
     e.preventDefault()
-    if (!inputText.trim() || !currentGuild || !currentChannel || sending) return
+    if ((!inputText.trim() && readyUploads.length === 0) || !currentGuild || !currentChannel || sending || uploadsBlocked) return
 
     const content = inputText.trim()
     const guildId = currentGuild.id
@@ -616,8 +761,22 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
     setError(null)
 
     try {
-      const sent = await api.sendMessage(guildId, channelId, content)
+      // Complete presigned uploads at send time so cancelled/forgotten
+      // staging rows never finalize (server pruner reaps them).
+      const completed = await Promise.all(
+        readyUploads.map((p) => {
+          if (!p.attachmentId) throw new Error(`Attachment ${p.filename} was never uploaded`)
+          return api.completeAttachment(channelId, p.attachmentId)
+        })
+      )
+      const sent = await api.sendMessage(
+        guildId,
+        channelId,
+        content,
+        completed.length > 0 ? completed.map((a) => a.id) : undefined
+      )
       setInputText('')
+      setPending([])
       setMessages((prev) => {
         if (prev.some((m) => m.id === sent.id)) return prev
         return [...prev, sent]
@@ -629,6 +788,40 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
       setError(err.message || 'Failed to send message')
     } finally {
       setSending(false)
+    }
+  }
+
+  // Drag-drop + paste support (Discord-style). Container-level so drops
+  // anywhere over the chat surface attach to the visible channel.
+  const handleDragEnter = (e: DragEvent) => {
+    if (!canAttach || !e.dataTransfer?.types.includes('Files')) return
+    e.preventDefault()
+    dragDepth.current += 1
+    setDragActive(true)
+  }
+  const handleDragLeave = (e: DragEvent) => {
+    e.preventDefault()
+    dragDepth.current = Math.max(0, dragDepth.current - 1)
+    if (dragDepth.current === 0) setDragActive(false)
+  }
+  const handleDragOver = (e: DragEvent) => {
+    if (!canAttach) return
+    e.preventDefault()
+  }
+  const handleDrop = (e: DragEvent) => {
+    e.preventDefault()
+    dragDepth.current = 0
+    setDragActive(false)
+    if (!canAttach) return
+    const files = e.dataTransfer?.files ? Array.from(e.dataTransfer.files) : []
+    if (files.length > 0) addFiles(files)
+  }
+  const handlePaste = (e: ClipboardEvent) => {
+    if (!canAttach) return
+    const files = e.clipboardData?.files ? Array.from(e.clipboardData.files) : []
+    if (files.length > 0) {
+      e.preventDefault()
+      addFiles(files)
     }
   }
 
@@ -663,7 +856,19 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
   }
 
   return (
-    <div className="chat-area">
+    <div
+      className="chat-area"
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+      onPaste={handlePaste}
+    >
+      {dragActive && canAttach && (
+        <div className="chat-drop-overlay">
+          <span>Drop files to upload to #{currentChannel.name}</span>
+        </div>
+      )}
       {/* Channel Header with Search Bar */}
       <div className="chat-header">
         <Hash size={24} style={{ color: 'var(--text-muted)' }} />
@@ -753,6 +958,13 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
                       <span className="message-time">{formatTime(msg.timestamp)}</span>
                     </div>
                     <div className="message-text">{msg.content}</div>
+                    {msg.attachments && msg.attachments.length > 0 && (
+                      <div className="message-attachments">
+                        {msg.attachments.map((a) => (
+                          <AttachmentView key={a.id} attachment={a} channelId={msg.channel_id} />
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               )
@@ -837,6 +1049,12 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
             onChange={handleInputChange}
             onSend={handleSend}
             sending={sending}
+            canAttach={canAttach}
+            pending={pending}
+            hasReadyUploads={readyUploads.length > 0}
+            uploadsBlocked={uploadsBlocked}
+            onPickFiles={addFiles}
+            onRemovePending={removePending}
           />
         </div>
 

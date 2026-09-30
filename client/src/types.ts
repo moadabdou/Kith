@@ -53,6 +53,32 @@ export interface Message {
   content: string
   timestamp: string
   edited_timestamp?: string | null
+  attachments?: Attachment[]
+}
+
+export interface Attachment {
+  id: string
+  channel_id: string
+  uploader_id: string
+  message_id?: string | null
+  filename: string
+  content_type: string
+  size: number
+  sha256: string
+  url: string
+  proxy_url?: string
+  status: string
+  width?: number | null
+  height?: number | null
+  duration_secs?: number | null
+  thumbnails?: Record<string, unknown> | null
+}
+
+export interface PresignedUpload {
+  id: string
+  upload_url: string
+  s3_key: string
+  expires_at: string
 }
 
 export interface SearchResponse {

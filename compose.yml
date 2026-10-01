@@ -537,6 +537,34 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  read-states:
+    build:
+      context: ./read-states
+      network: host
+    environment:
+      PORT: ${READ_STATES_PORT:-8085}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      SCYLLA_HOSTS: ${SCYLLA_HOSTS:-scylla:9042}
+      SCYLLA_KEYSPACE: ${SCYLLA_KEYSPACE:-kith}
+      DATABASE_URL: postgres://${POSTGRES_USER:-discord}:${POSTGRES_PASSWORD:-discord}@postgres:5432/${POSTGRES_DB:-discord}?sslmode=disable
+      NATS_URL: ${NATS_URL:-nats://nats:4222}
+      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me}
+    ports:
+      - "127.0.0.1:8085:8085"
+    depends_on:
+      scylla:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "/bin/bash -c 'exec 3<>/dev/tcp/127.0.0.1/8085'"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
 volumes:
   pgdata:
   grafana-data:

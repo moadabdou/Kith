@@ -62,6 +62,7 @@ func main() {
 	totalRows := flag.Int64("rows", 10_000_000, "Simulated key space size (10M rows)")
 	apiURL := flag.String("api-url", "", "If set, benchmark via HTTP POST /api/channels/{id}/messages/{mid}/ack")
 	apiToken := flag.String("api-token", "", "JWT Bearer token if benchmarking via HTTP")
+	fixedChannelID := flag.Int64("channel-id", 0, "If set, route all HTTP ACKs to this channel ID")
 	flag.Parse()
 
 	fmt.Printf("=== ScyllaDB Read States 5,000 acks/sec GC Benchmark ===\n")
@@ -146,6 +147,9 @@ func main() {
 				// e.g., 100,000 users across 100 channels = 10,000,000 rows
 				userID := 1_000_000_000 + rng.Int63n(100_000)
 				channelID := 2_000_000_000 + rng.Int63n(100)
+				if *fixedChannelID > 0 {
+					channelID = *fixedChannelID
+				}
 				msgID := 10_000_000_000_000_000 + rng.Int63n(1_000_000_000)
 				mentionCount := rng.Intn(3)
 

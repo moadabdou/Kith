@@ -108,7 +108,7 @@ export const MessageToolbar: React.FC<MessageToolbarProps> = ({
       {canPin && (
         <button
           type="button"
-          className={`message-toolbar-btn ${message?.pinned ? 'active' : ''}`}
+          className={`message-toolbar-btn ${message?.pinned ? 'is-pinned active' : ''}`}
           title={message?.pinned ? "Unpin Message" : "Pin Message"}
           aria-label={message?.pinned ? "Unpin Message" : "Pin Message"}
           onClick={(e) => {
@@ -116,7 +116,7 @@ export const MessageToolbar: React.FC<MessageToolbarProps> = ({
             onPin?.()
           }}
         >
-          <Pin size={18} />
+          <Pin size={18} fill={message?.pinned ? "currentColor" : "none"} />
         </button>
       )}
 

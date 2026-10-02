@@ -172,6 +172,29 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
     return (isMessageAuthor(msg) && isWithinEditWindow(msg)) || canManageMessages
   }, [isMessageAuthor, isWithinEditWindow, canManageMessages])
 
+  const [channelPinCount, setChannelPinCount] = useState<number>(0)
+
+  const syncChannelPins = useCallback(async (channelId: string) => {
+    try {
+      const pins = await api.getPinnedMessages(channelId)
+      setChannelPinCount(pins.length)
+      const pinSet = new Set(pins.map((p) => p.id))
+      setMessages((prev) =>
+        prev.map((m) => ({ ...m, pinned: pinSet.has(m.id) }))
+      )
+    } catch {
+      // ignore background sync errors
+    }
+  }, [])
+
+  useEffect(() => {
+    if (currentChannel) {
+      syncChannelPins(currentChannel.id)
+    } else {
+      setChannelPinCount(0)
+    }
+  }, [currentChannel?.id, syncChannelPins])
+
   const handleTogglePin = useCallback(async (msg: Message) => {
     if (!currentChannel) return
     const wasPinned = Boolean(msg.pinned)
@@ -179,6 +202,7 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
     setMessages((prev) =>
       prev.map((m) => (m.id === msg.id ? { ...m, pinned: !wasPinned } : m))
     )
+    setChannelPinCount((prev) => (wasPinned ? Math.max(0, prev - 1) : prev + 1))
     try {
       if (wasPinned) {
         await api.unpinMessage(currentChannel.id, msg.id)
@@ -190,6 +214,7 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
       setMessages((prev) =>
         prev.map((m) => (m.id === msg.id ? { ...m, pinned: wasPinned } : m))
       )
+      setChannelPinCount((prev) => (wasPinned ? prev + 1 : Math.max(0, prev - 1)))
       setError(err?.message || 'Failed to update pin')
     }
   }, [currentChannel])
@@ -197,21 +222,13 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
   // Sync pinned state across visible messages on CHANNEL_PINS_UPDATE gateway event
   useEffect(() => {
     if (!currentChannel) return
-    const unsub = subscribeToChannelPinsUpdate(async (payload) => {
+    const unsub = subscribeToChannelPinsUpdate((payload) => {
       if (payload.channel_id === currentChannel.id) {
-        try {
-          const freshPins = await api.getPinnedMessages(currentChannel.id)
-          const pinSet = new Set(freshPins.map((p) => p.id))
-          setMessages((prev) =>
-            prev.map((m) => ({ ...m, pinned: pinSet.has(m.id) }))
-          )
-        } catch {
-          // ignore background sync errors
-        }
+        syncChannelPins(currentChannel.id)
       }
     })
     return () => unsub()
-  }, [currentChannel, subscribeToChannelPinsUpdate])
+  }, [currentChannel, subscribeToChannelPinsUpdate, syncChannelPins])
 
 
   // Current user's role IDs in active guild for mention detection
@@ -1216,15 +1233,18 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
           {/* Pinned Messages Drawer Toggle */}
           <button
             type="button"
-            className={`chat-header-icon-btn ${isPinsOpen ? 'active' : ''}`}
-            title="Pinned Messages"
+            className={`chat-header-icon-btn ${isPinsOpen ? 'active' : ''} ${channelPinCount > 0 ? 'has-pins' : ''}`}
+            title={isPinsOpen ? "Close Pinned Messages" : (channelPinCount > 0 ? `${channelPinCount} Pinned Message${channelPinCount === 1 ? '' : 's'}` : "Pinned Messages")}
             aria-label="Pinned Messages"
             onClick={() => {
               setIsPinsOpen((prev) => !prev)
               if (!isPinsOpen) setIsSearchDrawerOpen(false)
             }}
           >
-            <Pin size={20} />
+            <Pin size={20} fill={isPinsOpen || channelPinCount > 0 ? "currentColor" : "none"} />
+            {channelPinCount > 0 && (
+              <span className="chat-header-pin-badge">{channelPinCount}</span>
+            )}
           </button>
 
           {/* Search Bar in Channel Header */}
@@ -1282,7 +1302,7 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
                 <div
                   id={`msg-${msg.id}`}
                   key={msg.id}
-                  className={`message-card ${isHighlighted ? 'message-highlighted' : ''} ${isReply ? 'is-reply' : ''} ${isEditing ? 'is-editing' : ''} ${isMentioned ? 'message-mentioned' : ''}`}
+                  className={`message-card ${msg.pinned ? 'is-pinned' : ''} ${isHighlighted ? 'message-highlighted' : ''} ${isReply ? 'is-reply' : ''} ${isEditing ? 'is-editing' : ''} ${isMentioned ? 'message-mentioned' : ''}`}
                   onMouseEnter={() => setHoveredMessageId(msg.id)}
                   onMouseLeave={() => setHoveredMessageId((prev) => (prev === msg.id ? null : prev))}
                 >
@@ -1336,6 +1356,12 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
                           {authorName}
                         </span>
                         <span className="message-time">{formatTime(msg.timestamp)}</span>
+                        {msg.pinned && (
+                          <span className="message-pinned-badge" title="This message is pinned to the channel">
+                            <Pin size={11} fill="currentColor" />
+                            <span>Pinned</span>
+                          </span>
+                        )}
                       </div>
 
                       {isEditing ? (

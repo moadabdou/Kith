@@ -211,6 +211,19 @@ actual message experience is social, dense, and interactive:
 
 ---
 
+### Issue #13: `feat(gifs): Tenor GIF picker popover, search caching & inline chat media embed`
+- **Context**: In Discord, animated GIFs are a primary communication medium alongside custom emojis and stickers. Following Discord UX, users need a dedicated GIF picker accessible directly from the chat input bar, allowing instant search, category browsing, and one-click insertion of animated GIFs into text channels. Closed GitHub Issue #119.
+- **Tasks**:
+  - [ ] Add proxy endpoints `GET /api/gifs/trending` and `GET /api/gifs/search?q={query}&pos={pos}` with Redis caching (1h TTL).
+  - [ ] Build `client/src/components/chat/GifPicker.tsx` popover attached to the chat composer with search debounce and trending categories.
+  - [ ] Add GIF button icon next to emoji picker toggle in `ChatArea.tsx`.
+  - [ ] Responsive multi-column masonry grid layout with infinite scroll pagination.
+  - [ ] Detect GIF URLs in message content and render full responsive media previews with `prefers-reduced-motion` respect.
+  - [ ] Unit tests for `GifPicker.test.tsx` and Vitest regression run.
+- **Verification**: User can browse trending GIFs, search with instant debounce, and post GIF directly into chat; reduced-motion settings are honored.
+
+---
+
 ### Issue #11: `chaos(messages): Reaction storm drill & concurrent reply/delete race tests`
 - **Context**: Push the reaction and reply paths under high concurrency and failure injection.
 - **Tasks**:

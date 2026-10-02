@@ -68,6 +68,12 @@ export interface MessageDeletePayload {
   guild_id?: string
 }
 
+export interface ChannelPinsUpdatePayload {
+  guild_id?: string
+  channel_id: string
+  last_pin_timestamp?: string | null
+}
+
 export interface Message {
   id: string
   channel_id: string
@@ -76,6 +82,7 @@ export interface Message {
   type?: number // 0 = DEFAULT, 19 = REPLY
   reply_to?: string | null
   referenced_message?: ReferencedMsg | null
+  pinned?: boolean
   timestamp: string
   edited_timestamp?: string | null
   attachments?: Attachment[]

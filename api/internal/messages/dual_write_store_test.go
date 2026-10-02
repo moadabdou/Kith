@@ -88,6 +88,36 @@ func (m *mockStore) Get(ctx context.Context, channelID, messageID int64) (*Messa
 	return &msg, nil
 }
 
+func (m *mockStore) Pin(ctx context.Context, channelID, messageID int64) error {
+	msg, ok := m.messages[messageID]
+	if !ok {
+		return ErrUnknownMessage
+	}
+	msg.Pinned = true
+	m.messages[messageID] = msg
+	return nil
+}
+
+func (m *mockStore) Unpin(ctx context.Context, channelID, messageID int64) error {
+	if msg, ok := m.messages[messageID]; ok {
+		msg.Pinned = false
+		m.messages[messageID] = msg
+	}
+	return nil
+}
+
+func (m *mockStore) ListPins(ctx context.Context, channelID int64) ([]Message, error) {
+	var pins []Message
+	for _, msg := range m.messages {
+		cid, _ := strconv.ParseInt(msg.ChannelID, 10, 64)
+		if cid == channelID && msg.Pinned {
+			pins = append(pins, msg)
+		}
+	}
+	return pins, nil
+}
+
+
 func getCounterValue(counter *dto.Counter) float64 {
 	if counter == nil {
 		return 0

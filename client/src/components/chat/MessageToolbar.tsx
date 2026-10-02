@@ -20,6 +20,7 @@ export interface MessageToolbarProps {
 const QUICK_REACTIONS = ['👍', '❤️', '🔥']
 
 export const MessageToolbar: React.FC<MessageToolbarProps> = ({
+  message,
   canEdit,
   canDelete,
   canPin,
@@ -107,9 +108,9 @@ export const MessageToolbar: React.FC<MessageToolbarProps> = ({
       {canPin && (
         <button
           type="button"
-          className="message-toolbar-btn"
-          title="Pin Message"
-          aria-label="Pin Message"
+          className={`message-toolbar-btn ${message?.pinned ? 'active' : ''}`}
+          title={message?.pinned ? "Unpin Message" : "Pin Message"}
+          aria-label={message?.pinned ? "Unpin Message" : "Pin Message"}
           onClick={(e) => {
             e.stopPropagation()
             onPin?.()

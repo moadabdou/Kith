@@ -104,6 +104,12 @@ func (m *mockMessageStore) Get(ctx context.Context, channelID, messageID int64) 
 	return msg, nil
 }
 
+func (m *mockMessageStore) Pin(ctx context.Context, channelID, messageID int64) error { return nil }
+func (m *mockMessageStore) Unpin(ctx context.Context, channelID, messageID int64) error { return nil }
+func (m *mockMessageStore) ListPins(ctx context.Context, channelID int64) ([]messages.Message, error) {
+	return nil, nil
+}
+
 func TestSearchParamsValidation(t *testing.T) {
 	svc := NewService(nil)
 

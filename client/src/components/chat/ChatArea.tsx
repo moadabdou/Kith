@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent } from 'react'
-import { AlertCircle, ArrowDown, Hash, Loader2 } from 'lucide-react'
+import { AlertCircle, ArrowDown, Hash, Loader2, Pin } from 'lucide-react'
 import { api } from '../../api'
 import { useAuth } from '../../context/useAuth'
 import { useGateway } from '../../gateway/useGateway'
@@ -26,6 +26,7 @@ import { DeleteMessageModal } from './DeleteMessageModal'
 import { MessageInput } from './MessageInput'
 import { MessageToolbar } from './MessageToolbar'
 import { ParentQuote } from './ParentQuote'
+import { PinnedMessagesDrawer } from './PinnedMessagesDrawer'
 import { ReactionPicker } from './ReactionPicker'
 import { ReactionPills } from './ReactionPills'
 
@@ -58,6 +59,7 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
     subscribeToMemberUpdates,
     subscribeToMessageReactionAdd,
     subscribeToMessageReactionRemove,
+    subscribeToChannelPinsUpdate,
   } = useGateway()
   const [messages, setMessages] = useState<Message[]>([])
   // Latest-state mirror so event callbacks can snapshot without stale closures.
@@ -103,6 +105,7 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
   const [searchQuery, setSearchQuery] = useState('')
   const [debouncedQuery, setDebouncedQuery] = useState('')
   const [searchResults, setSearchResults] = useState<Message[]>([])
+  const [isPinsOpen, setIsPinsOpen] = useState(false)
   const [totalSearchResults, setTotalSearchResults] = useState(0)
   const [isSearching, setIsSearching] = useState(false)
   const [searchPage, setSearchPage] = useState(1)
@@ -168,6 +171,48 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
   const canDeleteMessage = useCallback((msg: Message) => {
     return (isMessageAuthor(msg) && isWithinEditWindow(msg)) || canManageMessages
   }, [isMessageAuthor, isWithinEditWindow, canManageMessages])
+
+  const handleTogglePin = useCallback(async (msg: Message) => {
+    if (!currentChannel) return
+    const wasPinned = Boolean(msg.pinned)
+    // Optimistic toggle
+    setMessages((prev) =>
+      prev.map((m) => (m.id === msg.id ? { ...m, pinned: !wasPinned } : m))
+    )
+    try {
+      if (wasPinned) {
+        await api.unpinMessage(currentChannel.id, msg.id)
+      } else {
+        await api.pinMessage(currentChannel.id, msg.id)
+      }
+    } catch (err: any) {
+      // Revert optimistic update
+      setMessages((prev) =>
+        prev.map((m) => (m.id === msg.id ? { ...m, pinned: wasPinned } : m))
+      )
+      setError(err?.message || 'Failed to update pin')
+    }
+  }, [currentChannel])
+
+  // Sync pinned state across visible messages on CHANNEL_PINS_UPDATE gateway event
+  useEffect(() => {
+    if (!currentChannel) return
+    const unsub = subscribeToChannelPinsUpdate(async (payload) => {
+      if (payload.channel_id === currentChannel.id) {
+        try {
+          const freshPins = await api.getPinnedMessages(currentChannel.id)
+          const pinSet = new Set(freshPins.map((p) => p.id))
+          setMessages((prev) =>
+            prev.map((m) => ({ ...m, pinned: pinSet.has(m.id) }))
+          )
+        } catch {
+          // ignore background sync errors
+        }
+      }
+    })
+    return () => unsub()
+  }, [currentChannel, subscribeToChannelPinsUpdate])
+
 
   // Current user's role IDs in active guild for mention detection
   const currentUserRoleIds = useMemo(() => {
@@ -262,6 +307,7 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
     xhrByKey.current.clear()
     setPending([])
     setReplyingTo(null)
+    setIsPinsOpen(false)
     setDragActive(false)
     dragDepth.current = 0
   }, [currentGuild?.id, currentChannel?.id])
@@ -1167,6 +1213,20 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
             </span>
           </div>
 
+          {/* Pinned Messages Drawer Toggle */}
+          <button
+            type="button"
+            className={`chat-header-icon-btn ${isPinsOpen ? 'active' : ''}`}
+            title="Pinned Messages"
+            aria-label="Pinned Messages"
+            onClick={() => {
+              setIsPinsOpen((prev) => !prev)
+              if (!isPinsOpen) setIsSearchDrawerOpen(false)
+            }}
+          >
+            <Pin size={20} />
+          </button>
+
           {/* Search Bar in Channel Header */}
           <SearchBar
             query={searchQuery}
@@ -1242,9 +1302,7 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
                         setEditingMessageId(msg.id)
                         setEditingContent(msg.content)
                       }}
-                      onPin={() => {
-                        // Reserved for Channel Pinned Messages (Phase 9 Issue #9)
-                      }}
+                      onPin={() => handleTogglePin(msg)}
                       onDelete={() => setDeletingMessage(msg)}
                     />
                   )}
@@ -1479,6 +1537,15 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
           selectedAuthorId={selectedAuthorId}
           onSelectAuthorFilter={handleSelectAuthorFilter}
           onJumpToMessage={handleJumpToMessage}
+        />
+
+        {/* Pinned Messages Slide-Over Drawer */}
+        <PinnedMessagesDrawer
+          isOpen={isPinsOpen}
+          onClose={() => setIsPinsOpen(false)}
+          channel={currentChannel}
+          canManageMessages={canManageMessages}
+          onJumpToMessage={jumpToTargetInCurrentChannel}
         />
 
         {/* Delete Confirmation Modal */}

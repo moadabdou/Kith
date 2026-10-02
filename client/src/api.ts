@@ -276,6 +276,23 @@ class ApiClient {
     })
   }
 
+  // ── Pinned Messages (Phase 9, Issue #115) ───────────
+  async pinMessage(channelId: string, messageId: string): Promise<void> {
+    await this.request(`/channels/${channelId}/pins/${messageId}`, {
+      method: 'PUT',
+    })
+  }
+
+  async unpinMessage(channelId: string, messageId: string): Promise<void> {
+    await this.request(`/channels/${channelId}/pins/${messageId}`, {
+      method: 'DELETE',
+    })
+  }
+
+  async getPinnedMessages(channelId: string): Promise<Message[]> {
+    return this.request<Message[]>(`/channels/${channelId}/pins`)
+  }
+
   // ── Reactions ──────────────────────────────────────
   async addReaction(channelId: string, messageId: string, emoji: string): Promise<void> {
     await this.request(`/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}/@me`, {

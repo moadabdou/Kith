@@ -74,6 +74,32 @@ func (m *mockReplyStore) Get(ctx context.Context, channelID, messageID int64) (*
 	return nil, ErrUnknownMessage
 }
 
+func (m *mockReplyStore) Pin(ctx context.Context, channelID, messageID int64) error {
+	if msg, ok := m.messages[messageID]; ok {
+		msg.Pinned = true
+		return nil
+	}
+	return ErrUnknownMessage
+}
+
+func (m *mockReplyStore) Unpin(ctx context.Context, channelID, messageID int64) error {
+	if msg, ok := m.messages[messageID]; ok {
+		msg.Pinned = false
+	}
+	return nil
+}
+
+func (m *mockReplyStore) ListPins(ctx context.Context, channelID int64) ([]Message, error) {
+	var list []Message
+	cidStr := strconv.FormatInt(channelID, 10)
+	for _, msg := range m.messages {
+		if msg.ChannelID == cidStr && msg.Pinned {
+			list = append(list, *msg)
+		}
+	}
+	return list, nil
+}
+
 func TestHandler_Send_Reply_Success(t *testing.T) {
 	node, _ := snowflake.NewNode(1)
 	pub := &mockPublisher{}

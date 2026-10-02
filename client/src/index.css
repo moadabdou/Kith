@@ -3532,3 +3532,282 @@ a.attachment-name:hover {
   width: 200px;
   height: 125px;
 }
+
+/* ── Pinned Messages Drawer (Phase 9, Issue #115) ────────────────────────── */
+.chat-header-icon-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  padding: 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.chat-header-icon-btn:hover {
+  color: var(--text-header);
+  background-color: var(--bg-hover);
+}
+
+.chat-header-icon-btn.active {
+  color: #ffffff;
+  background-color: rgba(255, 255, 255, 0.12);
+}
+
+.pinned-drawer {
+  width: 420px;
+  background-color: var(--bg-channels);
+  border-left: 1px solid rgba(0, 0, 0, 0.24);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  height: 100%;
+  overflow: hidden;
+  box-shadow: -4px 0 16px rgba(0, 0, 0, 0.25);
+  animation: slideInRight 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  z-index: 10;
+}
+
+.pinned-drawer-header {
+  padding: 14px 16px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.2);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  background-color: var(--bg-channels);
+}
+
+.pinned-drawer-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.pinned-drawer-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-header);
+}
+
+.pinned-header-icon {
+  color: var(--text-muted);
+}
+
+.pinned-count-badge {
+  background-color: rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.pinned-close-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  padding: 4px;
+  border-radius: 4px;
+  transition: all 0.15s ease;
+}
+
+.pinned-close-btn:hover {
+  color: var(--text-header);
+  background-color: var(--bg-hover);
+}
+
+.pinned-drawer-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pinned-loading-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 0;
+  gap: 12px;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.pinned-error-banner {
+  padding: 10px 14px;
+  border-radius: 6px;
+  background-color: rgba(237, 66, 69, 0.15);
+  border: 1px solid rgba(237, 66, 69, 0.3);
+  color: #ed4245;
+  font-size: 13px;
+}
+
+.pinned-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 64px 24px;
+  gap: 12px;
+}
+
+.pinned-empty-icon-circle {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background-color: rgba(255, 255, 255, 0.04);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.pinned-empty-state h3 {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-header);
+  margin: 0;
+}
+
+.pinned-empty-state p {
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  max-width: 260px;
+  margin: 0;
+}
+
+.pinned-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pinned-item-card {
+  background-color: var(--bg-primary);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.pinned-item-card:hover {
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+.pinned-item-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pinned-item-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.pinned-item-author {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-header);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pinned-item-time {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.pinned-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.pinned-jump-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background-color: rgba(88, 101, 242, 0.15);
+  color: #5865f2;
+  border: none;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.pinned-jump-btn:hover {
+  background-color: #5865f2;
+  color: #ffffff;
+}
+
+.pinned-unpin-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  padding: 5px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.pinned-unpin-btn:hover:not(:disabled) {
+  color: #ed4245;
+  background-color: rgba(237, 66, 69, 0.1);
+}
+
+.pinned-unpin-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pinned-item-body {
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--text-normal);
+  word-break: break-word;
+}
+
+.pinned-item-attachments {
+  margin-top: 4px;
+}
+
+@media (max-width: 768px) {
+  .pinned-drawer {
+    width: 100%;
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 50;
+  }
+}
+

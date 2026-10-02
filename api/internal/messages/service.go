@@ -29,6 +29,7 @@ var (
 	ErrReferencedMessageNotFound     = errors.New("messages: referenced message not found")
 	ErrReferencedMessageWrongChannel = errors.New("messages: cannot reply to a message in another channel")
 	ErrInvalidMessageReference       = errors.New("messages: invalid message reference")
+	ErrMaxPinsReached                = errors.New("messages: channel pinned messages limit reached (max 50)")
 )
 
 // EditWindow is Discord's 15-minute edit/delete window for regular users.
@@ -46,6 +47,7 @@ type Message struct {
 	Type          int16              `json:"type"`
 	ReplyTo       *string            `json:"reply_to,omitempty"`
 	ReferencedMsg *ReferencedMsg     `json:"referenced_message,omitempty"`
+	Pinned        bool               `json:"pinned"`
 	CreatedAt     time.Time          `json:"timestamp"`
 	EditedAt      *time.Time         `json:"edited_timestamp"`
 	Attachments   []media.Attachment `json:"attachments,omitempty"`
@@ -74,8 +76,15 @@ const (
 	eventTypeMessageDelete         = "MESSAGE_DELETE"
 	eventTypeMessageReactionAdd    = "MESSAGE_REACTION_ADD"
 	eventTypeMessageReactionRemove = "MESSAGE_REACTION_REMOVE"
+	eventTypeChannelPinsUpdate     = "CHANNEL_PINS_UPDATE"
 	eventVersion                   = 1
 )
+
+type ChannelPinsUpdatePayload struct {
+	GuildID          string     `json:"guild_id,omitempty"`
+	ChannelID        string     `json:"channel_id"`
+	LastPinTimestamp *time.Time `json:"last_pin_timestamp,omitempty"`
+}
 
 type MessageDeletePayload struct {
 	ID        string `json:"id"`
@@ -897,3 +906,100 @@ func (s *Service) hydrateUsers(ctx context.Context, uids []int64) ([]AuthorRef, 
 	}
 	return result, nil
 }
+
+// Pin pins a message in the channel. Requires VIEW_CHANNEL and MANAGE_MESSAGES.
+func (s *Service) Pin(ctx context.Context, userID, channelID, messageID int64) error {
+	ref, perms, err := s.requireChannelPerms(ctx, userID, channelID)
+	if err != nil {
+		return err
+	}
+	if !permissions.Has(perms, permissions.VIEW_CHANNEL) {
+		return ErrMissingAccess
+	}
+	if !permissions.Has(perms, permissions.MANAGE_MESSAGES) {
+		return ErrMissingPermissions
+	}
+
+	if err := s.store.Pin(ctx, channelID, messageID); err != nil {
+		return err
+	}
+
+	var gid string
+	if ref.GuildID > 0 {
+		gid = strconv.FormatInt(ref.GuildID, 10)
+	}
+
+	now := time.Now().UTC()
+	if s.pub != nil {
+		if err := s.pub.Publish(ctx, events.Event{
+			Type:    eventTypeChannelPinsUpdate,
+			Version: eventVersion,
+			GuildID: gid,
+			Payload: ChannelPinsUpdatePayload{
+				GuildID:          gid,
+				ChannelID:        strconv.FormatInt(channelID, 10),
+				LastPinTimestamp: &now,
+			},
+		}); err != nil {
+			slog.ErrorContext(ctx, "failed to publish event", "type", eventTypeChannelPinsUpdate, "guild_id", gid, "error", err)
+		}
+	}
+
+	return nil
+}
+
+// Unpin unpins a message in the channel. Requires VIEW_CHANNEL and MANAGE_MESSAGES.
+func (s *Service) Unpin(ctx context.Context, userID, channelID, messageID int64) error {
+	ref, perms, err := s.requireChannelPerms(ctx, userID, channelID)
+	if err != nil {
+		return err
+	}
+	if !permissions.Has(perms, permissions.VIEW_CHANNEL) {
+		return ErrMissingAccess
+	}
+	if !permissions.Has(perms, permissions.MANAGE_MESSAGES) {
+		return ErrMissingPermissions
+	}
+
+	if err := s.store.Unpin(ctx, channelID, messageID); err != nil {
+		return err
+	}
+
+	var gid string
+	if ref.GuildID > 0 {
+		gid = strconv.FormatInt(ref.GuildID, 10)
+	}
+
+	if s.pub != nil {
+		if err := s.pub.Publish(ctx, events.Event{
+			Type:    eventTypeChannelPinsUpdate,
+			Version: eventVersion,
+			GuildID: gid,
+			Payload: ChannelPinsUpdatePayload{
+				GuildID:   gid,
+				ChannelID: strconv.FormatInt(channelID, 10),
+			},
+		}); err != nil {
+			slog.ErrorContext(ctx, "failed to publish event", "type", eventTypeChannelPinsUpdate, "guild_id", gid, "error", err)
+		}
+	}
+
+	return nil
+}
+
+// ListPins retrieves all pinned messages in the channel. Requires VIEW_CHANNEL and READ_MESSAGE_HISTORY.
+func (s *Service) ListPins(ctx context.Context, userID, channelID int64) ([]Message, error) {
+	_, perms, err := s.requireChannelPerms(ctx, userID, channelID)
+	if err != nil {
+		return nil, err
+	}
+	if !permissions.Has(perms, permissions.VIEW_CHANNEL) {
+		return nil, ErrMissingAccess
+	}
+	if !permissions.Has(perms, permissions.READ_MESSAGE_HISTORY) {
+		return nil, ErrMissingPermissions
+	}
+
+	return s.store.ListPins(ctx, channelID)
+}
+

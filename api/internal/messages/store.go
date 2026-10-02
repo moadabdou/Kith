@@ -128,4 +128,7 @@ type Store interface {
 	Edit(ctx context.Context, channelID, messageID int64, content string) (*Message, error)
 	Delete(ctx context.Context, channelID, messageID, authorID int64) error
 	Get(ctx context.Context, channelID, messageID int64) (*Message, error)
+	Pin(ctx context.Context, channelID, messageID int64) error
+	Unpin(ctx context.Context, channelID, messageID int64) error
+	ListPins(ctx context.Context, channelID int64) ([]Message, error)
 }

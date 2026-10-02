@@ -1,5 +1,6 @@
 import type {
   ChannelEventPayload,
+  ChannelPinsUpdatePayload,
   MemberAddPayload,
   MemberChunkPayload,
   MemberRemovePayload,
@@ -191,6 +192,10 @@ export class GatewayClient {
 
   public onMessageDelete(callback: (payload: MessageDeletePayload) => void): () => void {
     return this.on('MESSAGE_DELETE', callback)
+  }
+
+  public onChannelPinsUpdate(callback: (payload: ChannelPinsUpdatePayload) => void): () => void {
+    return this.on('CHANNEL_PINS_UPDATE', callback)
   }
 
   public onMessageReactionAdd(callback: (payload: MessageReactionEvent) => void): () => void {

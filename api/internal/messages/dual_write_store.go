@@ -223,6 +223,50 @@ func (d *DualWriteStore) Delete(ctx context.Context, channelID, messageID, autho
 	return nil
 }
 
+// Pin delegates to primary and secondary store.
+func (d *DualWriteStore) Pin(ctx context.Context, channelID, messageID int64) error {
+	if err := d.primary.Pin(ctx, channelID, messageID); err != nil {
+		return err
+	}
+	if d.secondary != nil {
+		if err := d.secondary.Pin(ctx, channelID, messageID); err != nil {
+			slog.WarnContext(ctx, "secondary store pin failed",
+				"store", d.secondaryName,
+				"channel_id", channelID,
+				"message_id", messageID,
+				"error", err,
+			)
+			SecondaryWriteFailuresTotal.WithLabelValues("pin", d.secondaryName).Inc()
+		}
+	}
+	return nil
+}
+
+// Unpin delegates to primary and secondary store.
+func (d *DualWriteStore) Unpin(ctx context.Context, channelID, messageID int64) error {
+	if err := d.primary.Unpin(ctx, channelID, messageID); err != nil {
+		return err
+	}
+	if d.secondary != nil {
+		if err := d.secondary.Unpin(ctx, channelID, messageID); err != nil {
+			slog.WarnContext(ctx, "secondary store unpin failed",
+				"store", d.secondaryName,
+				"channel_id", channelID,
+				"message_id", messageID,
+				"error", err,
+			)
+			SecondaryWriteFailuresTotal.WithLabelValues("unpin", d.secondaryName).Inc()
+		}
+	}
+	return nil
+}
+
+// ListPins retrieves pinned messages from the primary store.
+func (d *DualWriteStore) ListPins(ctx context.Context, channelID int64) ([]Message, error) {
+	return d.primary.ListPins(ctx, channelID)
+}
+
+
 // Get queries primary store and returns immediately.
 // If secondary is active, it asynchronously shadow-reads secondary and compares the results.
 func (d *DualWriteStore) Get(ctx context.Context, channelID, messageID int64) (*Message, error) {

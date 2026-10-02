@@ -54,6 +54,18 @@ func (m *mockHandlerStore) Get(ctx context.Context, channelID, messageID int64) 
 	return nil, nil
 }
 
+func (m *mockHandlerStore) Pin(ctx context.Context, channelID, messageID int64) error {
+	return nil
+}
+
+func (m *mockHandlerStore) Unpin(ctx context.Context, channelID, messageID int64) error {
+	return nil
+}
+
+func (m *mockHandlerStore) ListPins(ctx context.Context, channelID int64) ([]Message, error) {
+	return m.messagesToReturn, nil
+}
+
 func TestHandler_List_BeforeAndAfterRouting(t *testing.T) {
 	mockStore := &mockHandlerStore{
 		messagesToReturn: []Message{

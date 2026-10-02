@@ -1,6 +1,7 @@
 import { createContext } from 'react'
 import type {
   ChannelEventPayload,
+  ChannelPinsUpdatePayload,
   MemberAddPayload,
   MemberChunkPayload,
   MemberRemovePayload,
@@ -34,6 +35,7 @@ export interface GatewayContextValue {
   subscribeToMessages: (callback: (msg: Message) => void) => () => void
   subscribeToMessageUpdates: (callback: (msg: Partial<Message> & { id: string; channel_id: string }) => void) => () => void
   subscribeToMessageDeletes: (callback: (payload: MessageDeletePayload) => void) => () => void
+  subscribeToChannelPinsUpdate: (callback: (payload: ChannelPinsUpdatePayload) => void) => () => void
   subscribeToMessageReactionAdd: (callback: (payload: MessageReactionEvent) => void) => () => void
   subscribeToMessageReactionRemove: (callback: (payload: MessageReactionEvent) => void) => () => void
   subscribeToMessageAcks: (callback: (ack: MessageAckPayload) => void) => () => void

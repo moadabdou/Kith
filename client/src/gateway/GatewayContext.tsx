@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { useAuth } from '../context/useAuth'
 import type {
   ChannelEventPayload,
+  ChannelPinsUpdatePayload,
   MemberAddPayload,
   MemberChunkPayload,
   MemberRemovePayload,
@@ -57,6 +58,10 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
 
   const subscribeToMessageDeletes = (callback: (payload: MessageDeletePayload) => void) => {
     return gatewayClient.onMessageDelete(callback)
+  }
+
+  const subscribeToChannelPinsUpdate = (callback: (payload: ChannelPinsUpdatePayload) => void) => {
+    return gatewayClient.onChannelPinsUpdate(callback)
   }
 
   const subscribeToMessageReactionAdd = (callback: (payload: MessageReactionEvent) => void) => {
@@ -168,6 +173,7 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
         subscribeToMessages,
         subscribeToMessageUpdates,
         subscribeToMessageDeletes,
+        subscribeToChannelPinsUpdate,
         subscribeToMessageReactionAdd,
         subscribeToMessageReactionRemove,
         subscribeToMessageAcks,

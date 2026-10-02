@@ -47,6 +47,12 @@ func (s *latestStubStore) Get(ctx context.Context, channelID, messageID int64) (
 	return nil, nil
 }
 
+func (s *latestStubStore) Pin(ctx context.Context, channelID, messageID int64) error { return nil }
+func (s *latestStubStore) Unpin(ctx context.Context, channelID, messageID int64) error { return nil }
+func (s *latestStubStore) ListPins(ctx context.Context, channelID int64) ([]Message, error) {
+	return []Message{}, nil
+}
+
 func TestGetChannelsLatestRequiresDB(t *testing.T) {
 	svc := NewService(nil, &latestStubStore{}, nil, nil)
 	if _, err := svc.GetChannelsLatest(context.Background(), 1, 2); err == nil {

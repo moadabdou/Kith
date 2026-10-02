@@ -247,3 +247,19 @@ func (s *PostgresStore) Get(ctx context.Context, channelID, messageID int64) (*M
 	}
 	return &m, nil
 }
+
+// Pin satisfies Store interface for PostgresStore.
+func (s *PostgresStore) Pin(ctx context.Context, channelID, messageID int64) error {
+	return nil
+}
+
+// Unpin satisfies Store interface for PostgresStore.
+func (s *PostgresStore) Unpin(ctx context.Context, channelID, messageID int64) error {
+	return nil
+}
+
+// ListPins satisfies Store interface for PostgresStore.
+func (s *PostgresStore) ListPins(ctx context.Context, channelID int64) ([]Message, error) {
+	return []Message{}, nil
+}
+

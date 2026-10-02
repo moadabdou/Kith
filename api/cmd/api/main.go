@@ -429,6 +429,20 @@ func main() {
 	mux.Handle("DELETE /api/channels/{cid}/messages/{mid}",
 		auth.RequireAuth(jwt, http.HandlerFunc(messagesHandler.Delete)))
 
+	// pins (Phase 9, Issue #115)
+	mux.Handle("PUT /api/channels/{cid}/pins/{mid}",
+		auth.RequireAuth(jwt, http.HandlerFunc(messagesHandler.Pin)))
+	mux.Handle("PUT /api/guilds/{id}/channels/{cid}/pins/{mid}",
+		auth.RequireAuth(jwt, http.HandlerFunc(messagesHandler.Pin)))
+	mux.Handle("DELETE /api/channels/{cid}/pins/{mid}",
+		auth.RequireAuth(jwt, http.HandlerFunc(messagesHandler.Unpin)))
+	mux.Handle("DELETE /api/guilds/{id}/channels/{cid}/pins/{mid}",
+		auth.RequireAuth(jwt, http.HandlerFunc(messagesHandler.Unpin)))
+	mux.Handle("GET /api/channels/{cid}/pins",
+		auth.RequireAuth(jwt, http.HandlerFunc(messagesHandler.ListPins)))
+	mux.Handle("GET /api/guilds/{id}/channels/{cid}/pins",
+		auth.RequireAuth(jwt, http.HandlerFunc(messagesHandler.ListPins)))
+
 	// reactions (Phase 9, Issue #108)
 	rxLimiter := sharedLimiter(5, 5*time.Second)
 	rxKey := func(r *http.Request) string {

@@ -67,6 +67,12 @@ func (h *Handler) writeErr(w http.ResponseWriter, err error) {
 		errs.Write(w, errs.FormBody("Invalid Form Body: cannot reply to a message in another channel"))
 	case errors.Is(err, ErrInvalidMessageReference):
 		errs.Write(w, errs.FormBody("Invalid Form Body: invalid message reference"))
+	case errors.Is(err, ErrMaxPinsReached):
+		errs.Write(w, &errs.Error{
+			Status:  http.StatusBadRequest,
+			Code:    errs.CodeInvalidFormBody,
+			Message: "Maximum number of pins reached (50)",
+		})
 	default:
 		errs.Write(w, errs.Internal())
 	}
@@ -429,3 +435,63 @@ func (h *Handler) ListReactors(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.JSON(w, http.StatusOK, reactors)
 }
+
+// Pin handles PUT /api/channels/{cid}/pins/{mid}.
+func (h *Handler) Pin(w http.ResponseWriter, r *http.Request) {
+	cid, ok := channelIDFromReq(r)
+	if !ok {
+		errs.Write(w, errs.UnknownChannel())
+		return
+	}
+	mid, ok := pathID(r, "mid")
+	if !ok {
+		errs.Write(w, errs.UnknownMessage())
+		return
+	}
+
+	if err := h.Svc.Pin(r.Context(), mustUser(r), cid, mid); err != nil {
+		h.writeErr(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// Unpin handles DELETE /api/channels/{cid}/pins/{mid}.
+func (h *Handler) Unpin(w http.ResponseWriter, r *http.Request) {
+	cid, ok := channelIDFromReq(r)
+	if !ok {
+		errs.Write(w, errs.UnknownChannel())
+		return
+	}
+	mid, ok := pathID(r, "mid")
+	if !ok {
+		errs.Write(w, errs.UnknownMessage())
+		return
+	}
+
+	if err := h.Svc.Unpin(r.Context(), mustUser(r), cid, mid); err != nil {
+		h.writeErr(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ListPins handles GET /api/channels/{cid}/pins.
+func (h *Handler) ListPins(w http.ResponseWriter, r *http.Request) {
+	cid, ok := channelIDFromReq(r)
+	if !ok {
+		errs.Write(w, errs.UnknownChannel())
+		return
+	}
+
+	pins, err := h.Svc.ListPins(r.Context(), mustUser(r), cid)
+	if err != nil {
+		h.writeErr(w, err)
+		return
+	}
+
+	httpx.JSON(w, http.StatusOK, pins)
+}
+

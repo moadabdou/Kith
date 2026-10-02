@@ -246,7 +246,8 @@ defmodule Gateway.Guild.Actor do
   def lane_family do
     ["MESSAGE_CREATE", "MESSAGE_UPDATE", "MESSAGE_DELETE",
      "MESSAGE_REACTION_ADD", "MESSAGE_REACTION_REMOVE",
-     "MESSAGE_REACTION_REMOVE_ALL", "MESSAGE_REACTION_REMOVE_EMOJI"]
+     "MESSAGE_REACTION_REMOVE_ALL", "MESSAGE_REACTION_REMOVE_EMOJI",
+     "CHANNEL_PINS_UPDATE"]
   end
 
   @doc ":single or {:split, k}. Presence in persistent_term = split (rare writes, lock-free hot reads)."
@@ -786,7 +787,8 @@ defmodule Gateway.Guild.Actor do
     "MESSAGE_REACTION_ADD",
     "MESSAGE_REACTION_REMOVE",
     "MESSAGE_REACTION_REMOVE_ALL",
-    "MESSAGE_REACTION_REMOVE_EMOJI"
+    "MESSAGE_REACTION_REMOVE_EMOJI",
+    "CHANNEL_PINS_UPDATE"
   ]
 
   @impl true

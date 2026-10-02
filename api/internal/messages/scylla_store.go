@@ -24,6 +24,11 @@ const (
 	cqlGetMessage             = `SELECT author_id, content, edits, type, reply_to FROM messages WHERE channel_id = ? AND bucket = ? AND message_id = ?`
 	cqlEditMessage            = `UPDATE messages SET content = ?, edits = edits + [?] WHERE channel_id = ? AND bucket = ? AND message_id = ?`
 	cqlDeleteMessage          = `DELETE FROM messages WHERE channel_id = ? AND bucket = ? AND message_id = ?`
+	cqlPinMessage             = `INSERT INTO pinned_messages (channel_id, message_id, pinned_at) VALUES (?, ?, ?)`
+	cqlUnpinMessage           = `DELETE FROM pinned_messages WHERE channel_id = ? AND message_id = ?`
+	cqlListPins               = `SELECT message_id FROM pinned_messages WHERE channel_id = ? LIMIT 50`
+	cqlCheckPinned            = `SELECT pinned_at FROM pinned_messages WHERE channel_id = ? AND message_id = ?`
+	cqlCountPins              = `SELECT count(*) FROM pinned_messages WHERE channel_id = ?`
 )
 
 // AuthorHydrator abstracts hydrating display metadata (username, discriminator)
@@ -266,6 +271,11 @@ func (s *ScyllaStore) Get(ctx context.Context, channelID, messageID int64) (*Mes
 		msg.EditedAt = &editTime
 	}
 
+	var pinnedAt time.Time
+	if err := s.session.Query(cqlCheckPinned, channelID, messageID).WithContext(ctx).Scan(&pinnedAt); err == nil {
+		msg.Pinned = true
+	}
+
 	if s.hydrator != nil {
 		_ = s.hydrator.HydrateAuthor(ctx, msg)
 	}
@@ -365,6 +375,15 @@ func (s *ScyllaStore) List(ctx context.Context, channelID int64, before Cursor, 
 		_ = s.hydrator.HydrateBatch(ctx, msgs)
 	}
 
+	if len(msgs) > 0 {
+		pinnedSet := s.getPinnedMessageIDs(ctx, channelID)
+		for i := range msgs {
+			if id, err := strconv.ParseInt(msgs[i].ID, 10, 64); err == nil && pinnedSet[id] {
+				msgs[i].Pinned = true
+			}
+		}
+	}
+
 	return msgs, nil
 }
 
@@ -439,6 +458,15 @@ func (s *ScyllaStore) ListAfter(ctx context.Context, channelID int64, after Curs
 		_ = s.hydrator.HydrateBatch(ctx, msgs)
 	}
 
+	if len(msgs) > 0 {
+		pinnedSet := s.getPinnedMessageIDs(ctx, channelID)
+		for i := range msgs {
+			if id, err := strconv.ParseInt(msgs[i].ID, 10, 64); err == nil && pinnedSet[id] {
+				msgs[i].Pinned = true
+			}
+		}
+	}
+
 	return msgs, nil
 }
 
@@ -481,5 +509,84 @@ func (s *ScyllaStore) Delete(ctx context.Context, channelID, messageID, authorID
 		return ErrEditWindowOver
 	}
 
-	return s.session.Query(cqlDeleteMessage, channelID, bucket, messageID).WithContext(ctx).Exec()
+	if err := s.session.Query(cqlDeleteMessage, channelID, bucket, messageID).WithContext(ctx).Exec(); err != nil {
+		return err
+	}
+	_ = s.session.Query(cqlUnpinMessage, channelID, messageID).WithContext(ctx).Exec()
+	return nil
 }
+
+func (s *ScyllaStore) getPinnedMessageIDs(ctx context.Context, channelID int64) map[int64]bool {
+	pinned := make(map[int64]bool)
+	iter := s.session.Query(cqlListPins, channelID).WithContext(ctx).Iter()
+	var mid int64
+	for iter.Scan(&mid) {
+		pinned[mid] = true
+	}
+	_ = iter.Close()
+	return pinned
+}
+
+// Pin adds a message to the pinned_messages table up to a maximum of 50 pins.
+func (s *ScyllaStore) Pin(ctx context.Context, channelID, messageID int64) error {
+	// 1. Verify message exists in this channel
+	if _, err := s.Get(ctx, channelID, messageID); err != nil {
+		return err
+	}
+
+	// 2. Check if already pinned
+	var pinnedAt time.Time
+	if err := s.session.Query(cqlCheckPinned, channelID, messageID).WithContext(ctx).Scan(&pinnedAt); err == nil {
+		return nil
+	}
+
+	// 3. Check pin count limit (50 max)
+	var count int
+	if err := s.session.Query(cqlCountPins, channelID).WithContext(ctx).Scan(&count); err != nil {
+		return err
+	}
+	if count >= 50 {
+		return ErrMaxPinsReached
+	}
+
+	// 4. Insert pin
+	now := time.Now().UTC()
+	return s.session.Query(cqlPinMessage, channelID, messageID, now).WithContext(ctx).Exec()
+}
+
+// Unpin removes a message from the pinned_messages table.
+func (s *ScyllaStore) Unpin(ctx context.Context, channelID, messageID int64) error {
+	return s.session.Query(cqlUnpinMessage, channelID, messageID).WithContext(ctx).Exec()
+}
+
+// ListPins returns all pinned messages in the channel ordered newest to oldest.
+func (s *ScyllaStore) ListPins(ctx context.Context, channelID int64) ([]Message, error) {
+	iter := s.session.Query(cqlListPins, channelID).WithContext(ctx).Iter()
+	var messageIDs []int64
+	var mid int64
+	for iter.Scan(&mid) {
+		messageIDs = append(messageIDs, mid)
+	}
+	if err := iter.Close(); err != nil {
+		return nil, err
+	}
+	if len(messageIDs) == 0 {
+		return []Message{}, nil
+	}
+
+	msgs := make([]Message, 0, len(messageIDs))
+	for _, id := range messageIDs {
+		m, err := s.Get(ctx, channelID, id)
+		if err != nil {
+			if errors.Is(err, ErrUnknownMessage) {
+				continue
+			}
+			return nil, err
+		}
+		m.Pinned = true
+		msgs = append(msgs, *m)
+	}
+
+	return msgs, nil
+}
+

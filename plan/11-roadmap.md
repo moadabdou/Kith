@@ -173,7 +173,7 @@ redelivery).
 ## Phase 9 — Rich messaging & interactive primitives (wk 25–26)
 
 **Build:** `13-message-features.md`:
-(a) Reactions: ScyllaDB/PG message reactions table, atomic tally aggregations,
+(a) Reactions: ScyllaDB message reactions table, atomic tally aggregations,
 REST routes (`PUT/DELETE .../reactions/{emoji}/@me`), gateway events
 (`MESSAGE_REACTION_ADD/REMOVE`), client reaction chips + emoji picker popover.
 (b) Inline replies & references: `reply_to` in write pipeline, parent snippet

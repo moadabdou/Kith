@@ -34,22 +34,10 @@ actual message experience is social, dense, and interactive:
 
 ## 2. Issues Breakdown (Phase 9 Implementation Plan)
 
-### Issue #1: `feat(db): ScyllaDB & PostgreSQL schema for message reactions & counters`
-- **Context**: Reactions require storing individual user choices (for `@me` status and deduplication) alongside efficient counts for message rendering.
+### Issue #1: `feat(db): ScyllaDB schema for message reactions, counters & MemoryStore fallback`
+- **Context**: Reactions are high-churn mutations colocated with messages. In accordance with the Phase 3 `scylla_only` messaging topology and the Phase 8 `read-states` pattern, reactions are stored exclusively in **ScyllaDB** to eliminate Postgres vacuum pressure, lock contention, and table bloat.
 - **Tasks**:
-  - [ ] Write PostgreSQL migration `000006_create_message_reactions.up.sql`:
-    ```sql
-    CREATE TABLE message_reactions (
-        channel_id BIGINT NOT NULL,
-        message_id BIGINT NOT NULL,
-        emoji VARCHAR(64) NOT NULL,
-        user_id BIGINT NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        PRIMARY KEY (channel_id, message_id, emoji, user_id)
-    );
-    CREATE INDEX idx_message_reactions_lookup ON message_reactions (message_id);
-    ```
-  - [ ] Write ScyllaDB CQL migration `003_create_reactions.cql`:
+  - [ ] Write ScyllaDB CQL migration `api/cql/003_create_reactions.cql`:
     ```sql
     CREATE TABLE IF NOT EXISTS kith.message_reactions (
         channel_id bigint,
@@ -61,10 +49,14 @@ actual message experience is social, dense, and interactive:
     );
     ```
   - [ ] Implement `ReactionsStore` interface in `internal/messages/reactions_store.go`:
-    - `AddReaction(ctx, channelID, messageID, emoji, userID)`
-    - `RemoveReaction(ctx, channelID, messageID, emoji, userID)`
+    - `AddReaction(ctx, channelID, messageID, emoji, userID) error`
+    - `RemoveReaction(ctx, channelID, messageID, emoji, userID) error`
     - `GetReactionsForMessages(ctx, channelID, messageIDs, currentUserID) (map[string][]ReactionTally, error)`
-- **Verification**: Unit tests verifying idempotent adds, removals, and multi-user count aggregation.
+    - `ListReactors(ctx, channelID, messageID, emoji, limit, after) ([]int64, error)`
+  - [ ] Implement `ScyllaReactionsStore` in `internal/messages/reactions_store_scylla.go` leveraging partition slice reads `WHERE channel_id = ? AND message_id = ?`.
+  - [ ] Implement `MemoryReactionsStore` in `internal/messages/reactions_store_memory.go` for fast, hermetic Go unit tests without requiring a running ScyllaDB instance.
+  - [ ] Add unit tests verifying idempotent adds, removals, multi-user tally aggregation, and `me: true/false` status.
+- **Verification**: CQL migration applies cleanly; unit tests pass with in-memory store; integration tests pass against ScyllaDB cluster.
 
 ---
 

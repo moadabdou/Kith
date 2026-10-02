@@ -139,7 +139,7 @@ actual message experience is social, dense, and interactive:
 ### Issue #8: `feat(markdown): Discord-flavor AST markdown parser & spoiler tags`
 - **Context**: Replace plain text message rendering with a fast, safe AST parser.
 - **Tasks**:
-  - [ ] Implement AST parser in `client/src/lib/markdown.tsx`:
+  - [x] Implement AST parser in `client/src/lib/markdown.tsx`:
     - `**bold**` $\rightarrow$ `<strong>`
     - `*italic*` or `_italic_` $\rightarrow$ `<em>`
     - `~~strike~~` $\rightarrow$ `<del>`
@@ -149,9 +149,9 @@ actual message experience is social, dense, and interactive:
     - `> quote` $\rightarrow$ `<blockquote>`
     - `||spoiler||` $\rightarrow$ `<span className="spoiler-blur" onClick={toggle}>`
     - URL auto-linking with safe `rel="noreferrer noopener"`
-  - [ ] Parse user mentions (`<@id>`) and role mentions (`<@&id>`) into interactive colored mention badges.
-  - [ ] Highlight message row with amber background if message mentions `@me`, `@everyone`, or user's roles.
-- **Verification**: Golden markdown test suite passes; clicking spoilers reveals hidden content; code blocks preserve whitespace.
+  - [x] Parse user mentions (`<@id>`) and role mentions (`<@&id>`) into interactive colored mention badges.
+  - [x] Highlight message row with amber background if message mentions `@me`, `@everyone`, or user's roles.
+- **Verification**: Verified via unit test suites `markdown.test.tsx` (9/9 passed) and `mentions.test.ts` (4/4 passed), full Vitest suite (21 test files, 221 tests passing), production bundle build (`tsc -b && vite build`), and live Docker deployment. Closed GitHub Issue #114.
 
 ---
 

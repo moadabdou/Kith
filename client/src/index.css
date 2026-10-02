@@ -602,6 +602,17 @@ body {
   margin-top: 4px;
 }
 
+.message-card.message-mentioned {
+  background-color: rgba(240, 178, 50, 0.08);
+  border-left: 2px solid #f0b232;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+.message-card.message-mentioned:hover {
+  background-color: rgba(240, 178, 50, 0.12);
+}
+
 .message-main-row {
   display: flex;
   gap: 16px;
@@ -1242,6 +1253,142 @@ body {
   line-height: 1.375;
   word-break: break-word;
   white-space: pre-wrap;
+}
+
+/* Discord-flavor Markdown & Formatting */
+.markdown-content {
+  display: inline;
+}
+
+.markdown-bold {
+  font-weight: 700;
+}
+
+.markdown-italic {
+  font-style: italic;
+}
+
+.markdown-underline {
+  text-decoration: underline;
+}
+
+.markdown-strikethrough {
+  text-decoration: line-through;
+}
+
+.code-block {
+  background-color: var(--bg-tertiary, #2b2d31);
+  border: 1px solid var(--border-subtle, #1e1f22);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 0.875rem;
+  line-height: 1.35;
+  color: var(--text-primary, #dbdee1);
+  margin: 6px 0;
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.code-block code {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  background: transparent;
+  padding: 0;
+}
+
+.inline-code {
+  background-color: var(--bg-tertiary, #2b2d31);
+  border-radius: 3px;
+  padding: 2px 5px;
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 0.85em;
+  color: var(--text-primary, #dbdee1);
+}
+
+.discord-blockquote {
+  border-left: 4px solid var(--border-subtle, #4e5058);
+  padding: 2px 0 2px 12px;
+  margin: 4px 0;
+  color: var(--text-primary, #dbdee1);
+  font-style: normal;
+}
+
+/* Spoilers */
+.spoiler-content {
+  display: inline-block;
+  border-radius: 3px;
+  cursor: pointer;
+  vertical-align: baseline;
+  transition: background-color 0.15s ease, filter 0.15s ease, opacity 0.15s ease;
+  position: relative;
+}
+
+.spoiler-content.is-hidden {
+  background-color: var(--bg-tertiary, #2b2d31);
+  color: transparent;
+  filter: blur(5px);
+  user-select: none;
+}
+
+.spoiler-content.is-hidden:hover {
+  background-color: #242629;
+}
+
+.spoiler-content.is-revealed {
+  background-color: rgba(255, 255, 255, 0.08);
+  color: inherit;
+  filter: none;
+}
+
+.spoiler-inner {
+  display: inline;
+}
+
+/* Mentions */
+.mention {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  user-select: none;
+  font-size: 0.9375em;
+}
+
+.mention.user-mention,
+.mention.role-mention {
+  background-color: rgba(88, 101, 242, 0.3);
+  color: #c9cdfb;
+}
+
+.mention.user-mention:hover,
+.mention.role-mention:hover {
+  background-color: #5865f2;
+  color: #ffffff;
+}
+
+.mention.special-mention {
+  background-color: rgba(88, 101, 242, 0.3);
+  color: #c9cdfb;
+}
+
+.mention.special-mention:hover {
+  background-color: #5865f2;
+  color: #ffffff;
+}
+
+.markdown-link {
+  color: #00a8fc;
+  text-decoration: none;
+}
+
+.markdown-link:hover {
+  text-decoration: underline;
 }
 
 /* Chat Input Bar */

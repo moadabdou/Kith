@@ -8,6 +8,8 @@ import { ADD_REACTIONS, ATTACH_FILES, hasPermission, MANAGE_MESSAGES, resolveCha
 import { applyMessageUpdate } from '../../lib/message-updates'
 import { applyReactionAdd, applyReactionRemove, toggleReactionOptimistic } from '../../lib/reactions'
 import { parseSearchQuery } from '../../lib/search'
+import { MarkdownView } from '../../lib/markdown'
+import { isMessageMentioningUser } from '../../lib/mentions'
 import {
   MAX_PENDING_FILES,
   nextUploadKey,
@@ -166,6 +168,13 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
   const canDeleteMessage = useCallback((msg: Message) => {
     return (isMessageAuthor(msg) && isWithinEditWindow(msg)) || canManageMessages
   }, [isMessageAuthor, isWithinEditWindow, canManageMessages])
+
+  // Current user's role IDs in active guild for mention detection
+  const currentUserRoleIds = useMemo(() => {
+    if (!user) return []
+    const currentMember = guildMembers.find((m) => m.user?.id === user.id)
+    return currentMember?.roles?.map((r) => String(r)) ?? []
+  }, [user, guildMembers])
 
   // Pending attachment uploads (Discord-style presigned flow: PUT at selection,
   // complete at send). Scoped to the visible channel — switching channels drops them.
@@ -1205,12 +1214,15 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
               const isPickerOpen = activePicker?.messageId === msg.id
               const isReply = Boolean(msg.type === 19 || msg.reply_to)
               const isEditing = editingMessageId === msg.id
+              const isMentioned = Boolean(
+                user && isMessageMentioningUser(msg.content, user.id, currentUserRoleIds)
+              )
 
               return (
                 <div
                   id={`msg-${msg.id}`}
                   key={msg.id}
-                  className={`message-card ${isHighlighted ? 'message-highlighted' : ''} ${isReply ? 'is-reply' : ''} ${isEditing ? 'is-editing' : ''}`}
+                  className={`message-card ${isHighlighted ? 'message-highlighted' : ''} ${isReply ? 'is-reply' : ''} ${isEditing ? 'is-editing' : ''} ${isMentioned ? 'message-mentioned' : ''}`}
                   onMouseEnter={() => setHoveredMessageId(msg.id)}
                   onMouseLeave={() => setHoveredMessageId((prev) => (prev === msg.id ? null : prev))}
                 >
@@ -1319,7 +1331,11 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
                         </div>
                       ) : (
                         <div className="message-text">
-                          {msg.content}
+                          <MarkdownView
+                            content={msg.content}
+                            members={guildMembers}
+                            roles={guildRoles}
+                          />
                           {msg.edited_timestamp && (
                             <span
                               className="message-edited-tag"

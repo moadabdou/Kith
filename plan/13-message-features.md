@@ -183,7 +183,49 @@ actual message experience is social, dense, and interactive:
 
 ---
 
-### Issue #10: `chaos(messages): Reaction storm drill & concurrent reply/delete race tests`
+### Issue #10: `feat(emojis): Guild custom emojis & stickers pipeline with cross-server member usage`
+- **Context**: Allow guild moderators to upload custom emojis and stickers. Following Kith's "No Nitro paywall" policy, any user can use their joined guilds' custom emojis and stickers anywhere across Kith, provided they hold `USE_EXTERNAL_EMOJIS` (bit `1 << 18`, default on).
+- **Tasks**:
+  - [ ] Add PostgreSQL migration `000007_create_guild_emojis_stickers.up.sql`:
+    ```sql
+    CREATE TABLE guild_emojis (
+        id BIGINT PRIMARY KEY,
+        guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+        name VARCHAR(32) NOT NULL,
+        uploader_id BIGINT NOT NULL REFERENCES users(id),
+        animated BOOLEAN NOT NULL DEFAULT FALSE,
+        content_type VARCHAR(64) NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX idx_guild_emojis_guild ON guild_emojis(guild_id);
+
+    CREATE TABLE guild_stickers (
+        id BIGINT PRIMARY KEY,
+        guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+        name VARCHAR(32) NOT NULL,
+        description VARCHAR(100),
+        uploader_id BIGINT NOT NULL REFERENCES users(id),
+        content_type VARCHAR(64) NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX idx_guild_stickers_guild ON guild_stickers(guild_id);
+    ```
+  - [ ] Integrate with Phase 8 media pipeline: Store assets in MinIO at `emojis/{id}.png` and `stickers/{id}.png`, served via Caddy CDN.
+  - [ ] Implement REST endpoints:
+    - `GET /api/guilds/{id}/emojis`
+    - `POST /api/guilds/{id}/emojis` (requires `MANAGE_GUILD` or admin)
+    - `DELETE /api/guilds/{id}/emojis/{emoji_id}`
+    - `GET /api/guilds/{id}/stickers`
+    - `POST /api/guilds/{id}/stickers` (requires `MANAGE_GUILD`)
+    - `DELETE /api/guilds/{id}/stickers/{sticker_id}`
+  - [ ] Cross-server authorization: Validate that the sender is a member of the emoji/sticker's owning guild when posting `<:name:id>` or sending sticker IDs.
+  - [ ] Emit `GUILD_EMOJIS_UPDATE` and `GUILD_STICKERS_UPDATE` over NATS and gateway.
+  - [ ] Client UI: Update `ReactionPicker` and `MessageInput` emoji/sticker popover to list custom emojis grouped by server with server icons.
+- **Verification**: Moderator can upload emoji; member can use it in a completely different guild; non-members cannot spoof external emojis.
+
+---
+
+### Issue #11: `chaos(messages): Reaction storm drill & concurrent reply/delete race tests`
 - **Context**: Push the reaction and reply paths under high concurrency and failure injection.
 - **Tasks**:
   - [ ] Write `scripts/chaos/phase9_reaction_storm.js`:
@@ -195,14 +237,15 @@ actual message experience is social, dense, and interactive:
 
 ---
 
-### Issue #11: `postmortem(phase-9): Gate sign-off & architecture write-up`
+### Issue #12: `postmortem(phase-9): Gate sign-off & architecture write-up`
 - **Context**: Complete all gate verifications and document findings.
 - **Tasks**:
-  - [ ] Verify all 5 Phase 9 gates are green.
+  - [ ] Verify all 7 Phase 9 gates are green.
   - [ ] Write `postmortems/phase-9.md`:
     - Compare Kith's reaction storage vs Discord's Cassandra/Scylla set columns vs separate tables.
     - Document lessons from optimistic UI state reconciliation during gateway reconnection.
     - Measure p99 write latency for reactions vs plain messages.
+    - Document cross-server emoji permission evaluation cost.
 - **Verification**: Postmortem committed and all checklist boxes ticked.
 
 ---
@@ -215,3 +258,4 @@ actual message experience is social, dense, and interactive:
 - [ ] **Gate 4**: Markdown AST parser renders bold, italic, code blocks, blockquotes, and click-to-reveal spoilers correctly without XSS vulnerabilities.
 - [ ] **Gate 5**: Channel pinned messages drawer displays pins and updates live on `CHANNEL_PINS_UPDATE`.
 - [ ] **Gate 6 (Chaos)**: Reaction storm drill (50 clients @ 500 req/s under 10% packet drop) completes with zero tally divergence.
+- [ ] **Gate 7 (Custom Emojis & Stickers)**: Guild custom emojis and stickers upload successfully; members can use them across any channel where they have `USE_EXTERNAL_EMOJIS`; non-members are rejected.

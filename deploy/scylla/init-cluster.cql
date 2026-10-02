@@ -27,3 +27,21 @@ CREATE TABLE IF NOT EXISTS messages (
     'compaction_window_unit': 'DAYS',
     'compaction_window_size': 7
 };
+
+CREATE TABLE IF NOT EXISTS read_states (
+    user_id bigint,
+    channel_id bigint,
+    last_read_message_id bigint,
+    mention_count int,
+    PRIMARY KEY (user_id, channel_id)
+);
+
+CREATE TABLE IF NOT EXISTS message_reactions (
+    channel_id bigint,
+    message_id bigint,
+    emoji varchar,
+    user_id bigint,
+    created_at timestamp,
+    PRIMARY KEY ((channel_id, message_id), emoji, user_id)
+);
+

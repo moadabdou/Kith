@@ -64,10 +64,10 @@ actual message experience is social, dense, and interactive:
 ### Issue #3: `feat(gateway): Elixir gateway fan-out for MESSAGE_REACTION_* events`
 - **Context**: Real-time reaction fanout across active sessions viewing the target channel.
 - **Tasks**:
-  - [ ] Ensure `MESSAGE_REACTION_ADD` and `MESSAGE_REACTION_REMOVE` payloads are dispatched through `Gateway.Guild.Actor` split lanes (`lane_family`).
-  - [ ] Validate session permission cache filters private channel reactions from unauthorized sessions.
-  - [ ] Support reaction event replay in `Gateway.Session` sequence buffer for reconnecting clients.
-- **Verification**: Multi-session test: User A reacts $\rightarrow$ User B receives `MESSAGE_REACTION_ADD` with `{ channel_id, message_id, user_id, emoji }` within 50ms.
+  - [x] Ensure `MESSAGE_REACTION_ADD` and `MESSAGE_REACTION_REMOVE` payloads are dispatched through `Gateway.Guild.Actor` split lanes (`lane_family`).
+  - [x] Validate session permission cache filters private channel reactions from unauthorized sessions.
+  - [x] Support reaction event replay in `Gateway.Session` sequence buffer for reconnecting clients.
+- **Verification**: Verified via `gateway/test/gateway/reactions_fanout_test.exs` (5 tests covering multi-session sub-50ms fan-out, reaction removal fan-out, private channel permission filtering, split chat lanes routing, and disconnect/resume sequence tracking & replay buffer). Closed GitHub Issue #109.
 
 ---
 

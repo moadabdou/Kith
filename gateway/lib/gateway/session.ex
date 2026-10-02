@@ -661,11 +661,14 @@ defmodule Gateway.Session do
   # per-subscriber visibility for those, including synthetic
   # CHANNEL_DELETE notices a revoked session must still receive).
   defp channel_scoped_denied?(event, state) do
-    type = event["type"] || "UNKNOWN"
+    type = event["type"] || event[:type] || "UNKNOWN"
 
     if type in Gateway.Guild.Actor.lane_family() or type == "TYPING_START" do
       channel_id = dispatch_channel_id(event)
-      guild_id = event["guild_id"] || (is_map(event["payload"]) && event["payload"]["guild_id"])
+      payload = Map.get(event, "payload") || Map.get(event, :payload) || %{}
+      guild_id =
+        event["guild_id"] || event[:guild_id] ||
+          (is_map(payload) && (payload["guild_id"] || payload[:guild_id]))
 
       not is_nil(channel_id) and not is_nil(guild_id) and
         not Gateway.Permissions.can_view?(state.user_id, channel_id, guild_id)
@@ -677,13 +680,16 @@ defmodule Gateway.Session do
   # Subset of the actor's channel extraction covering data-event shapes
   # (message payloads carry channel_id directly or nested under message).
   defp dispatch_channel_id(event) do
-    payload = Map.get(event, "payload") || %{}
-    message = Map.get(payload, "message") || %{}
+    payload = Map.get(event, "payload") || Map.get(event, :payload) || %{}
+    message = Map.get(payload, "message") || Map.get(payload, :message) || %{}
 
     cid =
       event["channel_id"] ||
+        event[:channel_id] ||
         payload["channel_id"] ||
-        message["channel_id"]
+        payload[:channel_id] ||
+        message["channel_id"] ||
+        message[:channel_id]
 
     case cid do
       nil -> nil

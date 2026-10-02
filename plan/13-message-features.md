@@ -224,6 +224,16 @@ actual message experience is social, dense, and interactive:
 
 ---
 
+### Issue #14: `fix(chat): Clear typing indicator immediately upon message receipt and local dispatch`
+- **Context**: When a message arrives in a channel or the local user dispatches their message, clear the author's active typing indicator immediately rather than waiting for the 8-10 second expiration timer. Closed GitHub Issue #120.
+- **Tasks**:
+  - [ ] In `ChatArea.tsx`'s `subscribeToMessages`, remove `newMsg.author.id` from `typers` state map immediately.
+  - [ ] In `handleSendMessage`, clear local user typing timer.
+  - [ ] Add unit tests verifying prompt removal of active typer on message arrival.
+- **Verification**: Typing indicator disappears instantaneously the moment the typing user's message appears in the chat timeline.
+
+---
+
 ### Issue #11: `chaos(messages): Reaction storm drill & concurrent reply/delete race tests`
 - **Context**: Push the reaction and reply paths under high concurrency and failure injection.
 - **Tasks**:

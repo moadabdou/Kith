@@ -43,6 +43,7 @@ type Message struct {
 	CreatedAt   time.Time          `json:"timestamp"`
 	EditedAt    *time.Time         `json:"edited_timestamp"`
 	Attachments []media.Attachment `json:"attachments,omitempty"`
+	Reactions   []ReactionTally    `json:"reactions,omitempty"`
 }
 
 type AuthorRef struct {
@@ -52,16 +53,26 @@ type AuthorRef struct {
 }
 
 const (
-	eventTypeMessageCreate = "MESSAGE_CREATE"
-	eventTypeMessageUpdate = "MESSAGE_UPDATE"
-	eventTypeMessageDelete = "MESSAGE_DELETE"
-	eventVersion           = 1
+	eventTypeMessageCreate         = "MESSAGE_CREATE"
+	eventTypeMessageUpdate         = "MESSAGE_UPDATE"
+	eventTypeMessageDelete         = "MESSAGE_DELETE"
+	eventTypeMessageReactionAdd    = "MESSAGE_REACTION_ADD"
+	eventTypeMessageReactionRemove = "MESSAGE_REACTION_REMOVE"
+	eventVersion                   = 1
 )
 
 type MessageDeletePayload struct {
 	ID        string `json:"id"`
 	ChannelID string `json:"channel_id"`
 	GuildID   string `json:"guild_id,omitempty"`
+}
+
+type MessageReactionEvent struct {
+	UserID    string `json:"user_id"`
+	ChannelID string `json:"channel_id"`
+	MessageID string `json:"message_id"`
+	GuildID   string `json:"guild_id,omitempty"`
+	Emoji     string `json:"emoji"`
 }
 
 // MediaLinker abstracts attachment linking and retrieval for messages.
@@ -77,6 +88,7 @@ type Service struct {
 	pub        events.Publisher
 	mediaStore MediaLinker
 	signer     *media.URLSigner
+	reactions  ReactionsStore
 }
 
 func NewService(db *sql.DB, store Store, sf *snowflake.Node, pub events.Publisher, mediaStores ...MediaLinker) *Service {
@@ -93,6 +105,11 @@ func NewService(db *sql.DB, store Store, sf *snowflake.Node, pub events.Publishe
 // SetSigner sets the media URLSigner for signing attachments in private channels.
 func (s *Service) SetSigner(signer *media.URLSigner) {
 	s.signer = signer
+}
+
+// SetReactionsStore sets the ReactionsStore for emoji reaction mutations and hydration.
+func (s *Service) SetReactionsStore(reactions ReactionsStore) {
+	s.reactions = reactions
 }
 
 // Send is the hot path (plan/02 §3): perm placeholder → snowflake →
@@ -211,6 +228,7 @@ func (s *Service) List(ctx context.Context, userID, channelID int64, before Curs
 		return nil, err
 	}
 	_ = s.hydrateAttachments(ctx, msgs, channelID, ref.GuildID)
+	_ = s.hydrateReactions(ctx, msgs, channelID, userID)
 	return msgs, nil
 }
 
@@ -231,6 +249,7 @@ func (s *Service) ListAfter(ctx context.Context, userID, channelID int64, after 
 		return nil, err
 	}
 	_ = s.hydrateAttachments(ctx, msgs, channelID, ref.GuildID)
+	_ = s.hydrateReactions(ctx, msgs, channelID, userID)
 	return msgs, nil
 }
 
@@ -536,4 +555,214 @@ func scanMessage(rows *sql.Rows) (Message, error) {
 		m.GuildID = gid.String
 	}
 	return m, nil
+}
+
+func (s *Service) hydrateReactions(ctx context.Context, msgs []Message, channelID, userID int64) error {
+	if s.reactions == nil || len(msgs) == 0 {
+		return nil
+	}
+	msgIDs := make([]int64, 0, len(msgs))
+	for _, m := range msgs {
+		if id, err := strconv.ParseInt(m.ID, 10, 64); err == nil && id > 0 {
+			msgIDs = append(msgIDs, id)
+		}
+	}
+	if len(msgIDs) == 0 {
+		return nil
+	}
+	talliesMap, err := s.reactions.GetReactionsForMessages(ctx, channelID, msgIDs, userID)
+	if err != nil {
+		return err
+	}
+	for i := range msgs {
+		if tallies, ok := talliesMap[msgs[i].ID]; ok {
+			msgs[i].Reactions = tallies
+		}
+	}
+	return nil
+}
+
+func (s *Service) AddReaction(ctx context.Context, userID, channelID, messageID int64, emoji string) error {
+	if emoji == "" {
+		return ErrInvalidEmoji
+	}
+	ref, perms, err := s.requireChannelPerms(ctx, userID, channelID)
+	if err != nil {
+		return err
+	}
+	if !permissions.Has(perms, permissions.VIEW_CHANNEL) {
+		return ErrMissingAccess
+	}
+
+	if s.reactions == nil {
+		return errors.New("messages: reactions store not configured")
+	}
+
+	if s.store != nil {
+		if _, err := s.store.Get(ctx, channelID, messageID); err != nil {
+			return err
+		}
+	}
+
+	if !permissions.Has(perms, permissions.ADD_REACTIONS) {
+		talliesMap, err := s.reactions.GetReactionsForMessages(ctx, channelID, []int64{messageID}, userID)
+		if err != nil {
+			return err
+		}
+		midStr := strconv.FormatInt(messageID, 10)
+		hasEmoji := false
+		for _, t := range talliesMap[midStr] {
+			if t.Emoji == emoji {
+				hasEmoji = true
+				break
+			}
+		}
+		if !hasEmoji {
+			return ErrMissingPermissions
+		}
+	}
+
+	if err := s.reactions.AddReaction(ctx, channelID, messageID, emoji, userID); err != nil {
+		return err
+	}
+
+	if s.pub != nil {
+		var gid string
+		if ref.GuildID > 0 {
+			gid = strconv.FormatInt(ref.GuildID, 10)
+		}
+		if err := s.pub.Publish(ctx, events.Event{
+			Type:    eventTypeMessageReactionAdd,
+			Version: eventVersion,
+			GuildID: gid,
+			Payload: MessageReactionEvent{
+				UserID:    strconv.FormatInt(userID, 10),
+				ChannelID: strconv.FormatInt(channelID, 10),
+				MessageID: strconv.FormatInt(messageID, 10),
+				GuildID:   gid,
+				Emoji:     emoji,
+			},
+		}); err != nil {
+			slog.ErrorContext(ctx, "failed to publish reaction add event", "error", err)
+		}
+	}
+
+	return nil
+}
+
+func (s *Service) RemoveReaction(ctx context.Context, actorID, targetUserID, channelID, messageID int64, emoji string) error {
+	if emoji == "" {
+		return ErrInvalidEmoji
+	}
+	ref, perms, err := s.requireChannelPerms(ctx, actorID, channelID)
+	if err != nil {
+		return err
+	}
+	if !permissions.Has(perms, permissions.VIEW_CHANNEL) {
+		return ErrMissingAccess
+	}
+
+	if actorID != targetUserID && !permissions.Has(perms, permissions.MANAGE_MESSAGES) {
+		return ErrMissingPermissions
+	}
+
+	if s.reactions == nil {
+		return errors.New("messages: reactions store not configured")
+	}
+
+	if err := s.reactions.RemoveReaction(ctx, channelID, messageID, emoji, targetUserID); err != nil {
+		return err
+	}
+
+	if s.pub != nil {
+		var gid string
+		if ref.GuildID > 0 {
+			gid = strconv.FormatInt(ref.GuildID, 10)
+		}
+		if err := s.pub.Publish(ctx, events.Event{
+			Type:    eventTypeMessageReactionRemove,
+			Version: eventVersion,
+			GuildID: gid,
+			Payload: MessageReactionEvent{
+				UserID:    strconv.FormatInt(targetUserID, 10),
+				ChannelID: strconv.FormatInt(channelID, 10),
+				MessageID: strconv.FormatInt(messageID, 10),
+				GuildID:   gid,
+				Emoji:     emoji,
+			},
+		}); err != nil {
+			slog.ErrorContext(ctx, "failed to publish reaction remove event", "error", err)
+		}
+	}
+
+	return nil
+}
+
+func (s *Service) ListReactors(ctx context.Context, userID, channelID, messageID int64, emoji string, limit int, after int64) ([]AuthorRef, error) {
+	if emoji == "" {
+		return nil, ErrInvalidEmoji
+	}
+	_, perms, err := s.requireChannelPerms(ctx, userID, channelID)
+	if err != nil {
+		return nil, err
+	}
+	if !permissions.Has(perms, permissions.VIEW_CHANNEL) {
+		return nil, ErrMissingAccess
+	}
+
+	if s.reactions == nil {
+		return []AuthorRef{}, nil
+	}
+
+	uids, err := s.reactions.ListReactors(ctx, channelID, messageID, emoji, limit, after)
+	if err != nil {
+		return nil, err
+	}
+	if len(uids) == 0 {
+		return []AuthorRef{}, nil
+	}
+
+	return s.hydrateUsers(ctx, uids)
+}
+
+func (s *Service) hydrateUsers(ctx context.Context, uids []int64) ([]AuthorRef, error) {
+	if s.db == nil || len(uids) == 0 {
+		authors := make([]AuthorRef, len(uids))
+		for i, id := range uids {
+			authors[i] = AuthorRef{ID: strconv.FormatInt(id, 10)}
+		}
+		return authors, nil
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, username, to_char(discriminator, 'FM0000')
+		FROM users WHERE id = ANY($1)`, uids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	userMap := make(map[int64]AuthorRef)
+	for rows.Next() {
+		var uid int64
+		var ref AuthorRef
+		if err := rows.Scan(&uid, &ref.Username, &ref.Discriminator); err != nil {
+			return nil, err
+		}
+		ref.ID = strconv.FormatInt(uid, 10)
+		userMap[uid] = ref
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	result := make([]AuthorRef, 0, len(uids))
+	for _, uid := range uids {
+		if ref, ok := userMap[uid]; ok {
+			result = append(result, ref)
+		} else {
+			result = append(result, AuthorRef{ID: strconv.FormatInt(uid, 10)})
+		}
+	}
+	return result, nil
 }

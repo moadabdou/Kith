@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 
 	"github.com/moadabdou/Kith/api/internal/auth"
 	"github.com/moadabdou/Kith/api/internal/httpx"
@@ -52,6 +53,14 @@ func (h *Handler) writeErr(w http.ResponseWriter, err error) {
 			Message: "Invalid or already linked attachment"})
 	case errors.Is(err, ErrContentRequired):
 		errs.Write(w, errs.FormBody("Invalid Form Body: content is required"))
+	case errors.Is(err, ErrInvalidEmoji):
+		errs.Write(w, errs.FormBody("Invalid Form Body: invalid emoji"))
+	case errors.Is(err, ErrInvalidMessageID):
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad message id"))
+	case errors.Is(err, ErrInvalidChannelID):
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad channel id"))
+	case errors.Is(err, ErrInvalidUserID):
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad user id"))
 	default:
 		errs.Write(w, errs.Internal())
 	}
@@ -278,3 +287,134 @@ func parseLimit(s string) (int, error) {
 }
 
 var errBadLimit = errors.New("bad limit")
+
+func emojiFromReq(r *http.Request) (string, bool) {
+	raw := r.PathValue("emoji")
+	if raw == "" {
+		return "", false
+	}
+	unescaped, err := url.PathUnescape(raw)
+	if err == nil && unescaped != "" {
+		return unescaped, true
+	}
+	return raw, true
+}
+
+// AddReaction handles PUT /api/channels/{cid}/messages/{mid}/reactions/{emoji}/@me
+// and PUT /api/guilds/{id}/channels/{cid}/messages/{mid}/reactions/{emoji}/@me.
+func (h *Handler) AddReaction(w http.ResponseWriter, r *http.Request) {
+	cid, ok := channelIDFromReq(r)
+	if !ok {
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad channel id"))
+		return
+	}
+	mid, ok := pathID(r, "mid")
+	if !ok {
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad message id"))
+		return
+	}
+	emoji, ok := emojiFromReq(r)
+	if !ok {
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad emoji"))
+		return
+	}
+	if err := h.Svc.AddReaction(r.Context(), mustUser(r), cid, mid, emoji); err != nil {
+		h.writeErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// RemoveOwnReaction handles DELETE /api/channels/{cid}/messages/{mid}/reactions/{emoji}/@me
+// and DELETE /api/guilds/{id}/channels/{cid}/messages/{mid}/reactions/{emoji}/@me.
+func (h *Handler) RemoveOwnReaction(w http.ResponseWriter, r *http.Request) {
+	cid, ok := channelIDFromReq(r)
+	if !ok {
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad channel id"))
+		return
+	}
+	mid, ok := pathID(r, "mid")
+	if !ok {
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad message id"))
+		return
+	}
+	emoji, ok := emojiFromReq(r)
+	if !ok {
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad emoji"))
+		return
+	}
+	uid := mustUser(r)
+	if err := h.Svc.RemoveReaction(r.Context(), uid, uid, cid, mid, emoji); err != nil {
+		h.writeErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// RemoveUserReaction handles DELETE /api/channels/{cid}/messages/{mid}/reactions/{emoji}/{uid}
+// and DELETE /api/guilds/{id}/channels/{cid}/messages/{mid}/reactions/{emoji}/{uid}.
+func (h *Handler) RemoveUserReaction(w http.ResponseWriter, r *http.Request) {
+	cid, ok := channelIDFromReq(r)
+	if !ok {
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad channel id"))
+		return
+	}
+	mid, ok := pathID(r, "mid")
+	if !ok {
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad message id"))
+		return
+	}
+	emoji, ok := emojiFromReq(r)
+	if !ok {
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad emoji"))
+		return
+	}
+	targetUID, ok := pathID(r, "uid")
+	if !ok {
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad user id"))
+		return
+	}
+	if err := h.Svc.RemoveReaction(r.Context(), mustUser(r), targetUID, cid, mid, emoji); err != nil {
+		h.writeErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ListReactors handles GET /api/channels/{cid}/messages/{mid}/reactions/{emoji}
+// and GET /api/guilds/{id}/channels/{cid}/messages/{mid}/reactions/{emoji}.
+func (h *Handler) ListReactors(w http.ResponseWriter, r *http.Request) {
+	cid, ok := channelIDFromReq(r)
+	if !ok {
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad channel id"))
+		return
+	}
+	mid, ok := pathID(r, "mid")
+	if !ok {
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad message id"))
+		return
+	}
+	emoji, ok := emojiFromReq(r)
+	if !ok {
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad emoji"))
+		return
+	}
+	limit := 50
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if parsed, err := parseLimit(l); err == nil {
+			limit = parsed
+		}
+	}
+	var after int64
+	if a := r.URL.Query().Get("after"); a != "" {
+		if parsed, err := snowflake.Parse(a); err == nil {
+			after = parsed
+		}
+	}
+	reactors, err := h.Svc.ListReactors(r.Context(), mustUser(r), cid, mid, emoji, limit, after)
+	if err != nil {
+		h.writeErr(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, reactors)
+}

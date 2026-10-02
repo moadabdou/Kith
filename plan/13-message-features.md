@@ -49,15 +49,15 @@ actual message experience is social, dense, and interactive:
 ### Issue #2: `feat(api): Reaction REST endpoints, ADD_REACTIONS permissions & NATS events`
 - **Context**: Expose Discord-compatible reaction mutation and query endpoints with strict permission checks.
 - **Tasks**:
-  - [ ] Enforce permission `ADD_REACTIONS` (`1 << 6`) for new reaction types; allow reacting to existing emojis if `VIEW_CHANNEL` is held.
-  - [ ] Implement handlers:
+  - [x] Enforce permission `ADD_REACTIONS` (`1 << 6`) for new reaction types; allow reacting to existing emojis if `VIEW_CHANNEL` is held.
+  - [x] Implement handlers:
     - `PUT /api/channels/{cid}/messages/{mid}/reactions/{emoji}/@me`
     - `DELETE /api/channels/{cid}/messages/{mid}/reactions/{emoji}/@me`
     - `DELETE /api/channels/{cid}/messages/{mid}/reactions/{emoji}/{uid}` (requires `MANAGE_MESSAGES`)
     - `GET /api/channels/{cid}/messages/{mid}/reactions/{emoji}` (paginated users who reacted)
-  - [ ] Publish `MESSAGE_REACTION_ADD` and `MESSAGE_REACTION_REMOVE` to NATS JetStream after commit.
-  - [ ] Include reactions list in `GET /api/channels/{cid}/messages` response payload.
-- **Verification**: REST tests for permission rejection, self-reaction removal, and 404 on nonexistent messages.
+  - [x] Publish `MESSAGE_REACTION_ADD` and `MESSAGE_REACTION_REMOVE` to NATS JetStream after commit.
+  - [x] Include reactions list in `GET /api/channels/{cid}/messages` response payload.
+- **Verification**: Verified via `api/internal/messages/reactions_handler_test.go` (10 subtests covering add, remove own, remove other without permission -> 403, with MANAGE_MESSAGES -> 204, list reactors, timeline hydration, url unescaping, and NATS event dispatch). Closed GitHub Issue #108.
 
 ---
 

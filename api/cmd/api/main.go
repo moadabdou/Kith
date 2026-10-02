@@ -275,8 +275,32 @@ func main() {
 	}
 	mediaHandler := media.NewHandler(mediaService)
 
+	var reactionsStore messages.ReactionsStore
+	if scyllaSession != nil {
+		reactionsStore = messages.NewScyllaReactionsStore(scyllaSession)
+		slog.Info("reactions store initialized", "store", "scylla")
+	} else if scyllaHosts := os.Getenv("SCYLLA_HOSTS"); scyllaHosts != "" {
+		session, err := messages.NewScyllaSession(messages.ScyllaConfig{
+			Hosts:       strings.Split(scyllaHosts, ","),
+			Keyspace:    envOr("SCYLLA_KEYSPACE", "kith"),
+			Consistency: messages.ParseConsistency(envOr("SCYLLA_CONSISTENCY", "LOCAL_QUORUM")),
+		})
+		if err == nil {
+			defer session.Close()
+			reactionsStore = messages.NewScyllaReactionsStore(session)
+			slog.Info("reactions store initialized", "store", "scylla")
+		} else {
+			slog.Warn("failed to connect to scylladb for reactions, falling back to memory", "error", err)
+			reactionsStore = messages.NewMemoryReactionsStore()
+		}
+	} else {
+		reactionsStore = messages.NewMemoryReactionsStore()
+		slog.Info("reactions store initialized", "store", "memory")
+	}
+
 	messagesSvc := messages.NewService(db, msgStore, node, publisher, mediaService)
 	messagesSvc.SetSigner(mediaSigner)
+	messagesSvc.SetReactionsStore(reactionsStore)
 	messagesHandler := messages.NewHandler(
 		messagesSvc,
 		envInt("API_MSG_MAX_INFLIGHT", messages.DefaultMaxInflight),
@@ -404,6 +428,29 @@ func main() {
 		auth.RequireAuth(jwt, http.HandlerFunc(messagesHandler.Edit)))
 	mux.Handle("DELETE /api/channels/{cid}/messages/{mid}",
 		auth.RequireAuth(jwt, http.HandlerFunc(messagesHandler.Delete)))
+
+	// reactions (Phase 9, Issue #108)
+	rxLimiter := sharedLimiter(5, 5*time.Second)
+	rxKey := func(r *http.Request) string {
+		uid, _ := auth.UserIDFrom(r.Context())
+		return strconv.FormatInt(uid, 10)
+	}
+	mux.Handle("PUT /api/channels/{cid}/messages/{mid}/reactions/{emoji}/@me",
+		auth.RequireAuth(jwt, rxLimiter.Middleware(rxKey, "reactions", http.HandlerFunc(messagesHandler.AddReaction))))
+	mux.Handle("PUT /api/guilds/{id}/channels/{cid}/messages/{mid}/reactions/{emoji}/@me",
+		auth.RequireAuth(jwt, rxLimiter.Middleware(rxKey, "reactions", http.HandlerFunc(messagesHandler.AddReaction))))
+	mux.Handle("DELETE /api/channels/{cid}/messages/{mid}/reactions/{emoji}/@me",
+		auth.RequireAuth(jwt, rxLimiter.Middleware(rxKey, "reactions", http.HandlerFunc(messagesHandler.RemoveOwnReaction))))
+	mux.Handle("DELETE /api/guilds/{id}/channels/{cid}/messages/{mid}/reactions/{emoji}/@me",
+		auth.RequireAuth(jwt, rxLimiter.Middleware(rxKey, "reactions", http.HandlerFunc(messagesHandler.RemoveOwnReaction))))
+	mux.Handle("DELETE /api/channels/{cid}/messages/{mid}/reactions/{emoji}/{uid}",
+		auth.RequireAuth(jwt, rxLimiter.Middleware(rxKey, "reactions", http.HandlerFunc(messagesHandler.RemoveUserReaction))))
+	mux.Handle("DELETE /api/guilds/{id}/channels/{cid}/messages/{mid}/reactions/{emoji}/{uid}",
+		auth.RequireAuth(jwt, rxLimiter.Middleware(rxKey, "reactions", http.HandlerFunc(messagesHandler.RemoveUserReaction))))
+	mux.Handle("GET /api/channels/{cid}/messages/{mid}/reactions/{emoji}",
+		auth.RequireAuth(jwt, http.HandlerFunc(messagesHandler.ListReactors)))
+	mux.Handle("GET /api/guilds/{id}/channels/{cid}/messages/{mid}/reactions/{emoji}",
+		auth.RequireAuth(jwt, http.HandlerFunc(messagesHandler.ListReactors)))
 
 	// read states (Phase 8, Issue #103)
 	mux.Handle("POST /api/channels/{id}/messages/{mid}/ack",

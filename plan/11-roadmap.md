@@ -1,6 +1,6 @@
 # 11 — Roadmap (START HERE)
 
-> ~24 weeks part-time (evenings/weekends ≈ 8–12 h/wk), 11 phases. Each phase:
+> ~26 weeks part-time (evenings/weekends ≈ 8–12 h/wk), 12 phases (0 through 10). Each phase:
 > build → chaos experiment → gate checklist → postmortem. The gates are the
 > curriculum; the code is just the vehicle.
 >
@@ -170,7 +170,28 @@ redelivery).
 
 **Gate:** see `08-media-pipeline.md` §5 + `05-presence-typing.md` §4 Phase 8.
 
-## Phase 9 — Real deployment (wk ~22+ interleaved, then 2 wk focused)
+## Phase 9 — Rich messaging & interactive primitives (wk 25–26)
+
+**Build:** `13-message-features.md`:
+(a) Reactions: ScyllaDB/PG message reactions table, atomic tally aggregations,
+REST routes (`PUT/DELETE .../reactions/{emoji}/@me`), gateway events
+(`MESSAGE_REACTION_ADD/REMOVE`), client reaction chips + emoji picker popover.
+(b) Inline replies & references: `reply_to` in write pipeline, parent snippet
+quote render, jump-to-reference navigation.
+(c) Interactive actions: hover action toolbar, inline message editing with
+`(edited)` timestamp, delete confirmation modal, gateway `MESSAGE_UPDATE/DELETE`.
+(d) Discord markdown: AST parser for bold, italic, code blocks, blockquotes,
+spoilers (`||spoiler||`), and auto-linking.
+(e) Channel pins: `PUT/DELETE .../pins/{mid}` + pinned messages drawer.
+
+**Read first:** 13-message-features.md, Discord API documentation on Message Reactions & Message Components.
+
+**Chaos:** reaction storm drill (50 simulated users rapidly reacting and unreacting
+to a single message under 10% packet drop; prove tallies match individual rows with zero race drifts).
+
+**Gate:** see `13-message-features.md` §7.
+
+## Phase 10 — Real deployment (wk ~27–28, graduation)
 
 **Build:** `10-deployment.md`: Oracle VMs, TLS, the networking gauntlet
 (security lists, double firewall, UDP range), runbook, backups + restore

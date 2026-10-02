@@ -44,9 +44,10 @@
 | `07-voice-video.md` | WebRTC: SDP/ICE/STUN/TURN, P2P mesh → own SFU, simulcast | 5, 6 |
 | `08-media-pipeline.md` | Uploads, Rust transcode/thumbnails, CDN | 8 |
 | `09-scalability-failover.md` | Sharding, multi-node, chaos catalog, SLOs | 7 |
-| `10-deployment.md` | Docker Compose evolution → Oracle Cloud topology | all |
+| `10-deployment.md` | Docker Compose evolution → Oracle Cloud topology | 10 |
 | `11-roadmap.md` | **The phased 3–6 month timeline (start here)** | all |
 | `12-references.md` | Discord engineering posts, RFCs, papers mapped to phases | all |
+| `13-message-features.md` | Rich messaging, reactions, replies, markdown, pins | 9 |
 
 ## Ground rules
 

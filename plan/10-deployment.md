@@ -36,7 +36,7 @@ Observability ships in Phase 0 and never leaves:
 committed, so dashboards are code), `loki` for logs (Phase 1+). This stack
 costs ~1GB RAM and saves you from flying blind in every later phase.
 
-## 3. Oracle Cloud topology (Phase 9 / ongoing)
+## 3. Oracle Cloud topology (Phase 10 / ongoing)
 
 Oracle free tier realistically gets you ~4 ARM A1 VMs (4 OCPU/24GB split,
 e.g. 1×24GB or 2×12GB) + AMD micros. Plan for what you can get:
@@ -89,7 +89,7 @@ you *Kubernetes*, while hiding BEAM clustering, UDP networking, quorum, and
 node failure behind abstractions that *simulate* what you're trying to *feel*.
 
 Escape hatch: if you want the K8s competence later (legit career skill),
-Phase 9+: k3s on the same VMs, port compose→helm by hand, and specifically
+Phase 10+: k3s on the same VMs, port compose→helm by hand, and specifically
 learn `PodDisruptionBudget`, `topologySpreadConstraints`, and why StatefulSet
 + Scylla is a story of its own. But finish the compose version first —
 you'll *understand* what those objects are FOR instead of cargo-culting them.

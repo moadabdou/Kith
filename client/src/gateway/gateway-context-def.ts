@@ -7,6 +7,7 @@ import type {
   MemberUpdatePayload,
   Message,
   MessageAckPayload,
+  MessageDeletePayload,
   MessageReactionEvent,
   PresenceUpdatePayload,
   RoleDeletePayload,
@@ -32,6 +33,7 @@ export interface GatewayContextValue {
   reconnectNow: () => void
   subscribeToMessages: (callback: (msg: Message) => void) => () => void
   subscribeToMessageUpdates: (callback: (msg: Partial<Message> & { id: string; channel_id: string }) => void) => () => void
+  subscribeToMessageDeletes: (callback: (payload: MessageDeletePayload) => void) => () => void
   subscribeToMessageReactionAdd: (callback: (payload: MessageReactionEvent) => void) => () => void
   subscribeToMessageReactionRemove: (callback: (payload: MessageReactionEvent) => void) => () => void
   subscribeToMessageAcks: (callback: (ack: MessageAckPayload) => void) => () => void

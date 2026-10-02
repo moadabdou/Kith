@@ -3,18 +3,18 @@ import type { ReferencedMsg } from '../../types'
 interface ParentQuoteProps {
   replyToId: string
   referencedMessage?: ReferencedMsg | null
-  onJump: (targetId: string) => void
+  onJump?: (targetId: string) => void
 }
 
 export function ParentQuote({ replyToId, referencedMessage, onJump }: ParentQuoteProps) {
   const handleClick = () => {
-    onJump(replyToId)
+    onJump?.(replyToId)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault()
-      onJump(replyToId)
+      onJump?.(replyToId)
     }
   }
 

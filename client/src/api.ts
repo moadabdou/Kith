@@ -263,6 +263,19 @@ class ApiClient {
     })
   }
 
+  async editMessage(channelId: string, messageId: string, content: string): Promise<Message> {
+    return this.request<Message>(`/channels/${channelId}/messages/${messageId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ content }),
+    })
+  }
+
+  async deleteMessage(channelId: string, messageId: string): Promise<void> {
+    await this.request(`/channels/${channelId}/messages/${messageId}`, {
+      method: 'DELETE',
+    })
+  }
+
   // ── Reactions ──────────────────────────────────────
   async addReaction(channelId: string, messageId: string, emoji: string): Promise<void> {
     await this.request(`/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}/@me`, {

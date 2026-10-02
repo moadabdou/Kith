@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent } from 'react'
-import { AlertCircle, ArrowDown, Hash, Loader2, Reply, SmilePlus } from 'lucide-react'
+import { AlertCircle, ArrowDown, Hash, Loader2 } from 'lucide-react'
 import { api } from '../../api'
 import { useAuth } from '../../context/useAuth'
 import { useGateway } from '../../gateway/useGateway'
 import { memberNameColor } from '../../lib/members'
-import { ADD_REACTIONS, ATTACH_FILES, hasPermission, resolveChannelPermissions, SEND_MESSAGES } from '../../lib/permissions'
+import { ADD_REACTIONS, ATTACH_FILES, hasPermission, MANAGE_MESSAGES, resolveChannelPermissions, SEND_MESSAGES } from '../../lib/permissions'
 import { applyMessageUpdate } from '../../lib/message-updates'
 import { applyReactionAdd, applyReactionRemove, toggleReactionOptimistic } from '../../lib/reactions'
 import { parseSearchQuery } from '../../lib/search'
@@ -20,7 +20,9 @@ import type { Channel, Guild, Member, Message, Role, SearchFilters } from '../..
 import { SearchBar } from '../search/SearchBar'
 import { SearchResults } from '../search/SearchResults'
 import { AttachmentView } from './AttachmentView'
+import { DeleteMessageModal } from './DeleteMessageModal'
 import { MessageInput } from './MessageInput'
+import { MessageToolbar } from './MessageToolbar'
 import { ParentQuote } from './ParentQuote'
 import { ReactionPicker } from './ReactionPicker'
 import { ReactionPills } from './ReactionPills'
@@ -43,6 +45,7 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
   const {
     subscribeToMessages,
     subscribeToMessageUpdates,
+    subscribeToMessageDeletes,
     subscribeToTyping,
     sendTyping,
     connected,
@@ -68,6 +71,15 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
   } | null>(null)
   const [replyingTo, setReplyingTo] = useState<Message | null>(null)
   const chatInputRef = useRef<HTMLInputElement>(null)
+
+  const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null)
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
+  const [editingContent, setEditingContent] = useState('')
+  const [isSavingEdit, setIsSavingEdit] = useState(false)
+  const editTextareaRef = useRef<HTMLTextAreaElement>(null)
+
+  const [deletingMessage, setDeletingMessage] = useState<Message | null>(null)
+  const [isDeleting, setIsDeleting] = useState(false)
 
   const handleStartReply = useCallback((targetMsg: Message) => {
     setReplyingTo(targetMsg)
@@ -131,6 +143,29 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
     (channelPerms === 'owner' || (channelPerms != null && hasPermission(channelPerms, ATTACH_FILES)))
   const canAddReactions =
     channelPerms === 'owner' || (channelPerms != null && hasPermission(channelPerms, ADD_REACTIONS))
+  const canManageMessages =
+    channelPerms === 'owner' || (channelPerms != null && hasPermission(channelPerms, MANAGE_MESSAGES))
+
+  const EDIT_WINDOW_MS = 15 * 60 * 1000
+
+  const isMessageAuthor = useCallback((msg: Message) => {
+    return Boolean(user && msg.author && String(msg.author.id) === String(user.id))
+  }, [user])
+
+  const isWithinEditWindow = useCallback((msg: Message) => {
+    if (!msg.timestamp) return true
+    const created = new Date(msg.timestamp).getTime()
+    if (Number.isNaN(created)) return true
+    return Date.now() - created < EDIT_WINDOW_MS
+  }, [])
+
+  const canEditMessage = useCallback((msg: Message) => {
+    return isMessageAuthor(msg) && isWithinEditWindow(msg)
+  }, [isMessageAuthor, isWithinEditWindow])
+
+  const canDeleteMessage = useCallback((msg: Message) => {
+    return (isMessageAuthor(msg) && isWithinEditWindow(msg)) || canManageMessages
+  }, [isMessageAuthor, isWithinEditWindow, canManageMessages])
 
   // Pending attachment uploads (Discord-style presigned flow: PUT at selection,
   // complete at send). Scoped to the visible channel — switching channels drops them.
@@ -738,6 +773,124 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
     }
   }, [currentChannel, subscribeToMessageReactionAdd, subscribeToMessageReactionRemove, user?.id])
 
+  // Real-time message delete synchronization
+  useEffect(() => {
+    return subscribeToMessageDeletes((payload) => {
+      if (currentChannel && payload.channel_id === currentChannel.id) {
+        setMessages((prev) => prev.filter((m) => m.id !== payload.id))
+      }
+    })
+  }, [currentChannel, subscribeToMessageDeletes])
+
+  // Focus and adjust height when entering edit mode
+  useEffect(() => {
+    if (editingMessageId && editTextareaRef.current) {
+      editTextareaRef.current.focus()
+      editTextareaRef.current.setSelectionRange(
+        editTextareaRef.current.value.length,
+        editTextareaRef.current.value.length
+      )
+      editTextareaRef.current.style.height = 'auto'
+      editTextareaRef.current.style.height = `${editTextareaRef.current.scrollHeight}px`
+    }
+  }, [editingMessageId])
+
+  // Keyboard shortcut 'e' to edit hovered message
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement ||
+        (e.target as HTMLElement)?.isContentEditable
+      ) {
+        return
+      }
+      if (e.ctrlKey || e.metaKey || e.altKey) return
+
+      if ((e.key === 'e' || e.key === 'E') && hoveredMessageId && !editingMessageId && !deletingMessage) {
+        const targetMsg = messagesRef.current.find((m) => m.id === hoveredMessageId)
+        if (targetMsg && canEditMessage(targetMsg)) {
+          e.preventDefault()
+          setEditingMessageId(targetMsg.id)
+          setEditingContent(targetMsg.content)
+        }
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [hoveredMessageId, editingMessageId, deletingMessage, canEditMessage])
+
+  const handleSaveEdit = async () => {
+    if (!currentChannel || !editingMessageId || isSavingEdit) return
+    const trimmed = editingContent.trim()
+    if (!trimmed) return
+
+    const targetMsg = messagesRef.current.find((m) => m.id === editingMessageId)
+    if (!targetMsg) return
+
+    if (trimmed === targetMsg.content) {
+      setEditingMessageId(null)
+      setEditingContent('')
+      return
+    }
+
+    const prevContent = targetMsg.content
+    const prevEdited = targetMsg.edited_timestamp
+    const nowIso = new Date().toISOString()
+    const editingId = editingMessageId
+
+    // Optimistic update
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.id === editingId
+          ? { ...m, content: trimmed, edited_timestamp: nowIso }
+          : m
+      )
+    )
+    setEditingMessageId(null)
+    setEditingContent('')
+
+    setIsSavingEdit(true)
+    try {
+      await api.editMessage(currentChannel.id, editingId, trimmed)
+    } catch (err: any) {
+      console.error('Failed to edit message:', err)
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === editingId
+            ? { ...m, content: prevContent, edited_timestamp: prevEdited }
+            : m
+        )
+      )
+      setError(err?.message || 'Failed to edit message')
+    } finally {
+      setIsSavingEdit(false)
+    }
+  }
+
+  const handleConfirmDelete = async () => {
+    if (!currentChannel || !deletingMessage || isDeleting) return
+    const msgToDelete = deletingMessage
+    const messageId = msgToDelete.id
+    const prevMessages = messagesRef.current
+
+    setIsDeleting(true)
+    // Optimistic removal
+    setMessages((prev) => prev.filter((m) => m.id !== messageId))
+    setDeletingMessage(null)
+
+    try {
+      await api.deleteMessage(currentChannel.id, messageId)
+    } catch (err: any) {
+      console.error('Failed to delete message:', err)
+      setMessages(prevMessages)
+      setError(err?.message || 'Failed to delete message')
+    } finally {
+      setIsDeleting(false)
+    }
+  }
+
   const openPickerForMessage = (messageId: string, event?: React.MouseEvent) => {
     if (activePicker?.messageId === messageId) {
       setActivePicker(null)
@@ -936,6 +1089,23 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
     }
   }
 
+  const formatFullDateTime = (ts?: string | null) => {
+    if (!ts) return ''
+    try {
+      const d = new Date(ts)
+      return d.toLocaleString([], {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+    } catch {
+      return ts
+    }
+  }
+
   const typingText = typingIndicatorText(
     Array.from(typers.values())
       .filter((t) => currentChannel && t.channelId === currentChannel.id)
@@ -1034,45 +1204,37 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
               const authorName = authorMember?.nick || msg.author?.username || 'Unknown'
               const isPickerOpen = activePicker?.messageId === msg.id
               const isReply = Boolean(msg.type === 19 || msg.reply_to)
+              const isEditing = editingMessageId === msg.id
 
               return (
                 <div
                   id={`msg-${msg.id}`}
                   key={msg.id}
-                  className={`message-card ${isHighlighted ? 'message-highlighted' : ''} ${isReply ? 'is-reply' : ''}`}
+                  className={`message-card ${isHighlighted ? 'message-highlighted' : ''} ${isReply ? 'is-reply' : ''} ${isEditing ? 'is-editing' : ''}`}
+                  onMouseEnter={() => setHoveredMessageId(msg.id)}
+                  onMouseLeave={() => setHoveredMessageId((prev) => (prev === msg.id ? null : prev))}
                 >
                   {/* Floating Action Toolbar on hover */}
-                  {(canAddReactions || canSendMessages) && (
-                    <div className={`message-actions-toolbar ${isPickerOpen ? 'is-open' : ''}`}>
-                      {canSendMessages && (
-                        <button
-                          type="button"
-                          className="message-action-btn"
-                          title="Reply"
-                          aria-label="Reply"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            handleStartReply(msg)
-                          }}
-                        >
-                          <Reply size={16} />
-                        </button>
-                      )}
-                      {canAddReactions && (
-                        <button
-                          type="button"
-                          className="message-action-btn"
-                          title="Add Reaction"
-                          aria-label="Add Reaction"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            openPickerForMessage(msg.id, e)
-                          }}
-                        >
-                          <SmilePlus size={16} />
-                        </button>
-                      )}
-                    </div>
+                  {!isEditing && (
+                    <MessageToolbar
+                      message={msg}
+                      canEdit={canEditMessage(msg)}
+                      canDelete={canDeleteMessage(msg)}
+                      canPin={canManageMessages}
+                      canReply={canSendMessages}
+                      canAddReaction={canAddReactions}
+                      onQuickReaction={(emoji) => handleToggleReaction(msg.id, emoji)}
+                      onOpenReactionPicker={(e) => openPickerForMessage(msg.id, e)}
+                      onReply={() => handleStartReply(msg)}
+                      onEdit={() => {
+                        setEditingMessageId(msg.id)
+                        setEditingContent(msg.content)
+                      }}
+                      onPin={() => {
+                        // Reserved for Channel Pinned Messages (Phase 9 Issue #9)
+                      }}
+                      onDelete={() => setDeletingMessage(msg)}
+                    />
                   )}
 
                   {isPickerOpen && (
@@ -1105,7 +1267,70 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
                         </span>
                         <span className="message-time">{formatTime(msg.timestamp)}</span>
                       </div>
-                      <div className="message-text">{msg.content}</div>
+
+                      {isEditing ? (
+                        <div className="message-inline-editor">
+                          <textarea
+                            ref={editTextareaRef}
+                            className="message-edit-textarea"
+                            value={editingContent}
+                            onChange={(e) => {
+                              setEditingContent(e.target.value)
+                              e.target.style.height = 'auto'
+                              e.target.style.height = `${e.target.scrollHeight}px`
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' && !e.shiftKey) {
+                                e.preventDefault()
+                                handleSaveEdit()
+                              } else if (e.key === 'Escape') {
+                                e.preventDefault()
+                                setEditingMessageId(null)
+                                setEditingContent('')
+                              }
+                            }}
+                            disabled={isSavingEdit}
+                            rows={1}
+                          />
+                          <div className="message-edit-operations">
+                            <span>
+                              escape to{' '}
+                              <button
+                                type="button"
+                                className="edit-link-btn"
+                                onClick={() => {
+                                  setEditingMessageId(null)
+                                  setEditingContent('')
+                                }}
+                              >
+                                cancel
+                              </button>{' '}
+                              • enter to{' '}
+                              <button
+                                type="button"
+                                className="edit-link-btn"
+                                onClick={handleSaveEdit}
+                                disabled={isSavingEdit}
+                              >
+                                save
+                              </button>
+                            </span>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="message-text">
+                          {msg.content}
+                          {msg.edited_timestamp && (
+                            <span
+                              className="message-edited-tag"
+                              title={formatFullDateTime(msg.edited_timestamp)}
+                            >
+                              (edited)
+                            </span>
+                          )}
+                        </div>
+                      )}
+
                       {msg.attachments && msg.attachments.length > 0 && (
                         <div className="message-attachments">
                           {msg.attachments.map((a) => (
@@ -1239,6 +1464,18 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
           onSelectAuthorFilter={handleSelectAuthorFilter}
           onJumpToMessage={handleJumpToMessage}
         />
+
+        {/* Delete Confirmation Modal */}
+        {deletingMessage && (
+          <DeleteMessageModal
+            message={deletingMessage}
+            isDeleting={isDeleting}
+            onConfirm={handleConfirmDelete}
+            onClose={() => {
+              if (!isDeleting) setDeletingMessage(null)
+            }}
+          />
+        )}
       </div>
     </div>
   )

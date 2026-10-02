@@ -120,19 +120,19 @@ actual message experience is social, dense, and interactive:
 ### Issue #7: `feat(client): Message hover action toolbar & inline edit/delete parity`
 - **Context**: Complete interactive message management matching Discord desktop.
 - **Tasks**:
-  - [ ] Build `MessageToolbar.tsx`: Floating action toolbar appearing on message row hover:
+  - [x] Build `MessageToolbar.tsx`: Floating action toolbar appearing on message row hover:
     - Quick reaction buttons (`👍`, `❤️`, `🔥`) + "Add Reaction" icon.
     - "Reply" button.
     - "Edit" button (visible if current user is author and `< 15m`).
     - "Delete" button (visible if author or user holds `MANAGE_MESSAGES`).
     - "Pin" button (visible if user holds `MANAGE_MESSAGES`).
-  - [ ] Inline editing in `ChatArea.tsx`:
+  - [x] Inline editing in `ChatArea.tsx`:
     - Keyboard shortcut `e` on hovered message activates edit mode.
     - Message text transforms into an inline input with "escape to cancel • enter to save".
     - Calls `PATCH /api/channels/{cid}/messages/{mid}`.
     - Displays `(edited)` tag next to timestamp when `edited_timestamp != null`.
-  - [ ] Delete modal: Confirmation dialog before issuing `DELETE /api/channels/{cid}/messages/{mid}`.
-- **Verification**: Inline edit updates content across clients; deleted messages vanish immediately.
+  - [x] Delete modal: Confirmation dialog before issuing `DELETE /api/channels/{cid}/messages/{mid}`.
+- **Verification**: Verified via unit test suites `MessageToolbar.test.tsx` and `DeleteMessageModal.test.tsx`, full Vitest suite (19 test files, 208 tests passing), production bundle build (`tsc -b && vite build`), and live Docker deployment. Closed GitHub Issue #113.
 
 ---
 

@@ -37,26 +37,12 @@ actual message experience is social, dense, and interactive:
 ### Issue #1: `feat(db): ScyllaDB schema for message reactions, counters & MemoryStore fallback`
 - **Context**: Reactions are high-churn mutations colocated with messages. In accordance with the Phase 3 `scylla_only` messaging topology and the Phase 8 `read-states` pattern, reactions are stored exclusively in **ScyllaDB** to eliminate Postgres vacuum pressure, lock contention, and table bloat.
 - **Tasks**:
-  - [ ] Write ScyllaDB CQL migration `api/cql/003_create_reactions.cql`:
-    ```sql
-    CREATE TABLE IF NOT EXISTS kith.message_reactions (
-        channel_id bigint,
-        message_id bigint,
-        emoji varchar,
-        user_id bigint,
-        created_at timestamp,
-        PRIMARY KEY ((channel_id, message_id), emoji, user_id)
-    );
-    ```
-  - [ ] Implement `ReactionsStore` interface in `internal/messages/reactions_store.go`:
-    - `AddReaction(ctx, channelID, messageID, emoji, userID) error`
-    - `RemoveReaction(ctx, channelID, messageID, emoji, userID) error`
-    - `GetReactionsForMessages(ctx, channelID, messageIDs, currentUserID) (map[string][]ReactionTally, error)`
-    - `ListReactors(ctx, channelID, messageID, emoji, limit, after) ([]int64, error)`
-  - [ ] Implement `ScyllaReactionsStore` in `internal/messages/reactions_store_scylla.go` leveraging partition slice reads `WHERE channel_id = ? AND message_id = ?`.
-  - [ ] Implement `MemoryReactionsStore` in `internal/messages/reactions_store_memory.go` for fast, hermetic Go unit tests without requiring a running ScyllaDB instance.
-  - [ ] Add unit tests verifying idempotent adds, removals, multi-user tally aggregation, and `me: true/false` status.
-- **Verification**: CQL migration applies cleanly; unit tests pass with in-memory store; integration tests pass against ScyllaDB cluster.
+  - [x] Write ScyllaDB CQL migration `api/cql/003_create_reactions.cql` (commit `b1a3edb`)
+  - [x] Implement `ReactionsStore` interface in `internal/messages/reactions_store.go`
+  - [x] Implement `ScyllaReactionsStore` in `internal/messages/reactions_store_scylla.go` leveraging partition slice reads
+  - [x] Implement `MemoryReactionsStore` in `internal/messages/reactions_store_memory.go` for fast, hermetic Go unit tests
+  - [x] Add unit tests verifying idempotent adds, removals, multi-user tally aggregation, and `me: true/false` status
+- **Verification**: Verified via `api/internal/messages/reactions_store_test.go` (`PASS`, 0 race conditions). Closed GitHub Issue #107.
 
 ---
 

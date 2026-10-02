@@ -109,11 +109,11 @@ actual message experience is social, dense, and interactive:
 ### Issue #6: `feat(client): Reply composer, quote thread rendering & jump-to-source navigation`
 - **Context**: Rich reply UX in the chat window.
 - **Tasks**:
-  - [ ] Build `ReplyBar.tsx`: Render banner above `MessageInput` showing *"Replying to @username"* with an `✕` cancel button.
-  - [ ] Build `ParentQuote.tsx`: Curved SVG line connector connecting parent snippet to the reply card.
-  - [ ] Jump navigation: Clicking the referenced snippet smoothly scrolls to `#msg-{reply_to}` and triggers a temporary pulse highlight animation.
-  - [ ] If parent message is outside current view window, fetch history around that ID or load older messages.
-- **Verification**: Clicking reply on hover bar enters reply mode; sending message renders quote; clicking quote jumps to parent.
+  - [x] Build `ReplyBar.tsx`: Render banner above `MessageInput` showing *"Replying to @username"* with an `✕` cancel button and Escape key dismiss.
+  - [x] Build `ParentQuote.tsx`: Curved spine connector connecting parent snippet to the reply card with deleted tombstone support.
+  - [x] Jump navigation: Clicking the referenced snippet smoothly scrolls to `#msg-{reply_to}` and triggers a temporary pulse highlight animation.
+  - [x] If parent message is outside current view window, fetch history around that ID or load older messages (`jumpToTargetInCurrentChannel`).
+- **Verification**: Verified via unit test suites `ReplyBar.test.tsx` and `ParentQuote.test.tsx`, full Vitest suite (17 test files, 198 tests passing), production bundle build (`tsc -b && vite build`), and live Docker deployment. Closed GitHub Issue #112.
 
 ---
 

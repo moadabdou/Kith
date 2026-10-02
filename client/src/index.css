@@ -591,15 +591,176 @@ body {
 
 .message-card {
   display: flex;
-  gap: 16px;
+  flex-direction: column;
   padding: 4px 8px;
   border-radius: 4px;
   transition: background 0.1s ease;
   position: relative;
 }
 
+.message-card.is-reply {
+  margin-top: 4px;
+}
+
+.message-main-row {
+  display: flex;
+  gap: 16px;
+  width: 100%;
+}
+
 .message-card:hover {
   background-color: rgba(0, 0, 0, 0.08);
+}
+
+/* Parent Quote / Reply Header */
+.parent-quote {
+  display: flex;
+  align-items: center;
+  position: relative;
+  margin-left: 16px;
+  padding-left: 34px;
+  margin-bottom: 2px;
+  font-size: 13px;
+  line-height: 16px;
+  color: var(--text-muted, #949ba4);
+  cursor: pointer;
+  user-select: none;
+  min-height: 18px;
+}
+
+.parent-quote:hover {
+  color: var(--text-header, #f2f3f5);
+}
+
+.parent-quote:hover .reply-quote-text {
+  color: var(--text-normal, #dbdee1);
+}
+
+.reply-spine {
+  position: absolute;
+  top: 8px;
+  left: 12px;
+  width: 18px;
+  height: calc(100% + 4px);
+  border-left: 2px solid var(--border-subtle, #4e5058);
+  border-top: 2px solid var(--border-subtle, #4e5058);
+  border-top-left-radius: 6px;
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
+.reply-quote-body {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.reply-quote-avatar {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background-color: var(--brand-experiment, #5865f2);
+  color: white;
+  font-size: 10px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.reply-quote-username {
+  font-weight: 600;
+  color: var(--text-header, #f2f3f5);
+  flex-shrink: 0;
+}
+
+.reply-quote-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted, #949ba4);
+  max-width: 520px;
+  transition: color 0.1s ease;
+}
+
+.parent-quote.is-deleted .reply-quote-deleted {
+  font-style: italic;
+  color: var(--text-muted, #949ba4);
+}
+
+/* Reply Composer Bar */
+.reply-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background-color: var(--bg-secondary, #2b2d31);
+  padding: 8px 12px;
+  border-top-left-radius: 8px;
+  border-top-right-radius: 8px;
+  border-bottom: 1px solid var(--border-subtle, #383a40);
+  font-size: 13px;
+  color: var(--text-muted, #949ba4);
+  animation: replySlideDown 0.15s ease-out;
+}
+
+@keyframes replySlideDown {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.reply-bar-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reply-bar-icon {
+  color: var(--text-muted, #949ba4);
+  flex-shrink: 0;
+}
+
+.reply-bar-text {
+  font-size: 13px;
+}
+
+.reply-bar-target {
+  font-weight: 600;
+  color: var(--text-header, #f2f3f5);
+}
+
+.reply-bar-close {
+  background: transparent;
+  border: none;
+  color: var(--text-muted, #949ba4);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border-radius: 4px;
+  transition: color 0.1s ease, background-color 0.1s ease;
+}
+
+.reply-bar-close:hover {
+  color: var(--text-header, #f2f3f5);
+  background-color: rgba(255, 255, 255, 0.08);
+}
+
+.chat-input-container.has-reply-bar .chat-input-bar {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
 }
 
 /* Floating message action toolbar on hover */

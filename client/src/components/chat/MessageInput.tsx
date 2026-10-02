@@ -1,7 +1,9 @@
-import { useRef, type FormEvent } from 'react'
+import { useRef, type FormEvent, type RefObject } from 'react'
 import { AlertCircle, FileText, Loader2, Plus, Send, X } from 'lucide-react'
+import type { Message } from '../../types'
 import type { PendingUpload } from '../../lib/uploads'
 import { formatBytes } from '../../lib/uploads'
+import { ReplyBar } from './ReplyBar'
 
 interface MessageInputProps {
   channelName: string
@@ -16,6 +18,9 @@ interface MessageInputProps {
   uploadsBlocked: boolean
   onPickFiles: (files: File[]) => void
   onRemovePending: (key: string) => void
+  replyingTo?: Message | null
+  onCancelReply?: () => void
+  inputRef?: RefObject<HTMLInputElement | null>
 }
 
 export function MessageInput({
@@ -31,15 +36,23 @@ export function MessageInput({
   uploadsBlocked,
   onPickFiles,
   onRemovePending,
+  replyingTo,
+  onCancelReply,
+  inputRef,
 }: MessageInputProps) {
   const fileRef = useRef<HTMLInputElement>(null)
   const placeholder = canSend
-    ? `Message #${channelName}`
+    ? replyingTo
+      ? `Replying to @${replyingTo.author?.username || 'Unknown'}...`
+      : `Message #${channelName}`
     : 'You do not have permission to send messages in this channel'
   const canSubmit = canSend && !sending && !uploadsBlocked && (inputText.trim() !== '' || hasReadyUploads)
 
   return (
-    <div className={`chat-input-container ${!canSend ? 'disabled' : ''}`}>
+    <div className={`chat-input-container ${!canSend ? 'disabled' : ''} ${replyingTo ? 'has-reply-bar' : ''}`}>
+      {canSend && replyingTo && onCancelReply && (
+        <ReplyBar replyingTo={replyingTo} onCancel={onCancelReply} />
+      )}
       {canSend && pending.length > 0 && (
         <div className="pending-uploads" aria-live="polite">
           {pending.map((p) => (
@@ -119,6 +132,7 @@ export function MessageInput({
           </>
         )}
         <input
+          ref={inputRef}
           type="text"
           className="chat-input"
           value={canSend ? inputText : ''}

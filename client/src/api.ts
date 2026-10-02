@@ -246,10 +246,20 @@ class ApiClient {
     return this.request<Message[]>(`/guilds/${guildId}/channels/${channelId}/messages${query}`)
   }
 
-  async sendMessage(guildId: string, channelId: string, content: string, attachmentIds?: string[]): Promise<Message> {
+  async sendMessage(
+    guildId: string,
+    channelId: string,
+    content: string,
+    attachmentIds?: string[],
+    messageReference?: { message_id: string }
+  ): Promise<Message> {
     return this.request<Message>(`/guilds/${guildId}/channels/${channelId}/messages`, {
       method: 'POST',
-      body: JSON.stringify({ content, attachment_ids: attachmentIds ?? [] }),
+      body: JSON.stringify({
+        content,
+        attachment_ids: attachmentIds ?? [],
+        message_reference: messageReference,
+      }),
     })
   }
 

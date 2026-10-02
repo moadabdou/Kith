@@ -52,11 +52,24 @@ export interface ReactionTally {
   me: boolean
 }
 
+export interface ReferencedMsg {
+  id: string
+  author: AuthorRef
+  content: string
+}
+
+export interface MessageReference {
+  message_id: string
+}
+
 export interface Message {
   id: string
   channel_id: string
   author: AuthorRef
   content: string
+  type?: number // 0 = DEFAULT, 19 = REPLY
+  reply_to?: string | null
+  referenced_message?: ReferencedMsg | null
   timestamp: string
   edited_timestamp?: string | null
   attachments?: Attachment[]

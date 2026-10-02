@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent } from 'react'
-import { AlertCircle, ArrowDown, Hash, Loader2, SmilePlus } from 'lucide-react'
+import { AlertCircle, ArrowDown, Hash, Loader2, Reply, SmilePlus } from 'lucide-react'
 import { api } from '../../api'
 import { useAuth } from '../../context/useAuth'
 import { useGateway } from '../../gateway/useGateway'
@@ -21,6 +21,7 @@ import { SearchBar } from '../search/SearchBar'
 import { SearchResults } from '../search/SearchResults'
 import { AttachmentView } from './AttachmentView'
 import { MessageInput } from './MessageInput'
+import { ParentQuote } from './ParentQuote'
 import { ReactionPicker } from './ReactionPicker'
 import { ReactionPills } from './ReactionPills'
 
@@ -65,6 +66,13 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
     messageId: string
     position: { top?: number; bottom?: number; right?: number }
   } | null>(null)
+  const [replyingTo, setReplyingTo] = useState<Message | null>(null)
+  const chatInputRef = useRef<HTMLInputElement>(null)
+
+  const handleStartReply = useCallback((targetMsg: Message) => {
+    setReplyingTo(targetMsg)
+    chatInputRef.current?.focus()
+  }, [])
 
   // Pagination & Bi-directional Scroll State
   const [hasMore, setHasMore] = useState(true)
@@ -209,6 +217,7 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
     }
     xhrByKey.current.clear()
     setPending([])
+    setReplyingTo(null)
     setDragActive(false)
     dragDepth.current = 0
   }, [currentGuild?.id, currentChannel?.id])
@@ -852,14 +861,17 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
         if (!p.attachmentId) throw new Error(`Attachment ${p.filename} was never uploaded`)
         return p.attachmentId
       })
+      const messageReference = replyingTo ? { message_id: replyingTo.id } : undefined
       const sent = await api.sendMessage(
         guildId,
         channelId,
         content,
-        attIDs.length > 0 ? attIDs : undefined
+        attIDs.length > 0 ? attIDs : undefined,
+        messageReference
       )
       setInputText('')
       setPending([])
+      setReplyingTo(null)
       setMessages((prev) => {
         if (prev.some((m) => m.id === sent.id)) return prev
         return [...prev, sent]
@@ -1021,28 +1033,45 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
               const authorColor = authorMember ? memberNameColor(authorMember, guildRoles) : null
               const authorName = authorMember?.nick || msg.author?.username || 'Unknown'
               const isPickerOpen = activePicker?.messageId === msg.id
+              const isReply = Boolean(msg.type === 19 || msg.reply_to)
 
               return (
                 <div
                   id={`msg-${msg.id}`}
                   key={msg.id}
-                  className={`message-card ${isHighlighted ? 'message-highlighted' : ''}`}
+                  className={`message-card ${isHighlighted ? 'message-highlighted' : ''} ${isReply ? 'is-reply' : ''}`}
                 >
                   {/* Floating Action Toolbar on hover */}
-                  {canAddReactions && (
+                  {(canAddReactions || canSendMessages) && (
                     <div className={`message-actions-toolbar ${isPickerOpen ? 'is-open' : ''}`}>
-                      <button
-                        type="button"
-                        className="message-action-btn"
-                        title="Add Reaction"
-                        aria-label="Add Reaction"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          openPickerForMessage(msg.id, e)
-                        }}
-                      >
-                        <SmilePlus size={16} />
-                      </button>
+                      {canSendMessages && (
+                        <button
+                          type="button"
+                          className="message-action-btn"
+                          title="Reply"
+                          aria-label="Reply"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            handleStartReply(msg)
+                          }}
+                        >
+                          <Reply size={16} />
+                        </button>
+                      )}
+                      {canAddReactions && (
+                        <button
+                          type="button"
+                          className="message-action-btn"
+                          title="Add Reaction"
+                          aria-label="Add Reaction"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            openPickerForMessage(msg.id, e)
+                          }}
+                        >
+                          <SmilePlus size={16} />
+                        </button>
+                      )}
                     </div>
                   )}
 
@@ -1054,35 +1083,45 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
                     />
                   )}
 
-                  <div className="user-avatar" style={{ width: 40, height: 40, fontSize: 16 }}>
-                    {msg.author?.username?.substring(0, 2).toUpperCase() ?? 'U'}
-                  </div>
-                  <div className="message-content-wrap">
-                    <div className="message-meta">
-                      <span
-                        className="message-author"
-                        style={authorColor ? { color: authorColor } : undefined}
-                      >
-                        {authorName}
-                      </span>
-                      <span className="message-time">{formatTime(msg.timestamp)}</span>
+                  {isReply && msg.reply_to && (
+                    <ParentQuote
+                      replyToId={msg.reply_to}
+                      referencedMessage={msg.referenced_message}
+                      onJump={jumpToTargetInCurrentChannel}
+                    />
+                  )}
+
+                  <div className="message-main-row">
+                    <div className="user-avatar" style={{ width: 40, height: 40, fontSize: 16 }}>
+                      {msg.author?.username?.substring(0, 2).toUpperCase() ?? 'U'}
                     </div>
-                    <div className="message-text">{msg.content}</div>
-                    {msg.attachments && msg.attachments.length > 0 && (
-                      <div className="message-attachments">
-                        {msg.attachments.map((a) => (
-                          <AttachmentView key={a.id} attachment={a} channelId={msg.channel_id} />
-                        ))}
+                    <div className="message-content-wrap">
+                      <div className="message-meta">
+                        <span
+                          className="message-author"
+                          style={authorColor ? { color: authorColor } : undefined}
+                        >
+                          {authorName}
+                        </span>
+                        <span className="message-time">{formatTime(msg.timestamp)}</span>
                       </div>
-                    )}
-                    {msg.reactions && msg.reactions.length > 0 && (
-                      <ReactionPills
-                        reactions={msg.reactions}
-                        onToggleReaction={(emoji) => handleToggleReaction(msg.id, emoji)}
-                        onOpenPicker={(e) => openPickerForMessage(msg.id, e)}
-                        canAddReaction={canAddReactions}
-                      />
-                    )}
+                      <div className="message-text">{msg.content}</div>
+                      {msg.attachments && msg.attachments.length > 0 && (
+                        <div className="message-attachments">
+                          {msg.attachments.map((a) => (
+                            <AttachmentView key={a.id} attachment={a} channelId={msg.channel_id} />
+                          ))}
+                        </div>
+                      )}
+                      {msg.reactions && msg.reactions.length > 0 && (
+                        <ReactionPills
+                          reactions={msg.reactions}
+                          onToggleReaction={(emoji) => handleToggleReaction(msg.id, emoji)}
+                          onOpenPicker={(e) => openPickerForMessage(msg.id, e)}
+                          canAddReaction={canAddReactions}
+                        />
+                      )}
+                    </div>
                   </div>
                 </div>
               )
@@ -1173,6 +1212,9 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
             uploadsBlocked={uploadsBlocked}
             onPickFiles={addFiles}
             onRemovePending={removePending}
+            replyingTo={replyingTo}
+            onCancelReply={() => setReplyingTo(null)}
+            inputRef={chatInputRef}
           />
         </div>
 

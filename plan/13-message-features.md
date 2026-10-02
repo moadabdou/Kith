@@ -74,11 +74,11 @@ actual message experience is social, dense, and interactive:
 ### Issue #4: `feat(client): Interactive emoji reaction picker & reaction pills UI`
 - **Context**: Client UX for browsing and toggling reactions beneath messages.
 - **Tasks**:
-  - [ ] Build `ReactionPicker.tsx`: Lightweight popover with standard emojis (`👍`, `❤️`, `😂`, `🎉`, `🔥`, `🚀`, `👀`, `💯`) and search.
-  - [ ] Build `ReactionPills.tsx`: Chip container under each message displaying `emoji`, `count`, and highlighted active border if reacted by current user.
-  - [ ] Implement optimistic UI updates: clicking a pill toggles local count immediately and rolls back if the API request fails.
-  - [ ] Gateway listener: Subscribe to `MESSAGE_REACTION_ADD/REMOVE` in `useGateway` and update `messages` state in place.
-- **Verification**: Clicking reaction updates pill without flickering; external reactions appear in real-time.
+  - [x] Build `ReactionPicker.tsx`: Lightweight popover with standard emojis (`👍`, `❤️`, `😂`, `🎉`, `🔥`, `🚀`, `👀`, `💯`), categorized search, keyboard dismiss (`Escape`), and click-outside handling.
+  - [x] Build `ReactionPills.tsx`: Chip container under each message displaying `emoji`, `count`, highlighted blurple active border (`#5865f2`) when `me: true`, and add-reaction `+` button.
+  - [x] Implement optimistic UI updates: clicking a pill toggles local count immediately and rolls back if the API request fails (`toggleReactionOptimistic`).
+  - [x] Gateway listener: Subscribe to `MESSAGE_REACTION_ADD` and `MESSAGE_REACTION_REMOVE` via `useGateway` and update `messages` state in place with idempotent reducers (`applyReactionAdd`, `applyReactionRemove`).
+- **Verification**: Verified via 14 pure reducer unit tests (`client/src/lib/reactions.test.ts`), 192/192 total client tests passing, and clean TypeScript production bundle build (`tsc -b && vite build`). Closed GitHub Issue #110.
 
 ---
 

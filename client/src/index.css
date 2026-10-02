@@ -595,10 +595,221 @@ body {
   padding: 4px 8px;
   border-radius: 4px;
   transition: background 0.1s ease;
+  position: relative;
 }
 
 .message-card:hover {
   background-color: rgba(0, 0, 0, 0.08);
+}
+
+/* Floating message action toolbar on hover */
+.message-actions-toolbar {
+  position: absolute;
+  top: -16px;
+  right: 16px;
+  display: none;
+  background-color: var(--bg-primary, #313338);
+  border: 1px solid var(--border-subtle, #3f4147);
+  border-radius: 6px;
+  padding: 2px 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
+  z-index: 10;
+}
+
+.message-card:hover .message-actions-toolbar,
+.message-actions-toolbar.is-open {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.message-action-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted, #949ba4);
+  padding: 4px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.1s ease, background-color 0.1s ease;
+}
+
+.message-action-btn:hover {
+  color: var(--text-header, #f2f3f5);
+  background-color: rgba(255, 255, 255, 0.08);
+}
+
+/* Reaction Pills row beneath message */
+.reaction-pills-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+  align-items: center;
+}
+
+.reaction-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  background-color: var(--bg-surface-hover, #2b2d31);
+  border: 1px solid transparent;
+  color: var(--text-normal, #dbdee1);
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.reaction-pill:hover {
+  background-color: var(--bg-modifier-hover, #35373c);
+  border-color: var(--border-subtle, #4e5058);
+}
+
+.reaction-pill-active {
+  background-color: rgba(88, 101, 242, 0.18);
+  border-color: #5865f2;
+  color: #c9cdfb;
+}
+
+.reaction-pill-active:hover {
+  background-color: rgba(88, 101, 242, 0.28);
+  border-color: #7983f5;
+}
+
+.reaction-pill-emoji {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.reaction-pill-count {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.reaction-pill-add {
+  padding: 4px 8px;
+  color: var(--text-muted, #949ba4);
+}
+
+.reaction-pill-add:hover {
+  color: var(--text-normal, #dbdee1);
+  background-color: var(--bg-modifier-hover, #35373c);
+}
+
+/* Reaction Picker Popover */
+.reaction-picker-popover {
+  z-index: 100;
+  width: 324px;
+  max-height: 380px;
+  background-color: var(--bg-secondary, #2b2d31);
+  border: 1px solid var(--border-subtle, #383a40);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: dropDownFadeIn 0.15s ease-out;
+}
+
+.reaction-picker-header {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-subtle, #383a40);
+}
+
+.reaction-picker-search-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background-color: var(--bg-tertiary, #1e1f22);
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+
+.reaction-picker-search-icon {
+  color: var(--text-muted, #949ba4);
+  flex-shrink: 0;
+}
+
+.reaction-picker-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--text-normal, #dbdee1);
+  font-size: 13px;
+  outline: none;
+}
+
+.reaction-picker-input::placeholder {
+  color: var(--text-muted, #949ba4);
+}
+
+.reaction-picker-clear-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted, #949ba4);
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+}
+
+.reaction-picker-clear-btn:hover {
+  color: var(--text-normal, #dbdee1);
+}
+
+.reaction-picker-section-title {
+  padding: 10px 12px 4px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted, #949ba4);
+}
+
+.reaction-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 2px;
+  padding: 6px 8px 10px;
+  overflow-y: auto;
+  max-height: 280px;
+}
+
+.reaction-picker-item {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: background-color 0.1s ease, transform 0.1s ease;
+}
+
+.reaction-picker-item:hover {
+  background-color: rgba(255, 255, 255, 0.12);
+  transform: scale(1.22);
+}
+
+.reaction-picker-emoji {
+  font-size: 20px;
+  line-height: 1;
+}
+
+.reaction-picker-empty {
+  grid-column: span 8;
+  text-align: center;
+  padding: 24px 0;
+  color: var(--text-muted, #949ba4);
+  font-size: 13px;
 }
 
 .message-content-wrap {

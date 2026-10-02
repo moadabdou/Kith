@@ -6,6 +6,7 @@ import type {
   MemberUpdatePayload,
   Message,
   MessageAckPayload,
+  MessageReactionEvent,
   PresenceUpdatePayload,
   RoleDeletePayload,
   RoleEventPayload,
@@ -185,6 +186,14 @@ export class GatewayClient {
 
   public onMessageUpdate(callback: (msg: Partial<Message> & { id: string; channel_id: string }) => void): () => void {
     return this.on('MESSAGE_UPDATE', callback)
+  }
+
+  public onMessageReactionAdd(callback: (payload: MessageReactionEvent) => void): () => void {
+    return this.on('MESSAGE_REACTION_ADD', callback)
+  }
+
+  public onMessageReactionRemove(callback: (payload: MessageReactionEvent) => void): () => void {
+    return this.on('MESSAGE_REACTION_REMOVE', callback)
   }
 
   public onMessageAck(callback: (ack: MessageAckPayload) => void): () => void {

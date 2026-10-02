@@ -46,6 +46,12 @@ export interface AuthorRef {
   discriminator: string
 }
 
+export interface ReactionTally {
+  emoji: string
+  count: number
+  me: boolean
+}
+
 export interface Message {
   id: string
   channel_id: string
@@ -54,6 +60,7 @@ export interface Message {
   timestamp: string
   edited_timestamp?: string | null
   attachments?: Attachment[]
+  reactions?: ReactionTally[]
 }
 
 export interface Attachment {
@@ -244,4 +251,12 @@ export interface ChannelLatest {
 export interface MessageAckPayload {
   channel_id: string
   message_id: string
+}
+
+export interface MessageReactionEvent {
+  user_id: string
+  channel_id: string
+  message_id: string
+  guild_id: string
+  emoji: string
 }

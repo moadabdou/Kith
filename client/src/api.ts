@@ -253,6 +253,33 @@ class ApiClient {
     })
   }
 
+  // ── Reactions ──────────────────────────────────────
+  async addReaction(channelId: string, messageId: string, emoji: string): Promise<void> {
+    await this.request(`/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}/@me`, {
+      method: 'PUT',
+    })
+  }
+
+  async removeReaction(channelId: string, messageId: string, emoji: string): Promise<void> {
+    await this.request(`/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}/@me`, {
+      method: 'DELETE',
+    })
+  }
+
+  async removeUserReaction(channelId: string, messageId: string, emoji: string, userId: string): Promise<void> {
+    await this.request(`/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}/${userId}`, {
+      method: 'DELETE',
+    })
+  }
+
+  async getReactors(channelId: string, messageId: string, emoji: string, limit = 25, after?: string): Promise<User[]> {
+    const params = new URLSearchParams()
+    if (limit) params.set('limit', String(limit))
+    if (after) params.set('after', after)
+    const query = params.toString() ? `?${params.toString()}` : ''
+    return this.request<User[]>(`/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}${query}`)
+  }
+
   // ── Attachments (Phase 8 media, Discord-style presigned flow) ──
   // 1. presign -> 2. PUT bytes to upload_url -> 3. complete -> 4. send with ids
   async presignAttachment(

@@ -8,6 +8,7 @@ import type {
   MemberUpdatePayload,
   Message,
   MessageAckPayload,
+  MessageReactionEvent,
   PresenceUpdatePayload,
   RoleDeletePayload,
   RoleEventPayload,
@@ -51,6 +52,14 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
 
   const subscribeToMessageUpdates = (callback: (msg: Partial<Message> & { id: string; channel_id: string }) => void) => {
     return gatewayClient.onMessageUpdate(callback)
+  }
+
+  const subscribeToMessageReactionAdd = (callback: (payload: MessageReactionEvent) => void) => {
+    return gatewayClient.onMessageReactionAdd(callback)
+  }
+
+  const subscribeToMessageReactionRemove = (callback: (payload: MessageReactionEvent) => void) => {
+    return gatewayClient.onMessageReactionRemove(callback)
   }
 
   const subscribeToMessageAcks = (callback: (ack: MessageAckPayload) => void) => {
@@ -153,6 +162,8 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
         reconnectNow,
         subscribeToMessages,
         subscribeToMessageUpdates,
+        subscribeToMessageReactionAdd,
+        subscribeToMessageReactionRemove,
         subscribeToMessageAcks,
         onSessionReset,
         subscribeToReady,

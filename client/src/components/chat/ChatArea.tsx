@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent } from 'react'
-import { AlertCircle, ArrowDown, Hash, Loader2 } from 'lucide-react'
+import { AlertCircle, ArrowDown, Hash, Loader2, SmilePlus } from 'lucide-react'
 import { api } from '../../api'
 import { useAuth } from '../../context/useAuth'
 import { useGateway } from '../../gateway/useGateway'
 import { memberNameColor } from '../../lib/members'
-import { ATTACH_FILES, hasPermission, resolveChannelPermissions, SEND_MESSAGES } from '../../lib/permissions'
+import { ADD_REACTIONS, ATTACH_FILES, hasPermission, resolveChannelPermissions, SEND_MESSAGES } from '../../lib/permissions'
 import { applyMessageUpdate } from '../../lib/message-updates'
+import { applyReactionAdd, applyReactionRemove, toggleReactionOptimistic } from '../../lib/reactions'
 import { parseSearchQuery } from '../../lib/search'
 import {
   MAX_PENDING_FILES,
@@ -20,6 +21,8 @@ import { SearchBar } from '../search/SearchBar'
 import { SearchResults } from '../search/SearchResults'
 import { AttachmentView } from './AttachmentView'
 import { MessageInput } from './MessageInput'
+import { ReactionPicker } from './ReactionPicker'
+import { ReactionPills } from './ReactionPills'
 
 interface ChatAreaProps {
   currentGuild: Guild | null
@@ -47,6 +50,8 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
     subscribeToRoleUpdates,
     subscribeToRoleDeletes,
     subscribeToMemberUpdates,
+    subscribeToMessageReactionAdd,
+    subscribeToMessageReactionRemove,
   } = useGateway()
   const [messages, setMessages] = useState<Message[]>([])
   // Latest-state mirror so event callbacks can snapshot without stale closures.
@@ -56,6 +61,10 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [typers, setTypers] = useState<Map<string, ActiveTyper>>(new Map())
+  const [activePicker, setActivePicker] = useState<{
+    messageId: string
+    position: { top?: number; bottom?: number; right?: number }
+  } | null>(null)
 
   // Pagination & Bi-directional Scroll State
   const [hasMore, setHasMore] = useState(true)
@@ -112,6 +121,8 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
   const canAttach =
     canSendMessages &&
     (channelPerms === 'owner' || (channelPerms != null && hasPermission(channelPerms, ATTACH_FILES)))
+  const canAddReactions =
+    channelPerms === 'owner' || (channelPerms != null && hasPermission(channelPerms, ADD_REACTIONS))
 
   // Pending attachment uploads (Discord-style presigned flow: PUT at selection,
   // complete at send). Scoped to the visible channel — switching channels drops them.
@@ -683,6 +694,83 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
     })
   }, [currentChannel, subscribeToMessageUpdates])
 
+  // Real-time Gateway reaction updates
+  useEffect(() => {
+    if (!currentChannel) return
+    const channelId = currentChannel.id
+
+    const unsubAdd = subscribeToMessageReactionAdd((event) => {
+      if (event.channel_id !== channelId) return
+      const isMe = event.user_id === user?.id
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === event.message_id
+            ? { ...m, reactions: applyReactionAdd(m.reactions, event.emoji, isMe) }
+            : m
+        )
+      )
+    })
+
+    const unsubRemove = subscribeToMessageReactionRemove((event) => {
+      if (event.channel_id !== channelId) return
+      const isMe = event.user_id === user?.id
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === event.message_id
+            ? { ...m, reactions: applyReactionRemove(m.reactions, event.emoji, isMe) }
+            : m
+        )
+      )
+    })
+
+    return () => {
+      unsubAdd()
+      unsubRemove()
+    }
+  }, [currentChannel, subscribeToMessageReactionAdd, subscribeToMessageReactionRemove, user?.id])
+
+  const openPickerForMessage = (messageId: string, event?: React.MouseEvent) => {
+    if (activePicker?.messageId === messageId) {
+      setActivePicker(null)
+      return
+    }
+    const isLowerHalf = event ? event.clientY > window.innerHeight * 0.55 : false
+    const position = isLowerHalf
+      ? { bottom: 28, right: 16 }
+      : { top: 24, right: 16 }
+    setActivePicker({ messageId, position })
+  }
+
+  const handleToggleReaction = async (messageId: string, emoji: string) => {
+    if (!currentGuild || !currentChannel || !user) return
+
+    const targetMsg = messagesRef.current.find((m) => m.id === messageId)
+    if (!targetMsg) return
+
+    const prevReactions = targetMsg.reactions ?? []
+    const { nextReactions, wasMe } = toggleReactionOptimistic(prevReactions, emoji)
+
+    // Optimistically update message reactions in local state
+    setMessages((prev) =>
+      prev.map((m) => (m.id === messageId ? { ...m, reactions: nextReactions } : m))
+    )
+
+    try {
+      if (wasMe) {
+        await api.removeReaction(currentChannel.id, messageId, emoji)
+      } else {
+        await api.addReaction(currentChannel.id, messageId, emoji)
+      }
+    } catch (err: any) {
+      console.error('Failed to toggle reaction:', err)
+      // Rollback to previous reactions on failure
+      setMessages((prev) =>
+        prev.map((m) => (m.id === messageId ? { ...m, reactions: prevReactions } : m))
+      )
+      setError(err?.message || 'Failed to update reaction')
+    }
+  }
+
   const handleJumpToMessage = (msg: Message) => {
     // If message is in another channel, switch to that channel first
     if (currentChannel && msg.channel_id !== currentChannel.id) {
@@ -932,6 +1020,7 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
               const authorMember = msg.author ? memberByUserId.get(msg.author.id) : undefined
               const authorColor = authorMember ? memberNameColor(authorMember, guildRoles) : null
               const authorName = authorMember?.nick || msg.author?.username || 'Unknown'
+              const isPickerOpen = activePicker?.messageId === msg.id
 
               return (
                 <div
@@ -939,6 +1028,32 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
                   key={msg.id}
                   className={`message-card ${isHighlighted ? 'message-highlighted' : ''}`}
                 >
+                  {/* Floating Action Toolbar on hover */}
+                  {canAddReactions && (
+                    <div className={`message-actions-toolbar ${isPickerOpen ? 'is-open' : ''}`}>
+                      <button
+                        type="button"
+                        className="message-action-btn"
+                        title="Add Reaction"
+                        aria-label="Add Reaction"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          openPickerForMessage(msg.id, e)
+                        }}
+                      >
+                        <SmilePlus size={16} />
+                      </button>
+                    </div>
+                  )}
+
+                  {isPickerOpen && (
+                    <ReactionPicker
+                      onSelectEmoji={(emoji) => handleToggleReaction(msg.id, emoji)}
+                      onClose={() => setActivePicker(null)}
+                      position={activePicker?.position}
+                    />
+                  )}
+
                   <div className="user-avatar" style={{ width: 40, height: 40, fontSize: 16 }}>
                     {msg.author?.username?.substring(0, 2).toUpperCase() ?? 'U'}
                   </div>
@@ -959,6 +1074,14 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
                           <AttachmentView key={a.id} attachment={a} channelId={msg.channel_id} />
                         ))}
                       </div>
+                    )}
+                    {msg.reactions && msg.reactions.length > 0 && (
+                      <ReactionPills
+                        reactions={msg.reactions}
+                        onToggleReaction={(emoji) => handleToggleReaction(msg.id, emoji)}
+                        onOpenPicker={(e) => openPickerForMessage(msg.id, e)}
+                        canAddReaction={canAddReactions}
+                      />
                     )}
                   </div>
                 </div>

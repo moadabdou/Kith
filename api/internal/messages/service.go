@@ -19,13 +19,16 @@ import (
 )
 
 var (
-	ErrUnknownChannel     = errors.New("messages: unknown channel")
-	ErrUnknownMessage     = errors.New("messages: unknown message")
-	ErrMissingAccess      = errors.New("messages: missing access")
-	ErrMissingPermissions = errors.New("messages: missing permissions")
-	ErrNotAuthor          = errors.New("messages: not the message author")
-	ErrEditWindowOver     = errors.New("messages: edit window (15 min) has passed")
-	ErrContentRequired    = errors.New("messages: content required")
+	ErrUnknownChannel                = errors.New("messages: unknown channel")
+	ErrUnknownMessage                = errors.New("messages: unknown message")
+	ErrMissingAccess                 = errors.New("messages: missing access")
+	ErrMissingPermissions            = errors.New("messages: missing permissions")
+	ErrNotAuthor                     = errors.New("messages: not the message author")
+	ErrEditWindowOver                = errors.New("messages: edit window (15 min) has passed")
+	ErrContentRequired               = errors.New("messages: content required")
+	ErrReferencedMessageNotFound     = errors.New("messages: referenced message not found")
+	ErrReferencedMessageWrongChannel = errors.New("messages: cannot reply to a message in another channel")
+	ErrInvalidMessageReference       = errors.New("messages: invalid message reference")
 )
 
 // EditWindow is Discord's 15-minute edit/delete window for regular users.
@@ -33,17 +36,30 @@ var (
 const EditWindow = 15 * time.Minute
 
 // Message is the wire shape — the SAME struct is the MESSAGE_CREATE payload
-// and the REST response (DRY, plan/02 §3 step 8).
+// and the REST response (DRY, plan/02 §3 step 8, Issue #111).
 type Message struct {
-	ID          string             `json:"id"`
-	ChannelID   string             `json:"channel_id"`
-	GuildID     string             `json:"guild_id,omitempty"`
-	Author      AuthorRef          `json:"author"`
-	Content     string             `json:"content"`
-	CreatedAt   time.Time          `json:"timestamp"`
-	EditedAt    *time.Time         `json:"edited_timestamp"`
-	Attachments []media.Attachment `json:"attachments,omitempty"`
-	Reactions   []ReactionTally    `json:"reactions,omitempty"`
+	ID            string             `json:"id"`
+	ChannelID     string             `json:"channel_id"`
+	GuildID       string             `json:"guild_id,omitempty"`
+	Author        AuthorRef          `json:"author"`
+	Content       string             `json:"content"`
+	Type          int16              `json:"type"`
+	ReplyTo       *string            `json:"reply_to,omitempty"`
+	ReferencedMsg *ReferencedMsg     `json:"referenced_message,omitempty"`
+	CreatedAt     time.Time          `json:"timestamp"`
+	EditedAt      *time.Time         `json:"edited_timestamp"`
+	Attachments   []media.Attachment `json:"attachments,omitempty"`
+	Reactions     []ReactionTally    `json:"reactions,omitempty"`
+}
+
+type ReferencedMsg struct {
+	ID      string    `json:"id"`
+	Author  AuthorRef `json:"author"`
+	Content string    `json:"content"`
+}
+
+type MessageReference struct {
+	MessageID string `json:"message_id"`
 }
 
 type AuthorRef struct {
@@ -120,6 +136,15 @@ func (s *Service) SetReactionsStore(reactions ReactionsStore) {
 // the mitigation). Returning an error here would make the client retry a
 // write that already happened.
 func (s *Service) Send(ctx context.Context, userID, channelID int64, content string, attachments ...[]string) (*Message, error) {
+	var attIDs []string
+	if len(attachments) > 0 && len(attachments[0]) > 0 {
+		attIDs = attachments[0]
+	}
+	return s.SendWithReference(ctx, userID, channelID, content, attIDs, nil)
+}
+
+// SendWithReference handles message creation with an optional parent message reference (inline reply).
+func (s *Service) SendWithReference(ctx context.Context, userID, channelID int64, content string, attIDs []string, refMsg *MessageReference) (*Message, error) {
 	ref, perms, err := s.requireChannelPerms(ctx, userID, channelID)
 	if err != nil {
 		return nil, err
@@ -130,12 +155,10 @@ func (s *Service) Send(ctx context.Context, userID, channelID int64, content str
 	if !permissions.Has(perms, permissions.SEND_MESSAGES) {
 		return nil, ErrMissingPermissions
 	}
-	var attIDs []string
-	if len(attachments) > 0 && len(attachments[0]) > 0 {
+	if len(attIDs) > 0 {
 		if !permissions.Has(perms, permissions.ATTACH_FILES) {
 			return nil, ErrMissingPermissions
 		}
-		attIDs = attachments[0]
 	}
 	if content == "" && len(attIDs) == 0 {
 		return nil, ErrContentRequired
@@ -159,6 +182,31 @@ func (s *Service) Send(ctx context.Context, userID, channelID int64, content str
 	}
 	if ref.GuildID > 0 {
 		m.GuildID = strconv.FormatInt(ref.GuildID, 10)
+	}
+
+	if refMsg != nil && refMsg.MessageID != "" {
+		parentID, err := strconv.ParseInt(refMsg.MessageID, 10, 64)
+		if err != nil || parentID <= 0 {
+			return nil, ErrInvalidMessageReference
+		}
+		parent, err := s.store.Get(ctx, channelID, parentID)
+		if err != nil {
+			if errors.Is(err, ErrUnknownMessage) {
+				return nil, ErrReferencedMessageNotFound
+			}
+			return nil, err
+		}
+		if parent.ChannelID != strconv.FormatInt(channelID, 10) {
+			return nil, ErrReferencedMessageWrongChannel
+		}
+		m.Type = 19
+		parentIDStr := strconv.FormatInt(parentID, 10)
+		m.ReplyTo = &parentIDStr
+		m.ReferencedMsg = &ReferencedMsg{
+			ID:      parent.ID,
+			Author:  parent.Author,
+			Content: parent.Content,
+		}
 	}
 
 	var parsedIDs []int64
@@ -229,6 +277,7 @@ func (s *Service) List(ctx context.Context, userID, channelID int64, before Curs
 	}
 	_ = s.hydrateAttachments(ctx, msgs, channelID, ref.GuildID)
 	_ = s.hydrateReactions(ctx, msgs, channelID, userID)
+	_ = s.hydrateReplies(ctx, msgs, channelID)
 	return msgs, nil
 }
 
@@ -250,7 +299,89 @@ func (s *Service) ListAfter(ctx context.Context, userID, channelID int64, after 
 	}
 	_ = s.hydrateAttachments(ctx, msgs, channelID, ref.GuildID)
 	_ = s.hydrateReactions(ctx, msgs, channelID, userID)
+	_ = s.hydrateReplies(ctx, msgs, channelID)
 	return msgs, nil
+}
+
+// Get returns a single message by ID with all relations (attachments, reactions, replies) hydrated.
+func (s *Service) Get(ctx context.Context, userID, channelID, messageID int64) (*Message, error) {
+	ref, perms, err := s.requireChannelPerms(ctx, userID, channelID)
+	if err != nil {
+		return nil, err
+	}
+	if !permissions.Has(perms, permissions.VIEW_CHANNEL) {
+		return nil, ErrMissingAccess
+	}
+	if !permissions.Has(perms, permissions.READ_MESSAGE_HISTORY) {
+		return nil, ErrMissingPermissions
+	}
+	m, err := s.store.Get(ctx, channelID, messageID)
+	if err != nil {
+		return nil, err
+	}
+	msgs := []Message{*m}
+	_ = s.hydrateAttachments(ctx, msgs, channelID, ref.GuildID)
+	_ = s.hydrateReactions(ctx, msgs, channelID, userID)
+	_ = s.hydrateReplies(ctx, msgs, channelID)
+	return &msgs[0], nil
+}
+
+func (s *Service) hydrateReplies(ctx context.Context, msgs []Message, channelID int64) error {
+	if len(msgs) == 0 {
+		return nil
+	}
+
+	batchMap := make(map[string]Message, len(msgs))
+	for _, m := range msgs {
+		batchMap[m.ID] = m
+	}
+
+	fetchedParents := make(map[string]*ReferencedMsg)
+
+	for i := range msgs {
+		if msgs[i].Type != 19 || msgs[i].ReplyTo == nil || *msgs[i].ReplyTo == "" {
+			continue
+		}
+		parentIDStr := *msgs[i].ReplyTo
+
+		if ref, ok := fetchedParents[parentIDStr]; ok {
+			msgs[i].ReferencedMsg = ref
+			continue
+		}
+
+		if parent, ok := batchMap[parentIDStr]; ok {
+			ref := &ReferencedMsg{
+				ID:      parent.ID,
+				Author:  parent.Author,
+				Content: parent.Content,
+			}
+			fetchedParents[parentIDStr] = ref
+			msgs[i].ReferencedMsg = ref
+			continue
+		}
+
+		parentID, err := strconv.ParseInt(parentIDStr, 10, 64)
+		if err != nil || parentID <= 0 {
+			continue
+		}
+		parent, err := s.store.Get(ctx, channelID, parentID)
+		if err != nil {
+			// Parent message was deleted: tombstone semantics (referenced_message: null)
+			fetchedParents[parentIDStr] = nil
+			msgs[i].ReferencedMsg = nil
+			continue
+		}
+
+		ref := &ReferencedMsg{
+			ID:      parent.ID,
+			Author:  parent.Author,
+			Content: parent.Content,
+		}
+		fetchedParents[parentIDStr] = ref
+		msgs[i].ReferencedMsg = ref
+	}
+
+	return nil
 }
 
 func (s *Service) hydrateAttachments(ctx context.Context, msgs []Message, channelID, guildID int64) error {

@@ -85,7 +85,7 @@ actual message experience is social, dense, and interactive:
 ### Issue #5: `feat(messages): Inline replies & message references in backend storage`
 - **Context**: Allow messages to reference parent messages (`reply_to`), preserving context and quoting.
 - **Tasks**:
-  - [ ] Update `Message` struct:
+  - [x] Update `Message` struct:
     ```go
     type Message struct {
         // ... existing fields ...
@@ -99,10 +99,10 @@ actual message experience is social, dense, and interactive:
         Content  string    `json:"content"`
     }
     ```
-  - [ ] Support `message_reference: { message_id }` in `POST /api/channels/{cid}/messages`.
-  - [ ] Validate referenced message exists and belongs to the same channel.
-  - [ ] Populate parent author and snippet in `MESSAGE_CREATE` event and message list queries.
-- **Verification**: Sending a reply links to parent; returns HTTP 400 if `message_reference` points to another channel.
+  - [x] Support `message_reference: { message_id }` in `POST /api/channels/{cid}/messages`.
+  - [x] Validate referenced message exists and belongs to the same channel.
+  - [x] Populate parent author and snippet in `MESSAGE_CREATE` event and message list queries.
+- **Verification**: Verified via unit test suite in `api/internal/messages/handler_replies_test.go` covering successful reply creation, parent not found (400), cross-channel rejection (400), invalid reference format (400), timeline hydration in `List`, deleted parent tombstone (`referenced_message: null`), and `Get` single message hydration. Built and deployed updated Docker container images `kith-api` and `kith-api-2`. Closed GitHub Issue #111.
 
 ---
 

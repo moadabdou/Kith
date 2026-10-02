@@ -61,6 +61,12 @@ func (h *Handler) writeErr(w http.ResponseWriter, err error) {
 		errs.Write(w, errs.FormBody("Invalid Form Body: bad channel id"))
 	case errors.Is(err, ErrInvalidUserID):
 		errs.Write(w, errs.FormBody("Invalid Form Body: bad user id"))
+	case errors.Is(err, ErrReferencedMessageNotFound):
+		errs.Write(w, errs.FormBody("Invalid Form Body: referenced message not found"))
+	case errors.Is(err, ErrReferencedMessageWrongChannel):
+		errs.Write(w, errs.FormBody("Invalid Form Body: cannot reply to a message in another channel"))
+	case errors.Is(err, ErrInvalidMessageReference):
+		errs.Write(w, errs.FormBody("Invalid Form Body: invalid message reference"))
 	default:
 		errs.Write(w, errs.Internal())
 	}
@@ -87,9 +93,10 @@ func (h *Handler) Send(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Content       string   `json:"content"`
-		Attachments   []string `json:"attachments"`
-		AttachmentIDs []string `json:"attachment_ids"`
+		Content          string            `json:"content"`
+		Attachments      []string          `json:"attachments"`
+		AttachmentIDs    []string          `json:"attachment_ids"`
+		MessageReference *MessageReference `json:"message_reference,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		errs.Write(w, errs.InvalidJSON())
@@ -98,6 +105,10 @@ func (h *Handler) Send(w http.ResponseWriter, r *http.Request) {
 	attachmentIDs := req.Attachments
 	if len(attachmentIDs) == 0 && len(req.AttachmentIDs) > 0 {
 		attachmentIDs = req.AttachmentIDs
+	}
+	if req.MessageReference != nil && req.MessageReference.MessageID == "" {
+		errs.Write(w, errs.FormBody("Invalid Form Body: bad message reference"))
+		return
 	}
 	if e := validateContentOrAttachment(req.Content, len(attachmentIDs) > 0); e != nil {
 		errs.Write(w, e)
@@ -114,7 +125,7 @@ func (h *Handler) Send(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer h.Inflight.Release()
-	m, err := h.Svc.Send(r.Context(), mustUser(r), cid, req.Content, attachmentIDs)
+	m, err := h.Svc.SendWithReference(r.Context(), mustUser(r), cid, req.Content, attachmentIDs, req.MessageReference)
 	if err != nil {
 		h.writeErr(w, err)
 		return

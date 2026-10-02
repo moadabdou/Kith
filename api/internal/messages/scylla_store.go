@@ -15,13 +15,13 @@ import (
 
 var _ Store = (*ScyllaStore)(nil)
 
-// Prepared statement CQL constants (plan/03 §5, §8).
+// Prepared statement CQL constants (plan/03 §5, §8, Issue #111).
 const (
-	cqlInsertMessage          = `INSERT INTO messages (channel_id, bucket, message_id, author_id, content, type) VALUES (?, ?, ?, ?, ?, ?)`
-	cqlListMessagesWithCursor = `SELECT message_id, author_id, content, edits, type FROM messages WHERE channel_id = ? AND bucket = ? AND message_id < ? LIMIT ?`
-	cqlListMessagesAfter      = `SELECT message_id, author_id, content, edits, type FROM messages WHERE channel_id = ? AND bucket = ? AND message_id > ? ORDER BY message_id ASC LIMIT ?`
-	cqlListLatestMessages     = `SELECT message_id, author_id, content, edits, type FROM messages WHERE channel_id = ? AND bucket = ? LIMIT ?`
-	cqlGetMessage             = `SELECT author_id, content, edits, type FROM messages WHERE channel_id = ? AND bucket = ? AND message_id = ?`
+	cqlInsertMessage          = `INSERT INTO messages (channel_id, bucket, message_id, author_id, content, type, reply_to) VALUES (?, ?, ?, ?, ?, ?, ?)`
+	cqlListMessagesWithCursor = `SELECT message_id, author_id, content, edits, type, reply_to FROM messages WHERE channel_id = ? AND bucket = ? AND message_id < ? LIMIT ?`
+	cqlListMessagesAfter      = `SELECT message_id, author_id, content, edits, type, reply_to FROM messages WHERE channel_id = ? AND bucket = ? AND message_id > ? ORDER BY message_id ASC LIMIT ?`
+	cqlListLatestMessages     = `SELECT message_id, author_id, content, edits, type, reply_to FROM messages WHERE channel_id = ? AND bucket = ? LIMIT ?`
+	cqlGetMessage             = `SELECT author_id, content, edits, type, reply_to FROM messages WHERE channel_id = ? AND bucket = ? AND message_id = ?`
 	cqlEditMessage            = `UPDATE messages SET content = ?, edits = edits + [?] WHERE channel_id = ? AND bucket = ? AND message_id = ?`
 	cqlDeleteMessage          = `DELETE FROM messages WHERE channel_id = ? AND bucket = ? AND message_id = ?`
 )
@@ -212,7 +212,12 @@ func (s *ScyllaStore) Insert(ctx context.Context, msg *Message) error {
 	}
 	bucket := BucketForMessageID(messageID)
 
-	if err := s.session.Query(cqlInsertMessage, channelID, bucket, messageID, authorID, msg.Content, 0).WithContext(ctx).Exec(); err != nil {
+	var replyTo int64
+	if msg.ReplyTo != nil && *msg.ReplyTo != "" {
+		replyTo, _ = strconv.ParseInt(*msg.ReplyTo, 10, 64)
+	}
+
+	if err := s.session.Query(cqlInsertMessage, channelID, bucket, messageID, authorID, msg.Content, msg.Type, replyTo).WithContext(ctx).Exec(); err != nil {
 		return err
 	}
 
@@ -231,9 +236,10 @@ func (s *ScyllaStore) Get(ctx context.Context, channelID, messageID int64) (*Mes
 	var content string
 	var edits []string
 	var msgType int16
+	var replyTo int64
 
 	iter := s.session.Query(cqlGetMessage, channelID, bucket, messageID).WithContext(ctx)
-	if err := iter.Scan(&authorID, &content, &edits, &msgType); err != nil {
+	if err := iter.Scan(&authorID, &content, &edits, &msgType, &replyTo); err != nil {
 		if errors.Is(err, gocql.ErrNotFound) {
 			return nil, ErrUnknownMessage
 		}
@@ -246,7 +252,13 @@ func (s *ScyllaStore) Get(ctx context.Context, channelID, messageID int64) (*Mes
 		ChannelID: strconv.FormatInt(channelID, 10),
 		Author:    AuthorRef{ID: strconv.FormatInt(authorID, 10)},
 		Content:   content,
+		Type:      msgType,
 		CreatedAt: createdAt,
+	}
+
+	if replyTo > 0 {
+		rt := strconv.FormatInt(replyTo, 10)
+		msg.ReplyTo = &rt
 	}
 
 	if len(edits) > 0 {
@@ -311,8 +323,9 @@ func (s *ScyllaStore) List(ctx context.Context, channelID int64, before Cursor, 
 			var content string
 			var edits []string
 			var msgType int16
+			var replyTo int64
 
-			if err := scanner.Scan(&mid, &authorID, &content, &edits, &msgType); err != nil {
+			if err := scanner.Scan(&mid, &authorID, &content, &edits, &msgType, &replyTo); err != nil {
 				return nil, err
 			}
 
@@ -322,7 +335,12 @@ func (s *ScyllaStore) List(ctx context.Context, channelID int64, before Cursor, 
 				ChannelID: strconv.FormatInt(channelID, 10),
 				Author:    AuthorRef{ID: strconv.FormatInt(authorID, 10)},
 				Content:   content,
+				Type:      msgType,
 				CreatedAt: createdAt,
+			}
+			if replyTo > 0 {
+				rt := strconv.FormatInt(replyTo, 10)
+				m.ReplyTo = &rt
 			}
 			if len(edits) > 0 {
 				editTime := createdAt.Add(time.Minute)
@@ -380,8 +398,9 @@ func (s *ScyllaStore) ListAfter(ctx context.Context, channelID int64, after Curs
 			var content string
 			var edits []string
 			var msgType int16
+			var replyTo int64
 
-			if err := scanner.Scan(&mid, &authorID, &content, &edits, &msgType); err != nil {
+			if err := scanner.Scan(&mid, &authorID, &content, &edits, &msgType, &replyTo); err != nil {
 				return nil, err
 			}
 
@@ -391,7 +410,12 @@ func (s *ScyllaStore) ListAfter(ctx context.Context, channelID int64, after Curs
 				ChannelID: strconv.FormatInt(channelID, 10),
 				Author:    AuthorRef{ID: strconv.FormatInt(authorID, 10)},
 				Content:   content,
+				Type:      msgType,
 				CreatedAt: createdAt,
+			}
+			if replyTo > 0 {
+				rt := strconv.FormatInt(replyTo, 10)
+				m.ReplyTo = &rt
 			}
 			if len(edits) > 0 {
 				editTime := createdAt.Add(time.Minute)

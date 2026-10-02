@@ -364,6 +364,12 @@ func messagesEqual(a, b Message) bool {
 	if a.Author.ID != b.Author.ID {
 		return false
 	}
+	if a.Type != 0 && b.Type != 0 && a.Type != b.Type {
+		return false
+	}
+	if a.ReplyTo != nil && b.ReplyTo != nil && *a.ReplyTo != *b.ReplyTo {
+		return false
+	}
 	// Verify timestamp equivalence normalized to millisecond precision
 	// (Postgres timestamptz microsecond vs Snowflake epoch millisecond)
 	if a.CreatedAt.UnixMilli() != b.CreatedAt.UnixMilli() {

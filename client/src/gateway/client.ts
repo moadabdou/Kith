@@ -329,6 +329,18 @@ export class GatewayClient {
   }
 
   /**
+   * Clears the outgoing typing throttle for a channel (or all channels).
+   * Called when a message is sent or on channel switch.
+   */
+  public resetTypingThrottle(channelId?: string): void {
+    if (channelId) {
+      this.typingLastSentAt.delete(channelId)
+    } else {
+      this.typingLastSentAt.clear()
+    }
+  }
+
+  /**
    * Sends Opcode 8 REQUEST_GUILD_MEMBERS. The server streams GUILD_MEMBERS_CHUNK
    * dispatches back; zero matches still emit one empty chunk (chunk_count 1) as
    * the done-signal. Only one in-flight request per connection — the server

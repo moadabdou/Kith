@@ -17,7 +17,7 @@ import {
   validateFile,
   type PendingUpload,
 } from '../../lib/uploads'
-import { remainingMs, typingDisplayName, typingIndicatorText } from '../../lib/typing'
+import { remainingMs, removeTyper, typingDisplayName, typingIndicatorText } from '../../lib/typing'
 import type { Channel, Guild, GuildEmoji, GuildSticker, Member, Message, Role, SearchFilters } from '../../types'
 import { SearchBar } from '../search/SearchBar'
 import { SearchResults } from '../search/SearchResults'
@@ -53,6 +53,7 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
     subscribeToMessageDeletes,
     subscribeToTyping,
     sendTyping,
+    resetTypingThrottle,
     connected,
     onSessionReset,
     subscribeToRoleCreates,
@@ -869,6 +870,7 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
 
     const unsubscribe = subscribeToMessages((newMsg: Message) => {
       if (newMsg.channel_id === channelId) {
+        setTypers((prev) => removeTyper(prev, newMsg.author.id))
         setMessages((prev) => {
           if (prev.some((m) => m.id === newMsg.id)) {
             return prev
@@ -1179,6 +1181,11 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
     return () => clearInterval(sweep)
   }, [])
 
+  // Channel switch reset
+  useEffect(() => {
+    setTypers(new Map())
+  }, [currentChannel?.id])
+
   // Session reset
   useEffect(() => {
     return onSessionReset(() => setTypers(new Map()))
@@ -1214,6 +1221,8 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
       setInputText('')
       setPending([])
       setReplyingTo(null)
+      resetTypingThrottle(channelId)
+      if (user) setTypers((prev) => removeTyper(prev, user.id))
       setMessages((prev) => {
         if (prev.some((m) => m.id === sent.id)) return prev
         return [...prev, sent]
@@ -1243,6 +1252,8 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
         [sticker.id]
       )
       setReplyingTo(null)
+      resetTypingThrottle(currentChannel.id)
+      if (user) setTypers((prev) => removeTyper(prev, user.id))
       setMessages((prev) => {
         if (prev.some((m) => m.id === sent.id)) return prev
         return [...prev, sent]
@@ -1271,6 +1282,8 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
         messageReference
       )
       setReplyingTo(null)
+      resetTypingThrottle(currentChannel.id)
+      if (user) setTypers((prev) => removeTyper(prev, user.id))
       setMessages((prev) => {
         if (prev.some((m) => m.id === sent.id)) return prev
         return [...prev, sent]

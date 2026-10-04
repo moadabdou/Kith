@@ -102,6 +102,10 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
     return gatewayClient.sendTyping(channelId)
   }
 
+  const resetTypingThrottle = (channelId?: string) => {
+    gatewayClient.resetTypingThrottle(channelId)
+  }
+
   const subscribeToTyping = (callback: (typing: TypingStartPayload) => void) => {
     return gatewayClient.onTypingStart(callback)
   }
@@ -193,6 +197,7 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
         subscribeToMemberChunks,
         subscribeToPresenceUpdates,
         sendTyping,
+        resetTypingThrottle,
         subscribeToTyping,
         subscribeToMemberAdds,
         subscribeToMemberRemoves,

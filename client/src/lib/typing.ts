@@ -40,3 +40,15 @@ export function typingIndicatorText(names: string[]): string | null {
   if (names.length === 2) return `${names[0]} and ${names[1]} are typing…`
   return 'Several people are typing…'
 }
+
+/**
+ * Removes a user from an active typers Map.
+ * Returns a new Map if the user was present, or the original Map reference if unchanged.
+ */
+export function removeTyper<T>(typers: Map<string, T>, userId: string): Map<string, T> {
+  if (!typers.has(userId)) return typers
+  const next = new Map(typers)
+  next.delete(userId)
+  return next
+}
+

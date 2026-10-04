@@ -374,6 +374,19 @@ describe('Gateway Client Reconnection & RESUME (#26)', () => {
       expect(client.sendTyping('chan-2')).toBe(true) // different channel passes
       expect(typingFrames(ws).length).toBe(2)
     })
+
+    it('resetTypingThrottle resets the cooldown immediately upon message send', () => {
+      const client = new GatewayClient()
+      client.connect('mock-jwt-token')
+      const ws = MockWebSocket.instances[0]
+      ws.receiveJson({ op: 10, d: { heartbeat_interval: 30000 } })
+
+      expect(client.sendTyping('chan-1')).toBe(true)
+      expect(client.sendTyping('chan-1')).toBe(false) // throttled
+
+      client.resetTypingThrottle('chan-1')
+      expect(client.sendTyping('chan-1')).toBe(true) // allowed immediately
+    })
   })
 
   describe('Voice State Lifecycle (#68, #69)', () => {

@@ -47,6 +47,7 @@ export interface GatewayContextValue {
   subscribeToMemberChunks: (callback: (chunk: MemberChunkPayload) => void) => () => void
   subscribeToPresenceUpdates: (callback: (update: PresenceUpdatePayload) => void) => () => void
   sendTyping: (channelId: string) => boolean
+  resetTypingThrottle: (channelId?: string) => void
   subscribeToTyping: (callback: (typing: TypingStartPayload) => void) => () => void
   subscribeToMemberAdds: (callback: (payload: MemberAddPayload) => void) => () => void
   subscribeToMemberRemoves: (callback: (payload: MemberRemovePayload) => void) => () => void

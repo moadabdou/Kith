@@ -19,3 +19,4 @@ thiserror = "2.0"
 tower-http = { version = "0.6", features = ["trace", "cors"] }
 dotenvy = "0.15"
 bytes = "1.10"
+futures = "0.3"

@@ -38,6 +38,13 @@ CREATE TABLE IF NOT EXISTS read_states (
     PRIMARY KEY (user_id, channel_id)
 );
 
+-- Exact-recipient index for mention delete-decrements (Issue #122 follow-up).
+CREATE TABLE IF NOT EXISTS message_mention_index (
+    message_id bigint PRIMARY KEY,
+    channel_id bigint,
+    user_ids list<bigint>
+);
+
 CREATE TABLE IF NOT EXISTS message_reactions (
     channel_id bigint,
     message_id bigint,

@@ -11,6 +11,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 
 mod auth;
 mod config;
+mod consumer;
 mod db;
 mod handlers;
 mod model;
@@ -73,6 +74,26 @@ async fn main() -> Result<()> {
         nats,
         jwt_secret: cfg.jwt_secret,
     });
+
+    // Server-side mention counting (Issue #122 follow-up): JetStream durable
+    // consumer turning authoritative mention payloads into per-recipient
+    // mention_count increments. Runs alongside HTTP; shares handles.
+    if let Some(nats_pub) = state.nats.clone() {
+        let db_c = state.db.clone();
+        let pg_c = state.pg.clone();
+        let stream = cfg.nats_stream.clone();
+        let durable = cfg.nats_consumer_durable.clone();
+        let filter = cfg.nats_consumer_filter.clone();
+        tokio::spawn(async move {
+            if let Err(e) =
+                consumer::run_mention_counter(db_c, pg_c, nats_pub, stream, durable, filter).await
+            {
+                error!("mention counter exited: {:?}", e);
+            }
+        });
+    } else {
+        error!("NATS unconfigured; mention counting disabled (badges clear-only)");
+    }
 
     let app = Router::new()
         .route("/api/channels/{id}/messages/{mid}/ack", post(ack_message))

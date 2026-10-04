@@ -19,6 +19,12 @@ impl NatsPublisher {
         Ok(Self { client })
     }
 
+    /// Shares the underlying connection for the mention-counter consumer.
+    /// `async_nats::Client` is cheaply cloneable and multiplexed.
+    pub fn client(&self) -> Client {
+        self.client.clone()
+    }
+
     pub async fn publish_ack(&self, user_id: i64, channel_id: i64, message_id: i64) {
         let virtual_guild = format!("user_{}", user_id);
         let event = GatewayEvent {

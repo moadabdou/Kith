@@ -58,4 +58,28 @@ impl PgDb {
 
         Ok(())
     }
+
+    /// Distinct member ids holding any of the given roles (role-mention
+    /// expansion for the mention counter).
+    pub async fn member_ids_for_roles(&self, guild_id: i64, role_ids: &[i64]) -> Result<Vec<i64>> {
+        let ids = sqlx::query_scalar::<_, i64>(
+            "SELECT DISTINCT user_id FROM member_roles WHERE guild_id = $1 AND role_id = ANY($2)",
+        )
+        .bind(guild_id)
+        .bind(role_ids)
+        .fetch_all(&self.pool)
+        .await
+        .context("Failed to query role members")?;
+        Ok(ids)
+    }
+
+    /// All member ids of a guild (@everyone expansion for the counter).
+    pub async fn member_ids(&self, guild_id: i64) -> Result<Vec<i64>> {
+        let ids = sqlx::query_scalar::<_, i64>("SELECT user_id FROM members WHERE guild_id = $1")
+            .bind(guild_id)
+            .fetch_all(&self.pool)
+            .await
+            .context("Failed to query guild members")?;
+        Ok(ids)
+    }
 }

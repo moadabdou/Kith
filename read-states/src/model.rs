@@ -37,6 +37,55 @@ pub struct GatewayEvent<T> {
     pub payload: T,
 }
 
+/// Inbound bus envelope for the mention counter (Deserialize only).
+#[derive(Debug, Clone, Deserialize)]
+pub struct BusEnvelope {
+    #[serde(rename = "type", default)]
+    pub event_type: String,
+    #[serde(default)]
+    pub version: i32,
+    #[serde(default)]
+    pub guild_id: String,
+    #[serde(default)]
+    pub payload: serde_json::Value,
+}
+
+/// Authoritative mention payload shape from the API (Issue #121).
+/// All fields tolerant: unknown senders must never poison the consumer.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct MessageCreatePayload {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub channel_id: String,
+    #[serde(default)]
+    pub guild_id: String,
+    #[serde(default)]
+    pub author: MessageAuthor,
+    #[serde(default)]
+    pub mentions: Vec<String>,
+    #[serde(default)]
+    pub mention_roles: Vec<String>,
+    #[serde(default)]
+    pub mention_everyone: bool,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct MessageAuthor {
+    #[serde(default)]
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct MessageDeletePayload {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub channel_id: String,
+    #[serde(default)]
+    pub guild_id: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ErrorResponse {
     pub code: i32,

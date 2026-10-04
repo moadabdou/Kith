@@ -221,7 +221,7 @@ func parseKlipyResponse(body []byte, page, perPage int) (*GIFResponse, error) {
 			PerPage     int  `json:"per_page"`
 			HasNext     bool `json:"has_next"`
 		} `json:"data"`
-		// Structure 2: Tenor compatibility envelope { "results": [ ... ], "next": "..." }
+		// Alternative KLIPY envelope format { "results": [ ... ], "next": "..." }
 		Results []struct {
 			ID           string `json:"id"`
 			Title        string `json:"title"`
@@ -312,7 +312,7 @@ func parseKlipyResponse(body []byte, page, perPage int) (*GIFResponse, error) {
 		}, nil
 	}
 
-	// Check Tenor compatibility format
+	// Check alternative KLIPY format
 	if len(klipyEnvelope.Results) > 0 {
 		for _, r := range klipyEnvelope.Results {
 			gifURL := r.MediaFormats.GIF.URL

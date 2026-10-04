@@ -45,13 +45,25 @@ func TestFallback_Search(t *testing.T) {
 	}
 	found := false
 	for _, item := range resp.Results {
-		if item.Title == "Carlton Dance" {
+		if item.Title == "Dance Party" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("expected to find 'Carlton Dance' in search results")
+		t.Errorf("expected to find 'Dance Party' in search results")
+	}
+}
+
+func TestGetFallbackAsset(t *testing.T) {
+	data, ok := GetFallbackAsset("dance-party.gif")
+	if !ok || len(data) == 0 {
+		t.Fatalf("expected to find dance-party.gif asset, got ok=%v len=%d", ok, len(data))
+	}
+
+	_, notFound := GetFallbackAsset("non-existent.gif")
+	if notFound {
+		t.Errorf("expected non-existent.gif to return false")
 	}
 }
 

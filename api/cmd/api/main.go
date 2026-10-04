@@ -556,6 +556,7 @@ func main() {
 		auth.RequireAuth(jwt, http.HandlerFunc(gifsHandler.Search)))
 	mux.Handle("GET /api/gifs/categories",
 		auth.RequireAuth(jwt, http.HandlerFunc(gifsHandler.Categories)))
+	mux.HandleFunc("GET /api/gifs/fallback/{name}", gifsHandler.FallbackAsset)
 
 	srv := &http.Server{
 		Addr:              ":" + port,

@@ -62,6 +62,21 @@ func (h *Handler) Categories(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, cats)
 }
 
+// FallbackAsset handles GET /api/gifs/fallback/{name}.
+func (h *Handler) FallbackAsset(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	data, ok := GetFallbackAsset(name)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	w.Header().Set("Content-Type", "image/gif")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
 func parseQueryInt(r *http.Request, key string, fallback int) int {
 	v := r.URL.Query().Get(key)
 	if v == "" {

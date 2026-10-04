@@ -22,11 +22,11 @@ describe('extractGifUrls', () => {
   })
 
   it('extracts multiple unique GIF URLs from mixed content', () => {
-    const content = 'Two gifs: https://media.klipy.com/gifs/cat1 and https://media.tenor.com/view/dog-gif. Same again https://media.klipy.com/gifs/cat1'
+    const content = 'Two gifs: https://media.klipy.com/gifs/cat1 and https://static.klipy.com/dog-anim.gif. Same again https://media.klipy.com/gifs/cat1'
     const urls = extractGifUrls(content)
     expect(urls).toEqual([
       'https://media.klipy.com/gifs/cat1',
-      'https://media.tenor.com/view/dog-gif',
+      'https://static.klipy.com/dog-anim.gif',
     ])
   })
 

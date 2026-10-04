@@ -332,9 +332,10 @@ func main() {
 
 	// GIF Picker Proxy & Caching (Phase 9, Issue #119)
 	klipyAPIKey := envOr("KLIPY_API_KEY", "")
-	gifsSvc := gifs.NewService(klipyAPIKey, redisClient, nil)
+	outboundProxyURL := envOr("OUTBOUND_PROXY_URL", envOr("HTTPS_PROXY", envOr("HTTP_PROXY", "")))
+	gifsSvc := gifs.NewService(klipyAPIKey, outboundProxyURL, redisClient, nil)
 	gifsHandler := gifs.NewHandler(gifsSvc)
-	slog.Info("gifs service initialized", "has_klipy_key", klipyAPIKey != "")
+	slog.Info("gifs service initialized", "has_klipy_key", klipyAPIKey != "", "has_proxy", outboundProxyURL != "")
 
 	// Search Rung 2: Meilisearch query engine with ScyllaDB hydration & reconciliation scanner (plan/04 §3–4)
 	meiliURL := envOr("MEILISEARCH_URL", "")

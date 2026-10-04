@@ -29,9 +29,24 @@ type Service struct {
 	httpClient *http.Client
 }
 
-func NewService(apiKey string, redis redis.UniversalClient, httpClient *http.Client) *Service {
+func NewService(apiKey string, proxyURL string, redis redis.UniversalClient, httpClient *http.Client) *Service {
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: requestTimeout}
+		transport := &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+		}
+		p := strings.TrimSpace(proxyURL)
+		if p != "" {
+			if !strings.HasPrefix(p, "http://") && !strings.HasPrefix(p, "https://") {
+				p = "http://" + p
+			}
+			if u, err := url.Parse(p); err == nil {
+				transport.Proxy = http.ProxyURL(u)
+			}
+		}
+		httpClient = &http.Client{
+			Transport: transport,
+			Timeout:   requestTimeout,
+		}
 	}
 	return &Service{
 		apiKey:     strings.TrimSpace(apiKey),

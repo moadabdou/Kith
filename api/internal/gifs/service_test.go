@@ -8,7 +8,7 @@ import (
 )
 
 func TestFallback_Trending(t *testing.T) {
-	svc := NewService("", nil, nil)
+	svc := NewService("", "", nil, nil)
 	ctx := context.Background()
 
 	resp, err := svc.Trending(ctx, 1, 5)
@@ -31,7 +31,7 @@ func TestFallback_Trending(t *testing.T) {
 }
 
 func TestFallback_Search(t *testing.T) {
-	svc := NewService("", nil, nil)
+	svc := NewService("", "", nil, nil)
 	ctx := context.Background()
 
 	// Search for 'dance'
@@ -68,7 +68,7 @@ func TestGetFallbackAsset(t *testing.T) {
 }
 
 func TestFallback_Categories(t *testing.T) {
-	svc := NewService("", nil, nil)
+	svc := NewService("", "", nil, nil)
 	ctx := context.Background()
 
 	cats, err := svc.Categories(ctx)
@@ -172,7 +172,7 @@ func TestKlipyMockServerFetch(t *testing.T) {
 	}))
 	defer mockServer.Close()
 
-	svc := NewService("mock-key", nil, mockServer.Client())
+	svc := NewService("mock-key", "", nil, mockServer.Client())
 	ctx := context.Background()
 
 	resp, err := svc.fetchFromKlipy(ctx, mockServer.URL, 1, 24)

@@ -30,6 +30,37 @@ describe('SearchResultContent', () => {
     expect(html).toContain('src="/emojis/555444333222111.gif"')
     expect(html).toContain('alt=":party_parrot:"')
   })
+
+  it('resolves user mention syntax to display name pills', () => {
+    const members = [
+      { user: { id: '91598884532490240', username: 'moadabdou', discriminator: '0001' }, nick: null, roles: [], joined_at: '' },
+    ]
+    const content = '<@91598884532490240> hey'
+    const html = renderToStaticMarkup(
+      <SearchResultContent content={content} query="hey" members={members as any} />
+    )
+
+    expect(html).toContain('mention user-mention')
+    expect(html).toContain('@moadabdou')
+    expect(html).not.toContain('<@91598884532490240>')
+    expect(html).toContain('<mark class="search-highlight">hey</mark>')
+  })
+
+  it('resolves nickname over username and role mentions', () => {
+    const members = [
+      { user: { id: '42', username: 'moadabdou', discriminator: '0001' }, nick: 'Mo', roles: [], joined_at: '' },
+    ]
+    const roles = [{ id: '7', name: 'Admins', mentionable: true } as any]
+    const html = renderToStaticMarkup(
+      <SearchResultContent content="<@42> ping <@&7>" query="ping" members={members as any} roles={roles} />
+    )
+
+    expect(html).toContain('@Mo')
+    expect(html).toContain('mention role-mention')
+    expect(html).toContain('@Admins')
+    expect(html).not.toContain('<@42>')
+    expect(html).not.toContain('<@&7>')
+  })
 })
 
 describe('SearchResults Component', () => {

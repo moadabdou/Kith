@@ -1,17 +1,30 @@
 import { useMemo, useRef, useEffect } from 'react'
 import { ArrowRight, ChevronLeft, ChevronRight, Hash, Loader2, Search, User, X } from 'lucide-react'
 import { highlightMatches } from '../../lib/search'
+import { MarkdownView } from '../../lib/markdown'
 import { memberNameColor } from '../../lib/members'
 import type { Channel, Member, Message, Role } from '../../types'
 import { AttachmentView } from '../chat/AttachmentView'
 import { SearchFilterDropdown } from './SearchFilterDropdown'
 
-export function SearchResultContent({ content, query }: { content: string; query: string }): React.ReactNode {
+export function SearchResultContent({
+  content,
+  query,
+  members,
+  roles,
+}: {
+  content: string
+  query: string
+  members?: Member[]
+  roles?: Role[]
+}): React.ReactNode {
   if (!content) return null
 
-  // Split by custom emojis: <:name:id> or <a:name:id>
-  const emojiRegex = /(<a?:[a-zA-Z0-9_]+:\d+>)/g
-  const parts = content.split(emojiRegex)
+  // Split by custom emojis AND mention syntax so the query highlighter and
+  // the markdown mention renderer both operate on the right chunks:
+  // <:name:id>, <a:name:id>, <@id>, <@!id>, <@&id>
+  const tokenRegex = /(<a?:[a-zA-Z0-9_]+:\d+>|<@!?\d+>|<@&\d+>)/g
+  const parts = content.split(tokenRegex)
 
   const elements: React.ReactNode[] = []
 
@@ -54,20 +67,29 @@ export function SearchResultContent({ content, query }: { content: string; query
         elements.push(img)
       }
     } else {
-      const segments = highlightMatches(part, query)
-      segments.forEach((seg, segIdx) => {
-        if (seg.isMatch) {
-          elements.push(
-            <mark key={`m-${partIdx}-${segIdx}`} className="search-highlight">
-              {seg.text}
-            </mark>
-          )
-        } else {
-          elements.push(
-            <span key={`s-${partIdx}-${segIdx}`}>{seg.text}</span>
-          )
-        }
-      })
+      // Mentions (<@id>, <@!id>, <@&id>) render through the same markdown
+      // renderer as chat so names resolve instead of showing raw syntax.
+      const mentionMatch = part.match(/^<@!?(\d+)>$/) || part.match(/^<@&(\d+)>$/)
+      if (mentionMatch) {
+        elements.push(
+          <MarkdownView key={`mention-${partIdx}`} content={part} members={members} roles={roles} />
+        )
+      } else {
+        const segments = highlightMatches(part, query)
+        segments.forEach((seg, segIdx) => {
+          if (seg.isMatch) {
+            elements.push(
+              <mark key={`m-${partIdx}-${segIdx}`} className="search-highlight">
+                {seg.text}
+              </mark>
+            )
+          } else {
+            elements.push(
+              <span key={`s-${partIdx}-${segIdx}`}>{seg.text}</span>
+            )
+          }
+        })
+      }
     }
   })
 
@@ -367,7 +389,7 @@ export function SearchResults({
                   {/* Message Content with Highlighted Query Terms & Custom Emojis */}
                   {msg.content ? (
                     <div className="search-result-text">
-                      <SearchResultContent content={msg.content} query={query} />
+                      <SearchResultContent content={msg.content} query={query} members={members} roles={roles} />
                     </div>
                   ) : null}
 

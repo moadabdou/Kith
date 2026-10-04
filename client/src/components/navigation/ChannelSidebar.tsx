@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Hash,
   Headphones,
@@ -26,6 +26,14 @@ import {
 } from '../../lib/permissions'
 import type { Channel, ChannelLatest, Guild, Member, ReadState } from '../../types'
 import { VoiceStatusBar } from '../voice/VoiceStatusBar'
+import {
+  applyIncomingMention,
+  clearChannelMentions,
+  hydrateMentionCounts,
+  isIdNewer,
+  messageMentionsUser,
+  type MentionCountState,
+} from '../../lib/mentionCounts'
 
 interface ChannelSidebarProps {
   currentGuild: Guild | null
@@ -36,6 +44,11 @@ interface ChannelSidebarProps {
   onOpenInviteModal: () => void
   onOpenServerSettingsModal?: () => void
   onOpenChannelSettingsModal?: (channel: Channel) => void
+  // Unread mention badges (Issue #122). State lives in App so the guild rail
+  // can aggregate per-guild counts; this sidebar is the sole writer.
+  mentionState: MentionCountState
+  setMentionState: React.Dispatch<React.SetStateAction<MentionCountState>>
+  onJumpToMention?: (channelId: string, messageId: string) => void
 }
 
 function isPrivateChannel(channel: Channel, guildId?: string): boolean {
@@ -84,6 +97,9 @@ export function ChannelSidebar({
   onOpenInviteModal,
   onOpenServerSettingsModal,
   onOpenChannelSettingsModal,
+  mentionState,
+  setMentionState,
+  onJumpToMention,
 }: ChannelSidebarProps) {
   const { user, logout } = useAuth()
   const {
@@ -110,6 +126,9 @@ export function ChannelSidebar({
   const [guildMembers, setGuildMembers] = useState<Map<string, Member>>(new Map())
   const [readStates, setReadStates] = useState<Record<string, string>>({}) // channel_id -> last_read_message_id
   const [channelLatestMessage, setChannelLatestMessage] = useState<Record<string, string>>({}) // channel_id -> latest_message_id
+  // Newest counted message per channel: replayed/resumed gateway events older
+  // than this never double-count a badge.
+  const lastCountedRef = useRef<Record<string, string>>({})
 
   const guildId = currentGuild?.id
 
@@ -128,7 +147,8 @@ export function ChannelSidebar({
         latest.map((l) => [l.channel_id, l.last_message_id] as const)
       )
     )
-  }, [])
+    setMentionState((prev) => hydrateMentionCounts(prev, states))
+  }, [setMentionState])
 
   // Hydrate both halves of the unread comparison on login / guild switch:
   // read states (Scylla) + latest-message cursors (bulk endpoint). Without the
@@ -178,6 +198,17 @@ export function ChannelSidebar({
       if (selectedChannelId === msg.channel_id) {
         api.ackMessage(msg.channel_id, msg.id).catch(() => {})
         setReadStates((prev) => ({ ...prev, [msg.channel_id]: msg.id }))
+      } else if (user && msg.channel_id) {
+        // Background channel: feed the mention badge (Issue #122). The open
+        // channel never badges — viewing it is reading it.
+        const lastCounted = lastCountedRef.current[msg.channel_id]
+        if (!lastCounted || isIdNewer(msg.id, lastCounted)) {
+          const roles = guildMembers.get(user.id)?.roles ?? []
+          if (messageMentionsUser(msg, { userId: user.id, roleIds: roles })) {
+            lastCountedRef.current[msg.channel_id] = msg.id
+            setMentionState((prev) => applyIncomingMention(prev, msg.channel_id, msg.id))
+          }
+        }
       }
     })
 
@@ -189,13 +220,15 @@ export function ChannelSidebar({
         }
         return prev
       })
+      // An ack (ours, or another tab's) marks the channel read: drop its badge.
+      setMentionState((prev) => clearChannelMentions(prev, ack.channel_id))
     })
 
     return () => {
       unsubMsg()
       unsubAck()
     }
-  }, [subscribeToMessages, subscribeToMessageAcks, selectedChannelId])
+  }, [subscribeToMessages, subscribeToMessageAcks, selectedChannelId, user, guildMembers, setMentionState])
 
   const isChannelUnread = (channelId: string): boolean => {
     if (selectedChannelId === channelId) return false
@@ -212,6 +245,17 @@ export function ChannelSidebar({
     if (latestId) {
       api.ackMessage(channelId, latestId).catch(() => {})
       setReadStates((prev) => ({ ...prev, [channelId]: latestId }))
+    }
+    // Selecting reads the channel: the badge clears (ack carries count 0).
+    setMentionState((prev) => clearChannelMentions(prev, channelId))
+  }
+
+  const handleMentionBadgeClick = (channelId: string) => {
+    // Capture the jump target before handleSelectChannel clears badge state.
+    const targetId = mentionState.firstIds[channelId]
+    handleSelectChannel(channelId)
+    if (targetId) {
+      onJumpToMention?.(channelId, targetId)
     }
   }
 
@@ -388,6 +432,7 @@ export function ChannelSidebar({
               const isActive = selectedChannelId === channel.id
               const isPrivate = isPrivateChannel(channel, currentGuild.id)
               const isUnread = isChannelUnread(channel.id)
+              const mentionCount = mentionState.counts[channel.id] ?? 0
               return (
                 <div
                   key={channel.id}
@@ -403,28 +448,43 @@ export function ChannelSidebar({
                       {channel.name}
                     </span>
                   </div>
-                  {canManageChannels && onOpenChannelSettingsModal && (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        onOpenChannelSettingsModal(channel)
-                      }}
-                      className="channel-settings-btn"
-                      style={{
-                        background: 'none',
-                        border: 'none',
-                        color: 'var(--text-muted)',
-                        cursor: 'pointer',
-                        padding: 2,
-                        display: 'flex',
-                        alignItems: 'center',
-                      }}
-                      title="Edit Channel"
-                    >
-                      <Settings size={14} />
-                    </button>
-                  )}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+                    {mentionCount > 0 && (
+                      <button
+                        type="button"
+                        className="channel-mention-badge"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          handleMentionBadgeClick(channel.id)
+                        }}
+                        title={`${mentionCount} unread mention${mentionCount === 1 ? '' : 's'} — jump to first`}
+                      >
+                        {mentionCount > 99 ? '99+' : mentionCount}
+                      </button>
+                    )}
+                    {canManageChannels && onOpenChannelSettingsModal && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onOpenChannelSettingsModal(channel)
+                        }}
+                        className="channel-settings-btn"
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: 'var(--text-muted)',
+                          cursor: 'pointer',
+                          padding: 2,
+                          display: 'flex',
+                          alignItems: 'center',
+                        }}
+                        title="Edit Channel"
+                      >
+                        <Settings size={14} />
+                      </button>
+                    )}
+                  </div>
                 </div>
               )
             })}

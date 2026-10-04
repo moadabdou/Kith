@@ -37,6 +37,11 @@ interface ChatAreaProps {
   channels?: Channel[]
   guilds?: Guild[]
   onSelectChannel?: (id: string) => void
+  // Pending jump-to-mention request from a sidebar badge click (Issue #122).
+  // Consumed (via onMentionJumpConsumed) once handed to the channel-switch
+  // loader, which jumps after history arrives.
+  mentionJump?: { channelId: string; messageId: string } | null
+  onMentionJumpConsumed?: () => void
 }
 
 interface ActiveTyper {
@@ -45,7 +50,7 @@ interface ActiveTyper {
   expiresAt: number
 }
 
-export function ChatArea({ currentGuild, currentChannel, channels = [], guilds = [], onSelectChannel }: ChatAreaProps) {
+export function ChatArea({ currentGuild, currentChannel, channels = [], guilds = [], onSelectChannel, mentionJump, onMentionJumpConsumed }: ChatAreaProps) {
   const { user } = useAuth()
   const {
     subscribeToMessages,
@@ -692,6 +697,15 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
     setSelectedAuthorId(id)
     setSearchPage(1)
   }
+
+  // Jump-to-mention request from a sidebar badge click (Issue #122): hand it
+  // to the channel-switch loader below, which jumps after history arrives.
+  useEffect(() => {
+    if (mentionJump && currentChannel && mentionJump.channelId === currentChannel.id) {
+      setPendingJumpId(mentionJump.messageId)
+      onMentionJumpConsumed?.()
+    }
+  }, [mentionJump, currentChannel, onMentionJumpConsumed])
 
   // Fetch initial message history on channel change
   useEffect(() => {

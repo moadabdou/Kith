@@ -7,6 +7,8 @@ interface ServerSidebarProps {
   selectedGuildId: string | null
   onSelectGuild: (guildId: string) => void
   onOpenCreateModal: () => void
+  /** guild_id -> outstanding unread mention count (Issue #122). */
+  guildMentionCounts?: Record<string, number>
 }
 
 export function ServerSidebar({
@@ -14,6 +16,7 @@ export function ServerSidebar({
   selectedGuildId,
   onSelectGuild,
   onOpenCreateModal,
+  guildMentionCounts,
 }: ServerSidebarProps) {
   const [hoveredGuildId, setHoveredGuildId] = useState<string | null>(null)
 
@@ -45,6 +48,7 @@ export function ServerSidebar({
       {guilds.map((guild) => {
         const isActive = selectedGuildId === guild.id
         const isHovered = hoveredGuildId === guild.id
+        const hasMentions = (guildMentionCounts?.[guild.id] ?? 0) > 0
 
         return (
           <div
@@ -58,6 +62,13 @@ export function ServerSidebar({
                 isHovered ? 'hover' : ''
               }`}
             />
+            {hasMentions && (
+              <span
+                className="server-mention-dot"
+                title="Unread mentions"
+                aria-label={`Unread mentions in ${guild.name}`}
+              />
+            )}
             <button
               className={`server-icon-btn ${isActive ? 'active' : ''}`}
               onClick={() => onSelectGuild(guild.id)}

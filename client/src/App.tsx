@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from './api'
 import { AuthView } from './components/auth/AuthView'
 import { ChatArea } from './components/chat/ChatArea'
@@ -18,6 +18,7 @@ import { VoiceChannelView } from './components/voice/VoiceChannelView'
 import { GatewayProvider } from './gateway/GatewayContext'
 import { useGateway } from './gateway/useGateway'
 import type { Channel, Guild } from './types'
+import { EMPTY_MENTION_STATE, type MentionCountState } from './lib/mentionCounts'
 
 function getInviteCodeFromUrl(): string | null {
   if (typeof window === 'undefined') return null
@@ -53,6 +54,11 @@ function Dashboard() {
   const [selectedGuildId, setSelectedGuildId] = useState<string | null>(null)
   const [channels, setChannels] = useState<Channel[]>([])
   const [selectedChannelId, setSelectedChannelId] = useState<string | null>(null)
+  // Unread mention badges (Issue #122): single source of truth, written by
+  // ChannelSidebar, aggregated here for the guild rail.
+  const [mentionState, setMentionState] = useState<MentionCountState>(EMPTY_MENTION_STATE)
+  // Pending jump-to-mention request from a sidebar badge click.
+  const [mentionJump, setMentionJump] = useState<{ channelId: string; messageId: string } | null>(null)
 
   const [isGuildModalOpen, setIsGuildModalOpen] = useState(false)
   const [isChannelModalOpen, setIsChannelModalOpen] = useState(false)
@@ -71,6 +77,31 @@ function Dashboard() {
       console.error('Failed to reload channels:', err)
     }
   }, [selectedGuildId])
+
+  // Badge click on a channel row: switch to the channel and jump to the
+  // first unread mention once history loads (consumed by ChatArea).
+  // NOTE: hooks must stay above the early returns below (Rules of Hooks).
+  const handleJumpToMention = useCallback((channelId: string, messageId: string) => {
+    setSelectedChannelId(channelId)
+    setMentionJump({ channelId, messageId })
+  }, [])
+
+  const handleMentionJumpConsumed = useCallback(() => {
+    setMentionJump(null)
+  }, [])
+
+  // Per-guild outstanding mention totals for the server rail, derived from
+  // the channel-keyed badge state.
+  const guildMentionCounts = useMemo(() => {
+    const totals: Record<string, number> = {}
+    for (const ch of channels) {
+      const n = mentionState.counts[ch.id] ?? 0
+      if (n > 0 && ch.guild_id) {
+        totals[ch.guild_id] = (totals[ch.guild_id] ?? 0) + n
+      }
+    }
+    return totals
+  }, [channels, mentionState.counts])
 
   // Fetch guilds when user is authenticated
   useEffect(() => {
@@ -339,6 +370,7 @@ function Dashboard() {
         selectedGuildId={selectedGuildId}
         onSelectGuild={(id) => setSelectedGuildId(id)}
         onOpenCreateModal={() => setIsGuildModalOpen(true)}
+        guildMentionCounts={guildMentionCounts}
       />
 
       {/* 240px Channels Sidebar */}
@@ -351,6 +383,9 @@ function Dashboard() {
         onOpenInviteModal={() => setIsInviteModalOpen(true)}
         onOpenServerSettingsModal={() => setIsServerSettingsModalOpen(true)}
         onOpenChannelSettingsModal={(ch) => setChannelSettingsTarget(ch)}
+        mentionState={mentionState}
+        setMentionState={setMentionState}
+        onJumpToMention={handleJumpToMention}
       />
 
       {/* Main Content Area: Voice Stage if voice channel, ChatArea if text channel */}
@@ -366,6 +401,8 @@ function Dashboard() {
           channels={channels}
           guilds={guilds}
           onSelectChannel={(id) => setSelectedChannelId(id)}
+          mentionJump={mentionJump}
+          onMentionJumpConsumed={handleMentionJumpConsumed}
         />
       )}
 

@@ -226,6 +226,40 @@ body {
   background-color: var(--text-header, #ffffff);
 }
 
+/* Unread mention badge (Issue #122): Discord-style red count pill. Coexists
+   with the white unread pill — mentions are a subset of unreads. */
+.channel-mention-badge {
+  flex-shrink: 0;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border: none;
+  border-radius: 9px;
+  background-color: #f23f43;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  cursor: pointer;
+}
+
+.channel-mention-badge:hover {
+  background-color: #da373c;
+}
+
+/* Guild-rail mention dot (Issue #122): red dot beside the server icon when
+   any channel in that guild holds unread mentions. */
+.server-mention-dot {
+  position: absolute;
+  left: 9px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #f23f43;
+  pointer-events: none;
+}
+
 .channel-item .channel-settings-btn {
   opacity: 0;
   transition: opacity 0.15s ease, color 0.15s ease;

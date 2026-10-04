@@ -514,4 +514,56 @@ defmodule Gateway.Guild.ActorTest do
       assert Actor.subscriber_count(gid) == 0
     end
   end
+
+  describe "MESSAGE_CREATE fan-out resets the author's typing cooldown" do
+    test "typing -> message -> typing within 8s is broadcast, not dropped" do
+      alias Gateway.Typing.RateLimiter
+
+      gid = "99900000000000009"
+      user_id = "user_fanout_typer"
+      channel_id = "chan_fanout_1"
+
+      RateLimiter.reset()
+      assert :ok = RateLimiter.check_rate(user_id, channel_id)
+      assert {:rate_limited, _} = RateLimiter.check_rate(user_id, channel_id)
+
+      msg_event = %{
+        "type" => "MESSAGE_CREATE",
+        "version" => 1,
+        "guild_id" => gid,
+        "payload" => %{
+          "id" => "msg-fanout-1",
+          "channel_id" => channel_id,
+          "guild_id" => gid,
+          "author" => %{"id" => user_id, "username" => "alice", "discriminator" => "0001"},
+          "content" => "first message"
+        }
+      }
+
+      # No actor needed: the bucket clear runs synchronously in route_fanout,
+      # before the hosting-node gate (buckets are node-local ETS).
+      assert :ok = Actor.route_fanout(gid, msg_event)
+
+      # New typing episode: the next trigger passes immediately.
+      assert :ok = RateLimiter.check_rate(user_id, channel_id)
+    end
+
+    test "MESSAGE_CREATE without author leaves buckets untouched" do
+      alias Gateway.Typing.RateLimiter
+
+      gid = "99900000000000009"
+
+      RateLimiter.reset()
+      assert :ok = RateLimiter.check_rate("u_fanout_other", "c_fanout_1")
+
+      authorless = %{
+        "type" => "MESSAGE_CREATE",
+        "guild_id" => gid,
+        "payload" => %{"id" => "m-x", "channel_id" => "c_fanout_1", "content" => "hi"}
+      }
+
+      assert :ok = Actor.route_fanout(gid, authorless)
+      assert {:rate_limited, _} = RateLimiter.check_rate("u_fanout_other", "c_fanout_1")
+    end
+  end
 end

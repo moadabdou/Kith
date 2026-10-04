@@ -96,4 +96,85 @@ defmodule Gateway.Typing.RateLimiterTest do
     assert :ets.lookup(table, {"u_recent", "c_recent"}) != []
     assert :ets.lookup(table, {"u_old", "c_old"}) == []
   end
+
+  test "clear drops a single bucket so the next typing trigger passes immediately" do
+    user_id = "user_clear_1"
+    channel_id = "chan_clear_1"
+
+    assert :ok = RateLimiter.check_rate(user_id, channel_id)
+    assert {:rate_limited, _} = RateLimiter.check_rate(user_id, channel_id)
+
+    assert :ok = RateLimiter.clear(user_id, channel_id)
+
+    # New typing episode: allowed without waiting out the 8s cooldown
+    assert :ok = RateLimiter.check_rate(user_id, channel_id)
+  end
+
+  test "clear is scoped to the given (user_id, channel_id) tuple" do
+    assert :ok = RateLimiter.check_rate("u_clear_a", "c_clear_1")
+    assert :ok = RateLimiter.check_rate("u_clear_a", "c_clear_2")
+
+    assert :ok = RateLimiter.clear("u_clear_a", "c_clear_1")
+
+    assert :ok = RateLimiter.check_rate("u_clear_a", "c_clear_1")
+    assert {:rate_limited, _} = RateLimiter.check_rate("u_clear_a", "c_clear_2")
+  end
+
+  test "clear on a missing bucket is a no-op" do
+    assert :ok = RateLimiter.clear("nobody", "nowhere")
+    assert RateLimiter.count() == 0
+  end
+
+  test "clear_on_message clears the author's bucket for a real MESSAGE_CREATE shape" do
+    user_id = "user_com_1"
+    channel_id = "chan_com_1"
+
+    assert :ok = RateLimiter.check_rate(user_id, channel_id)
+    assert {:rate_limited, _} = RateLimiter.check_rate(user_id, channel_id)
+
+    event = %{
+      "type" => "MESSAGE_CREATE",
+      "version" => 1,
+      "guild_id" => "guild_com_1",
+      "payload" => %{
+        "id" => "msg-com-1",
+        "channel_id" => channel_id,
+        "guild_id" => "guild_com_1",
+        "author" => %{"id" => user_id, "username" => "alice", "discriminator" => "0001"},
+        "content" => "hello"
+      }
+    }
+
+    assert :cleared = RateLimiter.clear_on_message(event)
+    assert :ok = RateLimiter.check_rate(user_id, channel_id)
+  end
+
+  test "clear_on_message skips non-message events and authorless messages" do
+    assert :ok = RateLimiter.check_rate("u_com_x", "c_com_x")
+
+    assert :skipped = RateLimiter.clear_on_message(%{"type" => "TYPING_START"})
+    assert :skipped = RateLimiter.clear_on_message(%{"type" => "MESSAGE_UPDATE", "payload" => %{}})
+
+    authorless = %{
+      "type" => "MESSAGE_CREATE",
+      "payload" => %{"id" => "msg-com-2", "channel_id" => "c_com_x", "content" => "no author"}
+    }
+
+    assert :skipped = RateLimiter.clear_on_message(authorless)
+
+    # Untouched bucket still rate-limits
+    assert {:rate_limited, _} = RateLimiter.check_rate("u_com_x", "c_com_x")
+  end
+
+  test "clear_on_message never raises on malformed MESSAGE_CREATE shapes" do
+    assert :skipped = RateLimiter.clear_on_message(%{"type" => "MESSAGE_CREATE"})
+    assert :skipped = RateLimiter.clear_on_message(%{"type" => "MESSAGE_CREATE", "payload" => "junk"})
+    assert :skipped = RateLimiter.clear_on_message(%{"type" => "MESSAGE_CREATE", "payload" => %{"author" => "junk"}})
+
+    assert :skipped =
+             RateLimiter.clear_on_message(%{
+               "type" => "MESSAGE_CREATE",
+               "payload" => %{"author" => %{}, "channel_id" => ""}
+             })
+  end
 end

@@ -88,6 +88,50 @@ defmodule Gateway.Typing.RateLimiter do
   end
 
   @doc """
+  Clears the rate-limit bucket for a single `(user_id, channel_id)` tuple.
+
+  Called when the user sends a message in the channel: the send proves the
+  previous typing episode is over, so the next typing trigger starts a new
+  episode immediately instead of being dropped by the stale 8s cooldown
+  (client #120 follow-up: without this, the client's post-send typing frame
+  is silently dropped and the client throttle then extends the blackout).
+  No-op when the bucket or table does not exist.
+  """
+  def clear(user_id, channel_id) do
+    if :ets.whereis(@table) != :undefined do
+      :ets.delete(@table, {to_string(user_id), to_string(channel_id)})
+    end
+
+    :ok
+  end
+
+  @doc """
+  Clears the typing rate-limit bucket described by a gateway bus event.
+
+  Returns `:cleared` when `event` is a `MESSAGE_CREATE` carrying an author
+  id and channel id, `:skipped` otherwise. Runs on every node at bus
+  consumption time (each node owns its local ETS buckets, and the typer may
+  be connected to any node), so it must stay cheap for non-message events:
+  a single type comparison, no ETS access on the skip path.
+  """
+  def clear_on_message(%{"type" => "MESSAGE_CREATE"} = event) when is_map(event) do
+    payload = if is_map(event["payload"]), do: event["payload"], else: %{}
+    author = if is_map(payload["author"]), do: payload["author"], else: %{}
+
+    user_id = author["id"] || author[:id] || payload["author_id"] || payload["user_id"]
+    channel_id = payload["channel_id"] || event["channel_id"]
+
+    if user_id not in [nil, ""] and channel_id not in [nil, ""] do
+      clear(user_id, channel_id)
+      :cleared
+    else
+      :skipped
+    end
+  end
+
+  def clear_on_message(_event), do: :skipped
+
+  @doc """
   Returns the total number of active rate-limit buckets.
   """
   def count do

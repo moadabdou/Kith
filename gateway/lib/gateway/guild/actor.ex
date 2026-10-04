@@ -338,6 +338,15 @@ defmodule Gateway.Guild.Actor do
     gid = to_string(guild_id)
     type = event["type"] || "UNKNOWN"
 
+    # A sent message ends the author's typing episode: drop their typing
+    # rate-limit bucket so the next typing trigger starts a new episode
+    # immediately. Runs here (pre-gate, every node) because buckets are
+    # node-local ETS and the typer may be connected to any node — hooking
+    # the hosting actor instead would miss the typer's node.
+    if type == "MESSAGE_CREATE" do
+      Gateway.Typing.RateLimiter.clear_on_message(event)
+    end
+
     if type in lane_family() do
       case split_state(gid) do
         {:split, k} ->

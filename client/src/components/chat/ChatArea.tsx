@@ -22,6 +22,7 @@ import type { Channel, Guild, GuildEmoji, GuildSticker, Member, Message, Role, S
 import { SearchBar } from '../search/SearchBar'
 import { SearchResults } from '../search/SearchResults'
 import { AttachmentView } from './AttachmentView'
+import { extractGifUrls } from '../../lib/gifs'
 import { DeleteMessageModal } from './DeleteMessageModal'
 import { MessageInput } from './MessageInput'
 import { MessageToolbar } from './MessageToolbar'
@@ -1256,6 +1257,34 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
     }
   }
 
+  const handleSendGif = async (gifUrl: string) => {
+    if (!currentGuild || !currentChannel || sending) return
+    setSending(true)
+    setError(null)
+    try {
+      const messageReference = replyingTo ? { message_id: replyingTo.id } : undefined
+      const sent = await api.sendMessage(
+        currentGuild.id,
+        currentChannel.id,
+        gifUrl,
+        undefined,
+        messageReference
+      )
+      setReplyingTo(null)
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === sent.id)) return prev
+        return [...prev, sent]
+      })
+      setIsViewingHistory(false)
+      setHasNewer(false)
+      requestAnimationFrame(() => scrollToBottom(true))
+    } catch (err: any) {
+      setError(err.message || 'Failed to send GIF')
+    } finally {
+      setSending(false)
+    }
+  }
+
   // Drag-drop + paste support (Discord-style). Container-level so drops
   // anywhere over the chat surface attach to the visible channel.
   const handleDragEnter = (e: DragEvent) => {
@@ -1599,6 +1628,21 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
                           ))}
                         </div>
                       )}
+                      {(() => {
+                        const gifUrls = extractGifUrls(msg.content)
+                        if (gifUrls.length === 0) return null
+                        return (
+                          <div className="message-gif-embeds" style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '4px' }}>
+                            {gifUrls.map((url, idx) => (
+                              <div key={idx} className="chat-gif-embed">
+                                <a href={url} target="_blank" rel="noopener noreferrer">
+                                  <img src={url} alt="GIF" loading="lazy" />
+                                </a>
+                              </div>
+                            ))}
+                          </div>
+                        )
+                      })()}
                       {msg.reactions && msg.reactions.length > 0 && (
                         <ReactionPills
                           reactions={msg.reactions}
@@ -1704,6 +1748,7 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
             customEmojiGroups={customEmojiGroups}
             customStickerGroups={customStickerGroups}
             onSelectSticker={handleSendSticker}
+            onSendGif={handleSendGif}
           />
         </div>
 

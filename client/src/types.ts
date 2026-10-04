@@ -320,3 +320,26 @@ export interface GuildStickersUpdatePayload {
   guild_id: string
   stickers: GuildSticker[]
 }
+
+export interface GIFItem {
+  id: string
+  title: string
+  url: string
+  preview_url: string
+  width: number
+  height: number
+}
+
+export interface GIFResponse {
+  results: GIFItem[]
+  page: number
+  has_next: boolean
+  next?: string
+}
+
+export interface GIFCategory {
+  name: string
+  search_term: string
+  preview_url: string
+}
+

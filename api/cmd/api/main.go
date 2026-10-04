@@ -19,6 +19,7 @@ import (
 	"github.com/moadabdou/Kith/api/internal/auth"
 	"github.com/moadabdou/Kith/api/internal/emojis"
 	"github.com/moadabdou/Kith/api/internal/events"
+	"github.com/moadabdou/Kith/api/internal/gifs"
 	"github.com/moadabdou/Kith/api/internal/guilds"
 	"github.com/moadabdou/Kith/api/internal/httpx"
 	"github.com/moadabdou/Kith/api/internal/media"
@@ -30,6 +31,7 @@ import (
 	"github.com/moadabdou/Kith/api/pkg/snowflake"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/redis/go-redis/v9"
 )
 
 var httpRequestsTotal = prometheus.NewCounterVec(
@@ -109,6 +111,18 @@ func main() {
 	if err != nil {
 		slog.Error("failed to open database", "error", err)
 		os.Exit(1)
+	}
+
+	var redisClient redis.UniversalClient
+	if redisURL := envOr("REDIS_URL", ""); redisURL != "" {
+		dialCtx, dialCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		if rc, err := ratelimit.Dial(dialCtx, redisURL); err == nil {
+			redisClient = rc
+			slog.Info("redis universal client connected")
+		} else {
+			slog.Warn("failed to connect to redis", "error", err)
+		}
+		dialCancel()
 	}
 	db.SetMaxOpenConns(dbPoolConfig.maxOpen)
 	db.SetMaxIdleConns(dbPoolConfig.maxIdle)
@@ -315,6 +329,12 @@ func main() {
 	emojisHandler := emojis.NewHandler(emojisSvc)
 	messagesSvc.SetEmojiValidator(emojisSvc)
 	slog.Info("guild emojis & stickers service initialized")
+
+	// GIF Picker Proxy & Caching (Phase 9, Issue #119)
+	klipyAPIKey := envOr("KLIPY_API_KEY", "")
+	gifsSvc := gifs.NewService(klipyAPIKey, redisClient, nil)
+	gifsHandler := gifs.NewHandler(gifsSvc)
+	slog.Info("gifs service initialized", "has_klipy_key", klipyAPIKey != "")
 
 	// Search Rung 2: Meilisearch query engine with ScyllaDB hydration & reconciliation scanner (plan/04 §3–4)
 	meiliURL := envOr("MEILISEARCH_URL", "")
@@ -528,6 +548,14 @@ func main() {
 		auth.RequireAuth(jwt, http.HandlerFunc(emojisHandler.CreateSticker)))
 	mux.Handle("DELETE /api/guilds/{id}/stickers/{sticker_id}",
 		auth.RequireAuth(jwt, http.HandlerFunc(emojisHandler.DeleteSticker)))
+
+	// GIF Picker Endpoints (Phase 9, Issue #119)
+	mux.Handle("GET /api/gifs/trending",
+		auth.RequireAuth(jwt, http.HandlerFunc(gifsHandler.Trending)))
+	mux.Handle("GET /api/gifs/search",
+		auth.RequireAuth(jwt, http.HandlerFunc(gifsHandler.Search)))
+	mux.Handle("GET /api/gifs/categories",
+		auth.RequireAuth(jwt, http.HandlerFunc(gifsHandler.Categories)))
 
 	srv := &http.Server{
 		Addr:              ":" + port,

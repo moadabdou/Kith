@@ -5,6 +5,7 @@ import type { PendingUpload } from '../../lib/uploads'
 import { formatBytes } from '../../lib/uploads'
 import { ReplyBar } from './ReplyBar'
 import { ReactionPicker, type ServerEmojiGroup, type ServerStickerGroup } from './ReactionPicker'
+import { GifPicker } from './GifPicker'
 
 function serializeEditable(element: HTMLElement): string {
   let result = ''
@@ -117,6 +118,7 @@ interface MessageInputProps {
   customEmojiGroups?: ServerEmojiGroup[]
   customStickerGroups?: ServerStickerGroup[]
   onSelectSticker?: (sticker: GuildSticker) => void
+  onSendGif?: (url: string) => void
 }
 
 export function MessageInput({
@@ -138,8 +140,10 @@ export function MessageInput({
   customEmojiGroups = [],
   customStickerGroups = [],
   onSelectSticker,
+  onSendGif,
 }: MessageInputProps) {
   const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false)
+  const [isGifPickerOpen, setIsGifPickerOpen] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
   const innerRef = useRef<HTMLDivElement>(null)
 
@@ -358,8 +362,23 @@ export function MessageInput({
           <div className="chat-input-actions" onClick={(e) => e.stopPropagation()}>
             <button
               type="button"
+              className={`gif-picker-btn ${isGifPickerOpen ? 'active' : ''}`}
+              onClick={() => {
+                setIsGifPickerOpen((prev) => !prev)
+                setIsEmojiPickerOpen(false)
+              }}
+              title="Open GIF Picker"
+              aria-label="Open GIF Picker"
+            >
+              <span className="gif-badge">GIF</span>
+            </button>
+            <button
+              type="button"
               className={`emoji-picker-btn ${isEmojiPickerOpen ? 'active' : ''}`}
-              onClick={() => setIsEmojiPickerOpen((prev) => !prev)}
+              onClick={() => {
+                setIsEmojiPickerOpen((prev) => !prev)
+                setIsGifPickerOpen(false)
+              }}
               title="Add Emoji or Sticker"
               aria-label="Add Emoji or Sticker"
             >
@@ -384,6 +403,20 @@ export function MessageInput({
           onClose={() => setIsEmojiPickerOpen(false)}
           customEmojiGroups={customEmojiGroups}
           customStickerGroups={customStickerGroups}
+          position={{ bottom: 65, right: 16 }}
+        />
+      )}
+      {canSend && isGifPickerOpen && (
+        <GifPicker
+          onSelectGif={(url) => {
+            setIsGifPickerOpen(false)
+            if (onSendGif) {
+              onSendGif(url)
+            } else {
+              onChange(inputText ? `${inputText} ${url}` : url)
+            }
+          }}
+          onClose={() => setIsGifPickerOpen(false)}
           position={{ bottom: 65, right: 16 }}
         />
       )}

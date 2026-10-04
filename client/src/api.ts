@@ -1,4 +1,4 @@
-import type { Attachment, AuthResponse, Channel, ChannelLatest, ChannelOverwrite, Guild, GuildEmoji, GuildSticker, Member, Message, PresignedUpload, ReadState, Role, SearchFilters, SearchResponse, User } from './types'
+import type { Attachment, AuthResponse, Channel, ChannelLatest, ChannelOverwrite, GIFCategory, GIFResponse, Guild, GuildEmoji, GuildSticker, Member, Message, PresignedUpload, ReadState, Role, SearchFilters, SearchResponse, User } from './types'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api'
 
@@ -436,6 +436,18 @@ class ApiClient {
     await this.request(`/guilds/${guildId}/stickers/${stickerId}`, {
       method: 'DELETE',
     })
+  }
+
+  async getTrendingGifs(page = 1, perPage = 24): Promise<GIFResponse> {
+    return this.request<GIFResponse>(`/gifs/trending?page=${page}&per_page=${perPage}`)
+  }
+
+  async searchGifs(query: string, page = 1, perPage = 24): Promise<GIFResponse> {
+    return this.request<GIFResponse>(`/gifs/search?q=${encodeURIComponent(query)}&page=${page}&per_page=${perPage}`)
+  }
+
+  async getGifCategories(): Promise<GIFCategory[]> {
+    return this.request<GIFCategory[]>('/gifs/categories')
   }
 }
 

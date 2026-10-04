@@ -20,7 +20,7 @@ import (
 const (
 	defaultCacheTTL = 1 * time.Hour
 	klipyBaseURL    = "https://api.klipy.com/api/v1"
-	requestTimeout  = 3 * time.Second
+	requestTimeout  = 12 * time.Second
 )
 
 type Service struct {
@@ -54,23 +54,18 @@ func (s *Service) Trending(ctx context.Context, page, perPage int) (*GIFResponse
 		return resp, nil
 	}
 
-	var resp *GIFResponse
-	var err error
-
 	if s.apiKey != "" {
 		endpoint := fmt.Sprintf("%s/%s/gifs/trending?page=%d&per_page=%d", klipyBaseURL, s.apiKey, page, perPage)
-		resp, err = s.fetchFromKlipy(ctx, endpoint, page, perPage)
+		resp, err := s.fetchFromKlipy(ctx, endpoint, page, perPage)
 		if err != nil {
 			slog.Warn("klipy trending fetch failed, falling back to local catalog", "error", err)
+		} else if resp != nil {
+			s.saveToCache(ctx, cacheKey, resp)
+			return resp, nil
 		}
 	}
 
-	if resp == nil {
-		resp = getFallbackGIFs("", page, perPage)
-	}
-
-	s.saveToCache(ctx, cacheKey, resp)
-	return resp, nil
+	return getFallbackGIFs("", page, perPage), nil
 }
 
 // Search searches GIFs by query keywords, checking Redis cache first.
@@ -92,23 +87,18 @@ func (s *Service) Search(ctx context.Context, query string, page, perPage int) (
 		return resp, nil
 	}
 
-	var resp *GIFResponse
-	var err error
-
 	if s.apiKey != "" {
 		endpoint := fmt.Sprintf("%s/%s/gifs/search?q=%s&page=%d&per_page=%d", klipyBaseURL, s.apiKey, url.QueryEscape(trimmedQuery), page, perPage)
-		resp, err = s.fetchFromKlipy(ctx, endpoint, page, perPage)
+		resp, err := s.fetchFromKlipy(ctx, endpoint, page, perPage)
 		if err != nil {
 			slog.Warn("klipy search fetch failed, falling back to local catalog", "query", trimmedQuery, "error", err)
+		} else if resp != nil {
+			s.saveToCache(ctx, cacheKey, resp)
+			return resp, nil
 		}
 	}
 
-	if resp == nil {
-		resp = getFallbackGIFs(trimmedQuery, page, perPage)
-	}
-
-	s.saveToCache(ctx, cacheKey, resp)
-	return resp, nil
+	return getFallbackGIFs(trimmedQuery, page, perPage), nil
 }
 
 // Categories returns the trending suggestion categories.

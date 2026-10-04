@@ -36,6 +36,9 @@ smoke:
 chaos-phase0:
 	./scripts/chaos/phase0_kill_api.sh
 
+chaos-phase9-reactions:
+	./scripts/chaos/phase9_reaction_storm.sh
+
 bench-messages-setup:
 	./scripts/bench/setup_bench.sh
 
@@ -48,4 +51,4 @@ bench-search-cliff:
 init-meilisearch:
 	./scripts/init_meilisearch.sh
 
-.PHONY: migrate-up migrate-down migrate-force psql cqlsh scylla-status gateway-test smoke chaos-phase0 bench-messages-setup bench-messages-load bench-search-cliff init-meilisearch
+.PHONY: migrate-up migrate-down migrate-force psql cqlsh scylla-status gateway-test smoke chaos-phase0 chaos-phase9-reactions bench-messages-setup bench-messages-load bench-search-cliff init-meilisearch

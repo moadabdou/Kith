@@ -1,0 +1,84 @@
+{
+  "experiment": "CHAOS-PHASE-9-DRILL-1-REACTION-STORM",
+  "issue": 116,
+  "tag": "drill1",
+  "at": "2026-10-04T23:28:19.520Z",
+  "config": {
+    "users": 500,
+    "rps": 0.8,
+    "burstMult": 3,
+    "durationS": 60,
+    "emojis": [
+      "🔥",
+      "❤️",
+      "🎉",
+      "👍",
+      "😂"
+    ],
+    "rounds": 20,
+    "impairedModel": "burst (no CAP_NET_ADMIN for tc netem in sandbox)"
+  },
+  "phases": [
+    {
+      "name": "clean",
+      "storm": {
+        "sent": 22646,
+        "ok": 22646,
+        "rateLimited": 0,
+        "failed": 0,
+        "rps": 0.8,
+        "p99Ms": 665,
+        "settle": {
+          "sent": 2502,
+          "ok": 2500,
+          "rateLimited": 2,
+          "failed": 0
+        }
+      },
+      "memBeforeKB": 68372,
+      "memAfterKB": 69308,
+      "memGrowthOk": true,
+      "intentVsScylla": {
+        "label": "intent-vs-scylla",
+        "driftCount": 0,
+        "drift": []
+      },
+      "tallyDrift": [],
+      "pass": true
+    },
+    {
+      "name": "impaired-burst",
+      "storm": {
+        "sent": 65188,
+        "ok": 29884,
+        "rateLimited": 35304,
+        "failed": 0,
+        "rps": 2.4000000000000004,
+        "p99Ms": 848,
+        "settle": {
+          "sent": 2502,
+          "ok": 2500,
+          "rateLimited": 2,
+          "failed": 0
+        }
+      },
+      "memBeforeKB": 69235,
+      "memAfterKB": 68480,
+      "memGrowthOk": true,
+      "intentVsScylla": {
+        "label": "intent-vs-scylla",
+        "driftCount": 0,
+        "drift": []
+      },
+      "tallyDrift": [],
+      "pass": true
+    }
+  ],
+  "race": {
+    "replyWins": 20,
+    "deleteWins": 0,
+    "illegal": [],
+    "pass": true
+  },
+  "gate": "PASS"
+}

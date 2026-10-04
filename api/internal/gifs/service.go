@@ -124,7 +124,44 @@ func (s *Service) Categories(ctx context.Context) ([]GIFCategory, error) {
 		}
 	}
 
-	cats := getFallbackCategories()
+	var cats []GIFCategory
+	if s.apiKey != "" {
+		endpoint := fmt.Sprintf("%s/%s/gifs/categories", klipyBaseURL, s.apiKey)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err == nil {
+			res, err := s.httpClient.Do(req)
+			if err == nil {
+				defer res.Body.Close()
+				if res.StatusCode == http.StatusOK {
+					var catResp struct {
+						Result bool `json:"result"`
+						Data   struct {
+							Categories []struct {
+								Category   string `json:"category"`
+								Query      string `json:"query"`
+								PreviewURL string `json:"preview_url"`
+							} `json:"categories"`
+						} `json:"data"`
+					}
+					if err := json.NewDecoder(res.Body).Decode(&catResp); err == nil && len(catResp.Data.Categories) > 0 {
+						for _, c := range catResp.Data.Categories {
+							title := strings.ToUpper(c.Category[:1]) + c.Category[1:]
+							cats = append(cats, GIFCategory{
+								Name:       title,
+								SearchTerm: c.Query,
+								PreviewURL: c.PreviewURL,
+							})
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if len(cats) == 0 {
+		cats = getFallbackCategories()
+	}
+
 	if s.redis != nil {
 		if raw, err := json.Marshal(cats); err == nil {
 			_ = s.redis.Set(ctx, cacheKey, raw, defaultCacheTTL).Err()
@@ -165,8 +202,6 @@ func (s *Service) fetchFromKlipy(ctx context.Context, reqURL string, page, perPa
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "Kith-Discord-Clone/1.0")
 
 	res, err := s.httpClient.Do(req)
 	if err != nil {
@@ -187,181 +222,142 @@ func (s *Service) fetchFromKlipy(ctx context.Context, reqURL string, page, perPa
 	return parseKlipyResponse(body, page, perPage)
 }
 
+type klipyFileFormat struct {
+	URL    string `json:"url"`
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
+}
+
+type klipyFileGroup struct {
+	GIF  klipyFileFormat `json:"gif"`
+	WebP klipyFileFormat `json:"webp"`
+	JPG  klipyFileFormat `json:"jpg"`
+	MP4  klipyFileFormat `json:"mp4"`
+}
+
+type klipyItem struct {
+	ID    any    `json:"id"`
+	Slug  string `json:"slug"`
+	Title string `json:"title"`
+	URL   string `json:"url"`
+	File  struct {
+		HD klipyFileGroup `json:"hd"`
+		MD klipyFileGroup `json:"md"`
+		SM klipyFileGroup `json:"sm"`
+		XS klipyFileGroup `json:"xs"`
+	} `json:"file"`
+}
+
+func (k *klipyItem) toGIFItem() GIFItem {
+	fullURL := k.File.MD.GIF.URL
+	w := k.File.MD.GIF.Width
+	h := k.File.MD.GIF.Height
+	if fullURL == "" {
+		fullURL = k.File.HD.GIF.URL
+		w = k.File.HD.GIF.Width
+		h = k.File.HD.GIF.Height
+	}
+	if fullURL == "" {
+		fullURL = k.File.SM.GIF.URL
+		w = k.File.SM.GIF.Width
+		h = k.File.SM.GIF.Height
+	}
+	if fullURL == "" {
+		fullURL = k.URL
+	}
+
+	prevURL := k.File.SM.GIF.URL
+	if prevURL == "" {
+		prevURL = k.File.XS.GIF.URL
+	}
+	if prevURL == "" {
+		prevURL = fullURL
+	}
+
+	idStr := fmt.Sprintf("%v", k.ID)
+	if idStr == "" || idStr == "<nil>" {
+		idStr = k.Slug
+	}
+
+	title := k.Title
+	if title == "" {
+		title = k.Slug
+	}
+
+	return GIFItem{
+		ID:         idStr,
+		Title:      title,
+		URL:        fullURL,
+		PreviewURL: prevURL,
+		Width:      w,
+		Height:     h,
+	}
+}
+
 func parseKlipyResponse(body []byte, page, perPage int) (*GIFResponse, error) {
-	// Structure 1: KLIPY native envelope { "result": true, "data": { "data": [ ... ], "has_next": true } }
-	var klipyEnvelope struct {
+	// Format 1: trending response where "data" is a list: { "result": true, "data": [ ... ], "has_next": true }
+	var listResp struct {
+		Result      bool        `json:"result"`
+		Data        []klipyItem `json:"data"`
+		CurrentPage int         `json:"current_page"`
+		PerPage     int         `json:"per_page"`
+		HasNext     bool        `json:"has_next"`
+	}
+	if err := json.Unmarshal(body, &listResp); err == nil && len(listResp.Data) > 0 {
+		var results []GIFItem
+		for _, item := range listResp.Data {
+			g := item.toGIFItem()
+			if g.URL != "" {
+				results = append(results, g)
+			}
+		}
+		if len(results) > 0 {
+			var nextToken string
+			if listResp.HasNext {
+				nextToken = strconv.Itoa(page + 1)
+			}
+			return &GIFResponse{
+				Results: results,
+				Page:    page,
+				HasNext: listResp.HasNext,
+				Next:    nextToken,
+			}, nil
+		}
+	}
+
+	// Format 2: search response where "data" is an object: { "result": true, "data": { "data": [ ... ], "has_next": true } }
+	var searchResp struct {
 		Result bool `json:"result"`
 		Data   struct {
-			Data []struct {
-				ID         any    `json:"id"`
-				Title      string `json:"title"`
-				URL        string `json:"url"`
-				PreviewURL string `json:"previewUrl"`
-				Width      int    `json:"width"`
-				Height     int    `json:"height"`
-				Files      struct {
-					GIF struct {
-						URL    string `json:"url"`
-						Width  int    `json:"width"`
-						Height int    `json:"height"`
-					} `json:"gif"`
-					MediumGIF struct {
-						URL    string `json:"url"`
-						Width  int    `json:"width"`
-						Height int    `json:"height"`
-					} `json:"mediumgif"`
-					TinyGIF struct {
-						URL    string `json:"url"`
-						Width  int    `json:"width"`
-						Height int    `json:"height"`
-					} `json:"tinygif"`
-				} `json:"files"`
-			} `json:"data"`
-			CurrentPage int  `json:"current_page"`
-			PerPage     int  `json:"per_page"`
-			HasNext     bool `json:"has_next"`
+			Data        []klipyItem `json:"data"`
+			CurrentPage int         `json:"current_page"`
+			PerPage     int         `json:"per_page"`
+			HasNext     bool        `json:"has_next"`
 		} `json:"data"`
-		// Alternative KLIPY envelope format { "results": [ ... ], "next": "..." }
-		Results []struct {
-			ID           string `json:"id"`
-			Title        string `json:"title"`
-			ItemURL      string `json:"itemurl"`
-			URL          string `json:"url"`
-			MediaFormats struct {
-				GIF struct {
-					URL  string `json:"url"`
-					Dims []int  `json:"dims"`
-				} `json:"gif"`
-				TinyGIF struct {
-					URL  string `json:"url"`
-					Dims []int  `json:"dims"`
-				} `json:"tinygif"`
-			} `json:"media_formats"`
-		} `json:"results"`
-		Next string `json:"next"`
+	}
+	if err := json.Unmarshal(body, &searchResp); err == nil && len(searchResp.Data.Data) > 0 {
+		var results []GIFItem
+		for _, item := range searchResp.Data.Data {
+			g := item.toGIFItem()
+			if g.URL != "" {
+				results = append(results, g)
+			}
+		}
+		if len(results) > 0 {
+			var nextToken string
+			if searchResp.Data.HasNext {
+				nextToken = strconv.Itoa(page + 1)
+			}
+			return &GIFResponse{
+				Results: results,
+				Page:    page,
+				HasNext: searchResp.Data.HasNext,
+				Next:    nextToken,
+			}, nil
+		}
 	}
 
-	if err := json.Unmarshal(body, &klipyEnvelope); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal klipy response: %w", err)
-	}
-
-	var results []GIFItem
-
-	// Check KLIPY native format
-	if len(klipyEnvelope.Data.Data) > 0 {
-		for _, d := range klipyEnvelope.Data.Data {
-			gifURL := d.Files.GIF.URL
-			if gifURL == "" {
-				gifURL = d.Files.MediumGIF.URL
-			}
-			if gifURL == "" {
-				gifURL = d.URL
-			}
-			if gifURL == "" {
-				continue
-			}
-
-			previewURL := d.Files.TinyGIF.URL
-			if previewURL == "" {
-				previewURL = d.PreviewURL
-			}
-			if previewURL == "" {
-				previewURL = gifURL
-			}
-
-			w := d.Files.GIF.Width
-			if w <= 0 {
-				w = d.Width
-			}
-			if w <= 0 {
-				w = 498
-			}
-
-			h := d.Files.GIF.Height
-			if h <= 0 {
-				h = d.Height
-			}
-			if h <= 0 {
-				h = 280
-			}
-
-			results = append(results, GIFItem{
-				ID:         fmt.Sprintf("%v", d.ID),
-				Title:      d.Title,
-				URL:        gifURL,
-				PreviewURL: previewURL,
-				Width:      w,
-				Height:     h,
-			})
-		}
-
-		hasNext := klipyEnvelope.Data.HasNext
-		if !hasNext && len(results) >= perPage {
-			hasNext = true
-		}
-		var nextToken string
-		if hasNext {
-			nextToken = strconv.Itoa(page + 1)
-		}
-
-		return &GIFResponse{
-			Results: results,
-			Page:    page,
-			HasNext: hasNext,
-			Next:    nextToken,
-		}, nil
-	}
-
-	// Check alternative KLIPY format
-	if len(klipyEnvelope.Results) > 0 {
-		for _, r := range klipyEnvelope.Results {
-			gifURL := r.MediaFormats.GIF.URL
-			if gifURL == "" {
-				gifURL = r.URL
-			}
-			if gifURL == "" {
-				gifURL = r.ItemURL
-			}
-			if gifURL == "" {
-				continue
-			}
-
-			previewURL := r.MediaFormats.TinyGIF.URL
-			if previewURL == "" {
-				previewURL = gifURL
-			}
-
-			w := 498
-			h := 280
-			if len(r.MediaFormats.GIF.Dims) >= 2 {
-				w = r.MediaFormats.GIF.Dims[0]
-				h = r.MediaFormats.GIF.Dims[1]
-			}
-
-			results = append(results, GIFItem{
-				ID:         r.ID,
-				Title:      r.Title,
-				URL:        gifURL,
-				PreviewURL: previewURL,
-				Width:      w,
-				Height:     h,
-			})
-		}
-
-		hasNext := klipyEnvelope.Next != "" || len(results) >= perPage
-		return &GIFResponse{
-			Results: results,
-			Page:    page,
-			HasNext: hasNext,
-			Next:    klipyEnvelope.Next,
-		}, nil
-	}
-
-	return &GIFResponse{
-		Results: []GIFItem{},
-		Page:    page,
-		HasNext: false,
-	}, nil
+	return getFallbackGIFs("", page, perPage), nil
 }
 
 func hashString(s string) string {

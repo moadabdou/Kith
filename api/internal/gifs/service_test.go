@@ -94,19 +94,20 @@ func TestKlipyResponseParsing(t *testing.T) {
 					"id": 101,
 					"title": "Excited Cat",
 					"url": "https://cdn.klipy.com/gif/101.gif",
-					"previewUrl": "https://cdn.klipy.com/gif/101_small.gif",
-					"width": 500,
-					"height": 300,
-					"files": {
-						"gif": {
-							"url": "https://cdn.klipy.com/gif/101_full.gif",
-							"width": 500,
-							"height": 300
+					"file": {
+						"md": {
+							"gif": {
+								"url": "https://cdn.klipy.com/gif/101_full.gif",
+								"width": 500,
+								"height": 300
+							}
 						},
-						"tinygif": {
-							"url": "https://cdn.klipy.com/gif/101_tiny.gif",
-							"width": 200,
-							"height": 120
+						"sm": {
+							"gif": {
+								"url": "https://cdn.klipy.com/gif/101_tiny.gif",
+								"width": 200,
+								"height": 120
+							}
 						}
 					}
 				}
@@ -158,8 +159,10 @@ func TestKlipyMockServerFetch(t *testing.T) {
 						"id": "server-1",
 						"title": "Mock GIF",
 						"url": "https://media.klipy.com/1.gif",
-						"files": {
-							"gif": { "url": "https://media.klipy.com/1.gif", "width": 400, "height": 300 }
+						"file": {
+							"md": {
+								"gif": { "url": "https://media.klipy.com/1.gif", "width": 400, "height": 300 }
+							}
 						}
 					}
 				],

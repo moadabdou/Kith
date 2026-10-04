@@ -39,4 +39,10 @@ describe('extractGifUrls', () => {
       'https://example.com/cheer.gif',
     ])
   })
+
+  it('extracts root-relative fallback GIF paths', () => {
+    const content = 'Sent /api/gifs/fallback/excited-happy.gif in chat'
+    const urls = extractGifUrls(content)
+    expect(urls).toEqual(['/api/gifs/fallback/excited-happy.gif'])
+  })
 })

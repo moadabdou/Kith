@@ -1,12 +1,12 @@
 /**
  * Helper to detect and extract GIF URLs from message content.
- * Matches standard .gif files and recognized KLIPY endpoints.
+ * Matches standard .gif files, recognized KLIPY endpoints, and local fallback paths.
  */
 export function extractGifUrls(content: string): string[] {
   if (!content) return []
-  // Match URLs
-  const urlRegex = /https?:\/\/[^\s<>'"]+/gi
-  const matches = content.match(urlRegex) || []
+  // Match absolute URLs or root-relative paths
+  const tokenRegex = /(https?:\/\/[^\s<>'"]+|\/(?:api\/gifs|gifs)\/[^\s<>'"]+)/gi
+  const matches = content.match(tokenRegex) || []
   const gifUrls: string[] = []
 
   for (const rawUrl of matches) {
@@ -16,8 +16,9 @@ export function extractGifUrls(content: string): string[] {
 
     const isGifExtension = lower.includes('.gif')
     const isKlipy = lower.includes('klipy.com')
+    const isLocalGif = lower.startsWith('/api/gifs/') || lower.startsWith('/gifs/')
 
-    if (isGifExtension || isKlipy) {
+    if (isGifExtension || isKlipy || isLocalGif) {
       if (!gifUrls.includes(cleanUrl)) {
         gifUrls.push(cleanUrl)
       }

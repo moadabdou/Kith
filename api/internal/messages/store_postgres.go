@@ -43,10 +43,11 @@ func (s *PostgresStore) Insert(ctx context.Context, msg *Message) error {
 
 	var createdAt time.Time
 	err = tx.QueryRowContext(ctx, `
-		INSERT INTO messages (id, channel_id, author_id, content)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO messages (id, channel_id, author_id, content, mentions, mention_roles, mention_everyone)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING created_at`,
 		id, channelID, authorID, msg.Content,
+		nonNilIDs(parseMentionIDs(msg.Mentions)), nonNilIDs(parseMentionIDs(msg.MentionRoles)), msg.MentionEveryone,
 	).Scan(&createdAt)
 	if err != nil {
 		return ErrUnknownChannel
@@ -74,7 +75,8 @@ func (s *PostgresStore) List(ctx context.Context, channelID int64, before Cursor
 	query := `
 		SELECT m.id::text, m.channel_id::text, coalesce(c.guild_id::text, ''),
 		       u.id::text, u.username, to_char(u.discriminator, 'FM0000'),
-		       m.content, m.created_at, m.edited_at
+		       m.content, m.created_at, m.edited_at,
+		       m.mentions, m.mention_roles, m.mention_everyone
 		FROM messages m
 		JOIN channels c ON c.id = m.channel_id
 		JOIN users u ON u.id = m.author_id
@@ -112,7 +114,8 @@ func (s *PostgresStore) ListAfter(ctx context.Context, channelID int64, after Cu
 	query := `
 		SELECT m.id::text, m.channel_id::text, coalesce(c.guild_id::text, ''),
 		       u.id::text, u.username, to_char(u.discriminator, 'FM0000'),
-		       m.content, m.created_at, m.edited_at
+		       m.content, m.created_at, m.edited_at,
+		       m.mentions, m.mention_roles, m.mention_everyone
 		FROM messages m
 		JOIN channels c ON c.id = m.channel_id
 		JOIN users u ON u.id = m.author_id
@@ -141,14 +144,18 @@ func (s *PostgresStore) ListAfter(ctx context.Context, channelID int64, after Cu
 	return msgs, rows.Err()
 }
 
-// Edit updates the content and edited_at timestamp of a message.
-func (s *PostgresStore) Edit(ctx context.Context, channelID, messageID int64, content string) (*Message, error) {
+// Edit updates the content, mentions and edited_at timestamp of a message.
+func (s *PostgresStore) Edit(ctx context.Context, channelID, messageID int64, content string, mentions ResolvedMentions) (*Message, error) {
 	var m Message
 	err := s.db.QueryRowContext(ctx, `
-		UPDATE messages SET content = $3, edited_at = now()
+		UPDATE messages SET content = $3, edited_at = now(),
+			mentions = $4, mention_roles = $5, mention_everyone = $6
 		WHERE id = $1 AND channel_id = $2
 		RETURNING messages.id::text, messages.channel_id::text`,
 		messageID, channelID, content,
+		nonNilIDs(mentions.UserIDs),
+		nonNilIDs(mentions.RoleIDs),
+		mentions.Everyone,
 	).Scan(&m.ID, &m.ChannelID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrUnknownMessage
@@ -224,10 +231,12 @@ func (s *PostgresStore) Delete(ctx context.Context, channelID, messageID, author
 func (s *PostgresStore) Get(ctx context.Context, channelID, messageID int64) (*Message, error) {
 	var m Message
 	var gid sql.NullString
+	var mentionsText, mentionRolesText sql.NullString
 	err := s.db.QueryRowContext(ctx, `
 		SELECT m.id::text, m.channel_id::text, coalesce(c.guild_id::text, ''),
 		       u.id::text, u.username, to_char(u.discriminator, 'FM0000'),
-		       m.content, m.created_at, m.edited_at
+		       m.content, m.created_at, m.edited_at,
+		       m.mentions, m.mention_roles, m.mention_everyone
 		FROM messages msg
 		JOIN messages m ON m.id = msg.id
 		JOIN channels c ON c.id = m.channel_id
@@ -235,7 +244,8 @@ func (s *PostgresStore) Get(ctx context.Context, channelID, messageID int64) (*M
 		WHERE m.channel_id = $1 AND m.id = $2`, channelID, messageID,
 	).Scan(&m.ID, &m.ChannelID, &gid,
 		&m.Author.ID, &m.Author.Username, &m.Author.Discriminator,
-		&m.Content, &m.CreatedAt, &m.EditedAt)
+		&m.Content, &m.CreatedAt, &m.EditedAt,
+		&mentionsText, &mentionRolesText, &m.MentionEveryone)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrUnknownMessage
 	}
@@ -245,6 +255,8 @@ func (s *PostgresStore) Get(ctx context.Context, channelID, messageID int64) (*M
 	if gid.Valid {
 		m.GuildID = gid.String
 	}
+	m.Mentions = formatMentionIDs(scanPGArrayLiteral(mentionsText.String))
+	m.MentionRoles = formatMentionIDs(scanPGArrayLiteral(mentionRolesText.String))
 	return &m, nil
 }
 

@@ -17,12 +17,12 @@ var _ Store = (*ScyllaStore)(nil)
 
 // Prepared statement CQL constants (plan/03 §5, §8, Issue #111).
 const (
-	cqlInsertMessage          = `INSERT INTO messages (channel_id, bucket, message_id, author_id, content, type, reply_to, sticker_ids) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-	cqlListMessagesWithCursor = `SELECT message_id, author_id, content, edits, type, reply_to, sticker_ids FROM messages WHERE channel_id = ? AND bucket = ? AND message_id < ? LIMIT ?`
-	cqlListMessagesAfter      = `SELECT message_id, author_id, content, edits, type, reply_to, sticker_ids FROM messages WHERE channel_id = ? AND bucket = ? AND message_id > ? ORDER BY message_id ASC LIMIT ?`
-	cqlListLatestMessages     = `SELECT message_id, author_id, content, edits, type, reply_to, sticker_ids FROM messages WHERE channel_id = ? AND bucket = ? LIMIT ?`
-	cqlGetMessage             = `SELECT author_id, content, edits, type, reply_to, sticker_ids FROM messages WHERE channel_id = ? AND bucket = ? AND message_id = ?`
-	cqlEditMessage            = `UPDATE messages SET content = ?, edits = edits + [?] WHERE channel_id = ? AND bucket = ? AND message_id = ?`
+	cqlInsertMessage          = `INSERT INTO messages (channel_id, bucket, message_id, author_id, content, type, reply_to, sticker_ids, mentions, mention_roles, mention_everyone) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	cqlListMessagesWithCursor = `SELECT message_id, author_id, content, edits, type, reply_to, sticker_ids, mentions, mention_roles, mention_everyone FROM messages WHERE channel_id = ? AND bucket = ? AND message_id < ? LIMIT ?`
+	cqlListMessagesAfter      = `SELECT message_id, author_id, content, edits, type, reply_to, sticker_ids, mentions, mention_roles, mention_everyone FROM messages WHERE channel_id = ? AND bucket = ? AND message_id > ? ORDER BY message_id ASC LIMIT ?`
+	cqlListLatestMessages     = `SELECT message_id, author_id, content, edits, type, reply_to, sticker_ids, mentions, mention_roles, mention_everyone FROM messages WHERE channel_id = ? AND bucket = ? LIMIT ?`
+	cqlGetMessage             = `SELECT author_id, content, edits, type, reply_to, sticker_ids, mentions, mention_roles, mention_everyone FROM messages WHERE channel_id = ? AND bucket = ? AND message_id = ?`
+	cqlEditMessage            = `UPDATE messages SET content = ?, edits = edits + [?], mentions = ?, mention_roles = ?, mention_everyone = ? WHERE channel_id = ? AND bucket = ? AND message_id = ?`
 	cqlDeleteMessage          = `DELETE FROM messages WHERE channel_id = ? AND bucket = ? AND message_id = ?`
 	cqlPinMessage             = `INSERT INTO pinned_messages (channel_id, message_id, pinned_at) VALUES (?, ?, ?)`
 	cqlUnpinMessage           = `DELETE FROM pinned_messages WHERE channel_id = ? AND message_id = ?`
@@ -227,7 +227,8 @@ func (s *ScyllaStore) Insert(ctx context.Context, msg *Message) error {
 		stickerIDs = msg.StickerIDs
 	}
 
-	if err := s.session.Query(cqlInsertMessage, channelID, bucket, messageID, authorID, msg.Content, msg.Type, replyTo, stickerIDs).WithContext(ctx).Exec(); err != nil {
+	if err := s.session.Query(cqlInsertMessage, channelID, bucket, messageID, authorID, msg.Content, msg.Type, replyTo, stickerIDs,
+		nonNilIDs(parseMentionIDs(msg.Mentions)), nonNilIDs(parseMentionIDs(msg.MentionRoles)), msg.MentionEveryone).WithContext(ctx).Exec(); err != nil {
 		return err
 	}
 
@@ -248,9 +249,11 @@ func (s *ScyllaStore) Get(ctx context.Context, channelID, messageID int64) (*Mes
 	var msgType int16
 	var replyTo int64
 	var stickerIDs []string
+	var mentionIDs, mentionRoleIDs []int64
+	var mentionEveryone bool
 
 	iter := s.session.Query(cqlGetMessage, channelID, bucket, messageID).WithContext(ctx)
-	if err := iter.Scan(&authorID, &content, &edits, &msgType, &replyTo, &stickerIDs); err != nil {
+	if err := iter.Scan(&authorID, &content, &edits, &msgType, &replyTo, &stickerIDs, &mentionIDs, &mentionRoleIDs, &mentionEveryone); err != nil {
 		if errors.Is(err, gocql.ErrNotFound) {
 			return nil, ErrUnknownMessage
 		}
@@ -259,12 +262,15 @@ func (s *ScyllaStore) Get(ctx context.Context, channelID, messageID int64) (*Mes
 
 	createdAt := snowflake.Time(messageID)
 	msg := &Message{
-		ID:        snowflake.String(messageID),
-		ChannelID: strconv.FormatInt(channelID, 10),
-		Author:    AuthorRef{ID: strconv.FormatInt(authorID, 10)},
-		Content:   content,
-		Type:      msgType,
-		CreatedAt: createdAt,
+		ID:             snowflake.String(messageID),
+		ChannelID:      strconv.FormatInt(channelID, 10),
+		Author:         AuthorRef{ID: strconv.FormatInt(authorID, 10)},
+		Content:        content,
+		Type:           msgType,
+		CreatedAt:      createdAt,
+		Mentions:       formatMentionIDs(mentionIDs),
+		MentionRoles:   formatMentionIDs(mentionRoleIDs),
+		MentionEveryone: mentionEveryone,
 	}
 
 	if replyTo > 0 {
@@ -291,6 +297,49 @@ func (s *ScyllaStore) Get(ctx context.Context, channelID, messageID int64) (*Mes
 	}
 
 	return msg, nil
+}
+
+// scanScyllaMessage scans one message row (including authoritative mentions,
+// Issue #121) from a list-query iterator.
+func scanScyllaMessage(scanner gocql.Scanner, channelID int64) (Message, error) {
+	var mid, authorID int64
+	var content string
+	var edits []string
+	var msgType int16
+	var replyTo int64
+	var stickerIDs []string
+	var mentionIDs, mentionRoleIDs []int64
+	var mentionEveryone bool
+
+	if err := scanner.Scan(&mid, &authorID, &content, &edits, &msgType, &replyTo, &stickerIDs,
+		&mentionIDs, &mentionRoleIDs, &mentionEveryone); err != nil {
+		return Message{}, err
+	}
+
+	createdAt := snowflake.Time(mid)
+	m := Message{
+		ID:              snowflake.String(mid),
+		ChannelID:       strconv.FormatInt(channelID, 10),
+		Author:          AuthorRef{ID: strconv.FormatInt(authorID, 10)},
+		Content:         content,
+		Type:            msgType,
+		CreatedAt:       createdAt,
+		Mentions:        formatMentionIDs(mentionIDs),
+		MentionRoles:    formatMentionIDs(mentionRoleIDs),
+		MentionEveryone: mentionEveryone,
+	}
+	if replyTo > 0 {
+		rt := strconv.FormatInt(replyTo, 10)
+		m.ReplyTo = &rt
+	}
+	if len(edits) > 0 {
+		editTime := createdAt.Add(time.Minute)
+		m.EditedAt = &editTime
+	}
+	if len(stickerIDs) > 0 {
+		m.StickerIDs = stickerIDs
+	}
+	return m, nil
 }
 
 // List queries messages across partition buckets ordered by message_id DESC (plan/03 §4–5).
@@ -339,36 +388,9 @@ func (s *ScyllaStore) List(ctx context.Context, channelID int64, before Cursor, 
 
 		scanner := query.Iter().Scanner()
 		for scanner.Next() {
-			var mid, authorID int64
-			var content string
-			var edits []string
-			var msgType int16
-			var replyTo int64
-			var stickerIDs []string
-
-			if err := scanner.Scan(&mid, &authorID, &content, &edits, &msgType, &replyTo, &stickerIDs); err != nil {
+			m, err := scanScyllaMessage(scanner, channelID)
+			if err != nil {
 				return nil, err
-			}
-
-			createdAt := snowflake.Time(mid)
-			m := Message{
-				ID:        snowflake.String(mid),
-				ChannelID: strconv.FormatInt(channelID, 10),
-				Author:    AuthorRef{ID: strconv.FormatInt(authorID, 10)},
-				Content:   content,
-				Type:      msgType,
-				CreatedAt: createdAt,
-			}
-			if replyTo > 0 {
-				rt := strconv.FormatInt(replyTo, 10)
-				m.ReplyTo = &rt
-			}
-			if len(edits) > 0 {
-				editTime := createdAt.Add(time.Minute)
-				m.EditedAt = &editTime
-			}
-			if len(stickerIDs) > 0 {
-				m.StickerIDs = stickerIDs
 			}
 			msgs = append(msgs, m)
 		}
@@ -427,36 +449,9 @@ func (s *ScyllaStore) ListAfter(ctx context.Context, channelID int64, after Curs
 
 		scanner := s.session.Query(cqlListMessagesAfter, channelID, currentBucket, currentAfterID, remaining).WithContext(ctx).Iter().Scanner()
 		for scanner.Next() {
-			var mid, authorID int64
-			var content string
-			var edits []string
-			var msgType int16
-			var replyTo int64
-			var stickerIDs []string
-
-			if err := scanner.Scan(&mid, &authorID, &content, &edits, &msgType, &replyTo, &stickerIDs); err != nil {
+			m, err := scanScyllaMessage(scanner, channelID)
+			if err != nil {
 				return nil, err
-			}
-
-			createdAt := snowflake.Time(mid)
-			m := Message{
-				ID:        snowflake.String(mid),
-				ChannelID: strconv.FormatInt(channelID, 10),
-				Author:    AuthorRef{ID: strconv.FormatInt(authorID, 10)},
-				Content:   content,
-				Type:      msgType,
-				CreatedAt: createdAt,
-			}
-			if replyTo > 0 {
-				rt := strconv.FormatInt(replyTo, 10)
-				m.ReplyTo = &rt
-			}
-			if len(edits) > 0 {
-				editTime := createdAt.Add(time.Minute)
-				m.EditedAt = &editTime
-			}
-			if len(stickerIDs) > 0 {
-				m.StickerIDs = stickerIDs
 			}
 			msgs = append(msgs, m)
 		}
@@ -488,8 +483,8 @@ func (s *ScyllaStore) ListAfter(ctx context.Context, channelID int64, after Curs
 	return msgs, nil
 }
 
-// Edit appends previous content to edits list and updates message content in ScyllaDB.
-func (s *ScyllaStore) Edit(ctx context.Context, channelID, messageID int64, content string) (*Message, error) {
+// Edit appends previous content to edits list and updates message content and mentions in ScyllaDB.
+func (s *ScyllaStore) Edit(ctx context.Context, channelID, messageID int64, content string, mentions ResolvedMentions) (*Message, error) {
 	bucket := BucketForMessageID(messageID)
 
 	existing, err := s.Get(ctx, channelID, messageID)
@@ -497,13 +492,16 @@ func (s *ScyllaStore) Edit(ctx context.Context, channelID, messageID int64, cont
 		return nil, err
 	}
 
-	if err := s.session.Query(cqlEditMessage, content, existing.Content, channelID, bucket, messageID).WithContext(ctx).Exec(); err != nil {
+	if err := s.session.Query(cqlEditMessage, content, existing.Content,
+		nonNilIDs(mentions.UserIDs), nonNilIDs(mentions.RoleIDs), mentions.Everyone,
+		channelID, bucket, messageID).WithContext(ctx).Exec(); err != nil {
 		return nil, err
 	}
 
 	now := time.Now().UTC()
 	existing.Content = content
 	existing.EditedAt = &now
+	existing.applyMentions(mentions)
 	return existing, nil
 }
 

@@ -35,7 +35,7 @@ func (s *latestStubStore) ListAfter(ctx context.Context, channelID int64, after 
 	return s.tails[channelID], nil
 }
 
-func (s *latestStubStore) Edit(ctx context.Context, channelID, messageID int64, content string) (*Message, error) {
+func (s *latestStubStore) Edit(ctx context.Context, channelID, messageID int64, content string, mentions ResolvedMentions) (*Message, error) {
 	return nil, nil
 }
 

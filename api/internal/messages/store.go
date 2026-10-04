@@ -125,7 +125,7 @@ type Store interface {
 	Insert(ctx context.Context, msg *Message) error
 	List(ctx context.Context, channelID int64, before Cursor, limit int) ([]Message, error)
 	ListAfter(ctx context.Context, channelID int64, after Cursor, limit int) ([]Message, error)
-	Edit(ctx context.Context, channelID, messageID int64, content string) (*Message, error)
+	Edit(ctx context.Context, channelID, messageID int64, content string, mentions ResolvedMentions) (*Message, error)
 	Delete(ctx context.Context, channelID, messageID, authorID int64) error
 	Get(ctx context.Context, channelID, messageID int64) (*Message, error)
 	Pin(ctx context.Context, channelID, messageID int64) error

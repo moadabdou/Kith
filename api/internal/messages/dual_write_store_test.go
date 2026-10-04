@@ -54,7 +54,7 @@ func (m *mockStore) ListAfter(ctx context.Context, channelID int64, after Cursor
 	return m.List(ctx, channelID, after, limit)
 }
 
-func (m *mockStore) Edit(ctx context.Context, channelID, messageID int64, content string) (*Message, error) {
+func (m *mockStore) Edit(ctx context.Context, channelID, messageID int64, content string, mentions ResolvedMentions) (*Message, error) {
 	if m.editErr != nil {
 		return nil, m.editErr
 	}
@@ -241,7 +241,7 @@ func TestDualWriteStore_EditAndDeleteResilience(t *testing.T) {
 
 	// Test Edit with secondary failure
 	secondary.editErr = errors.New("scylla edit failure")
-	edited, err := store.Edit(ctx, 500, 2001, "Updated Content")
+	edited, err := store.Edit(ctx, 500, 2001, "Updated Content", ResolvedMentions{})
 	if err != nil {
 		t.Fatalf("expected edit to succeed despite secondary error: %v", err)
 	}

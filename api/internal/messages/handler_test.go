@@ -42,7 +42,7 @@ func (m *mockHandlerStore) ListAfter(ctx context.Context, channelID int64, after
 	return m.messagesToReturn, nil
 }
 
-func (m *mockHandlerStore) Edit(ctx context.Context, channelID, messageID int64, content string) (*Message, error) {
+func (m *mockHandlerStore) Edit(ctx context.Context, channelID, messageID int64, content string, mentions ResolvedMentions) (*Message, error) {
 	return nil, nil
 }
 

@@ -33,7 +33,7 @@ func (m *mockPinStore) List(ctx context.Context, channelID int64, before Cursor,
 func (m *mockPinStore) ListAfter(ctx context.Context, channelID int64, after Cursor, limit int) ([]Message, error) {
 	return nil, nil
 }
-func (m *mockPinStore) Edit(ctx context.Context, channelID, messageID int64, content string) (*Message, error) {
+func (m *mockPinStore) Edit(ctx context.Context, channelID, messageID int64, content string, mentions ResolvedMentions) (*Message, error) {
 	return nil, nil
 }
 func (m *mockPinStore) Delete(ctx context.Context, channelID, messageID, authorID int64) error {

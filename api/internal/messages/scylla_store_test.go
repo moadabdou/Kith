@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -96,7 +97,7 @@ func TestScyllaStore_CRUD(t *testing.T) {
 	}
 
 	// 3. Edit
-	edited, err := store.Edit(ctx, channelID, msgID, "Updated content")
+	edited, err := store.Edit(ctx, channelID, msgID, "Updated content", ResolvedMentions{})
 	if err != nil {
 		t.Fatalf("Edit: %v", err)
 	}
@@ -476,3 +477,112 @@ func TestScyllaStore_Stickers(t *testing.T) {
 	}
 }
 
+
+func TestScyllaStore_MentionsRoundTrip(t *testing.T) {
+	session := newTestScyllaSession(t)
+	ctx := context.Background()
+
+	node, _ := snowflake.NewNode(3)
+	channelID, _ := node.Generate()
+	authorID, _ := node.Generate()
+	mentionedUser, _ := node.Generate()
+	mentionedRole, _ := node.Generate()
+
+	store := NewScyllaStore(session, nil)
+
+	// 1. Insert with mentions
+	msgID, _ := node.Generate()
+	msg := &Message{
+		ID:             strconv.FormatInt(msgID, 10),
+		ChannelID:      strconv.FormatInt(channelID, 10),
+		Author:         AuthorRef{ID: strconv.FormatInt(authorID, 10)},
+		Content:        "hi there",
+		Mentions:       []string{strconv.FormatInt(mentionedUser, 10)},
+		MentionRoles:   []string{strconv.FormatInt(mentionedRole, 10)},
+		MentionEveryone: true,
+	}
+	if err := store.Insert(ctx, msg); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	// 2. Get returns the wire shape
+	fetched, err := store.Get(ctx, channelID, msgID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !reflect.DeepEqual(fetched.Mentions, msg.Mentions) {
+		t.Fatalf("Get Mentions = %v, want %v", fetched.Mentions, msg.Mentions)
+	}
+	if !reflect.DeepEqual(fetched.MentionRoles, msg.MentionRoles) {
+		t.Fatalf("Get MentionRoles = %v, want %v", fetched.MentionRoles, msg.MentionRoles)
+	}
+	if !fetched.MentionEveryone {
+		t.Fatalf("Get MentionEveryone = false, want true")
+	}
+
+	// 3. List + ListAfter carry mentions too
+	listed, err := store.List(ctx, channelID, Cursor{}, 10)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(listed) != 1 || !reflect.DeepEqual(listed[0].Mentions, msg.Mentions) {
+		t.Fatalf("List Mentions = %+v", listed)
+	}
+	afterListed, err := store.ListAfter(ctx, channelID, Cursor{MessageID: 1}, 10)
+	if err != nil {
+		t.Fatalf("ListAfter: %v", err)
+	}
+	if len(afterListed) != 1 || !afterListed[0].MentionEveryone {
+		t.Fatalf("ListAfter MentionEveryone missing: %+v", afterListed)
+	}
+
+	// 4. Edit replaces the mention set and persists it
+	other, _ := node.Generate()
+	edited, err := store.Edit(ctx, channelID, msgID, "edited",
+		ResolvedMentions{UserIDs: []int64{other}})
+	if err != nil {
+		t.Fatalf("Edit: %v", err)
+	}
+	want := []string{strconv.FormatInt(other, 10)}
+	if !reflect.DeepEqual(edited.Mentions, want) {
+		t.Fatalf("Edit Mentions = %v, want %v", edited.Mentions, want)
+	}
+	if edited.MentionRoles != nil || edited.MentionEveryone {
+		t.Fatalf("Edit should clear roles/everyone: %+v", edited)
+	}
+	reGet, err := store.Get(ctx, channelID, msgID)
+	if err != nil {
+		t.Fatalf("Get after Edit: %v", err)
+	}
+	if !reflect.DeepEqual(reGet.Mentions, want) || reGet.MentionEveryone {
+		t.Fatalf("persisted mentions wrong: %+v", reGet)
+	}
+
+	// 5. Edit with empty mentions clears them
+	cleared, err := store.Edit(ctx, channelID, msgID, "plain", ResolvedMentions{})
+	if err != nil {
+		t.Fatalf("Edit: %v", err)
+	}
+	if cleared.Mentions != nil || cleared.MentionRoles != nil || cleared.MentionEveryone {
+		t.Fatalf("expected cleared mentions: %+v", cleared)
+	}
+
+	// 6. Legacy row without mentions reads back empty (backward compat)
+	legacyID, _ := node.Generate()
+	legacy := &Message{
+		ID:        strconv.FormatInt(legacyID, 10),
+		ChannelID: strconv.FormatInt(channelID, 10),
+		Author:    AuthorRef{ID: strconv.FormatInt(authorID, 10)},
+		Content:   "legacy",
+	}
+	if err := store.Insert(ctx, legacy); err != nil {
+		t.Fatalf("Insert legacy: %v", err)
+	}
+	gotLegacy, err := store.Get(ctx, channelID, legacyID)
+	if err != nil {
+		t.Fatalf("Get legacy: %v", err)
+	}
+	if gotLegacy.Mentions != nil || gotLegacy.MentionRoles != nil || gotLegacy.MentionEveryone {
+		t.Fatalf("legacy row should read empty mentions: %+v", gotLegacy)
+	}
+}

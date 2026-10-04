@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS messages (
     edits list<text>,
     attachments list<text>,
     mentions list<bigint>,
+    mention_roles list<bigint>,
+    mention_everyone boolean,
     type smallint,
     reply_to bigint,
     sticker_ids list<text>,

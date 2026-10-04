@@ -89,6 +89,11 @@ export interface Message {
   attachments?: Attachment[]
   reactions?: ReactionTally[]
   sticker_ids?: string[]
+  // Authoritative mention set from the API (Issue #121). Rendered from
+  // content for now; badge/jump surfacing lands in Issue #122.
+  mentions?: string[]
+  mention_roles?: string[]
+  mention_everyone?: boolean
 }
 
 export interface Attachment {

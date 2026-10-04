@@ -18,7 +18,6 @@ import (
 	"github.com/moadabdou/Kith/api/pkg/permissions"
 	"github.com/moadabdou/Kith/api/pkg/snowflake"
 )
-
 var (
 	ErrUnknownChannel                = errors.New("messages: unknown channel")
 	ErrUnknownMessage                = errors.New("messages: unknown message")
@@ -54,6 +53,12 @@ type Message struct {
 	Attachments   []media.Attachment `json:"attachments,omitempty"`
 	Reactions     []ReactionTally    `json:"reactions,omitempty"`
 	StickerIDs    []string           `json:"sticker_ids,omitempty"`
+	// Authoritative mention set (Issue #121): validated on send/edit —
+	// membership-checked users, mentionable (or bypass-authorized) roles,
+	// broadcast gated on MENTION_EVERYONE. Content itself is never mutated.
+	Mentions       []string `json:"mentions,omitempty"`
+	MentionRoles   []string `json:"mention_roles,omitempty"`
+	MentionEveryone bool    `json:"mention_everyone,omitempty"`
 }
 
 type ReferencedMsg struct {
@@ -241,6 +246,13 @@ func (s *Service) SendWithReference(ctx context.Context, userID, channelID int64
 		return nil, err
 	}
 
+	// Authoritative mentions (Issue #121): resolve before persist+publish
+	// so the stored row and the MESSAGE_CREATE payload agree.
+	resolved, err := s.resolveMentions(ctx, ref.GuildID, perms, content)
+	if err != nil {
+		return nil, err
+	}
+
 	m := &Message{
 		ID:         snowflake.String(id),
 		ChannelID:  strconv.FormatInt(channelID, 10),
@@ -248,6 +260,7 @@ func (s *Service) SendWithReference(ctx context.Context, userID, channelID int64
 		Content:    content,
 		StickerIDs: rawSids,
 	}
+	m.applyMentions(resolved)
 	if ref.GuildID > 0 {
 		m.GuildID = strconv.FormatInt(ref.GuildID, 10)
 	}
@@ -531,7 +544,13 @@ func (s *Service) Edit(ctx context.Context, userID, channelID, messageID int64, 
 		return nil, ErrEditWindowOver
 	}
 
-	edited, err := s.store.Edit(ctx, channelID, messageID, content)
+	// Re-resolve mentions for the edited content (Issue #121).
+	resolved, err := s.resolveMentions(ctx, ref.GuildID, perms, content)
+	if err != nil {
+		return nil, err
+	}
+
+	edited, err := s.store.Edit(ctx, channelID, messageID, content, resolved)
 	if err != nil {
 		return nil, err
 	}
@@ -745,14 +764,18 @@ func (s *Service) requireChannelPerms(ctx context.Context, userID, channelID int
 func scanMessage(rows *sql.Rows) (Message, error) {
 	var m Message
 	var gid sql.NullString
+	var mentionsText, mentionRolesText sql.NullString
 	if err := rows.Scan(&m.ID, &m.ChannelID, &gid,
 		&m.Author.ID, &m.Author.Username, &m.Author.Discriminator,
-		&m.Content, &m.CreatedAt, &m.EditedAt); err != nil {
+		&m.Content, &m.CreatedAt, &m.EditedAt,
+		&mentionsText, &mentionRolesText, &m.MentionEveryone); err != nil {
 		return m, err
 	}
 	if gid.Valid {
 		m.GuildID = gid.String
 	}
+	m.Mentions = formatMentionIDs(scanPGArrayLiteral(mentionsText.String))
+	m.MentionRoles = formatMentionIDs(scanPGArrayLiteral(mentionRolesText.String))
 	return m, nil
 }
 

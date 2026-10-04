@@ -181,14 +181,14 @@ func (d *DualWriteStore) Insert(ctx context.Context, msg *Message) error {
 }
 
 // Edit updates content in primary store first, followed by resilient secondary store update.
-func (d *DualWriteStore) Edit(ctx context.Context, channelID, messageID int64, content string) (*Message, error) {
-	msg, err := d.primary.Edit(ctx, channelID, messageID, content)
+func (d *DualWriteStore) Edit(ctx context.Context, channelID, messageID int64, content string, mentions ResolvedMentions) (*Message, error) {
+	msg, err := d.primary.Edit(ctx, channelID, messageID, content, mentions)
 	if err != nil {
 		return nil, err
 	}
 
 	if d.secondary != nil {
-		if _, secErr := d.secondary.Edit(ctx, channelID, messageID, content); secErr != nil {
+		if _, secErr := d.secondary.Edit(ctx, channelID, messageID, content, mentions); secErr != nil {
 			slog.WarnContext(ctx, "secondary store edit failed",
 				"store", d.secondaryName,
 				"channel_id", channelID,

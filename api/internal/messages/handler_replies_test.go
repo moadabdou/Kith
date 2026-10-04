@@ -52,7 +52,7 @@ func (m *mockReplyStore) ListAfter(ctx context.Context, channelID int64, after C
 	return list, nil
 }
 
-func (m *mockReplyStore) Edit(ctx context.Context, channelID, messageID int64, content string) (*Message, error) {
+func (m *mockReplyStore) Edit(ctx context.Context, channelID, messageID int64, content string, mentions ResolvedMentions) (*Message, error) {
 	if msg, ok := m.messages[messageID]; ok {
 		msg.Content = content
 		now := time.Now()

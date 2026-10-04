@@ -18,7 +18,7 @@ import {
   type PendingUpload,
 } from '../../lib/uploads'
 import { remainingMs, typingDisplayName, typingIndicatorText } from '../../lib/typing'
-import type { Channel, Guild, Member, Message, Role, SearchFilters } from '../../types'
+import type { Channel, Guild, GuildEmoji, GuildSticker, Member, Message, Role, SearchFilters } from '../../types'
 import { SearchBar } from '../search/SearchBar'
 import { SearchResults } from '../search/SearchResults'
 import { AttachmentView } from './AttachmentView'
@@ -27,13 +27,14 @@ import { MessageInput } from './MessageInput'
 import { MessageToolbar } from './MessageToolbar'
 import { ParentQuote } from './ParentQuote'
 import { PinnedMessagesDrawer } from './PinnedMessagesDrawer'
-import { ReactionPicker } from './ReactionPicker'
+import { ReactionPicker, type ServerEmojiGroup, type ServerStickerGroup } from './ReactionPicker'
 import { ReactionPills } from './ReactionPills'
 
 interface ChatAreaProps {
   currentGuild: Guild | null
   currentChannel: Channel | null
   channels?: Channel[]
+  guilds?: Guild[]
   onSelectChannel?: (id: string) => void
 }
 
@@ -43,7 +44,7 @@ interface ActiveTyper {
   expiresAt: number
 }
 
-export function ChatArea({ currentGuild, currentChannel, channels = [], onSelectChannel }: ChatAreaProps) {
+export function ChatArea({ currentGuild, currentChannel, channels = [], guilds = [], onSelectChannel }: ChatAreaProps) {
   const { user } = useAuth()
   const {
     subscribeToMessages,
@@ -60,6 +61,8 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
     subscribeToMessageReactionAdd,
     subscribeToMessageReactionRemove,
     subscribeToChannelPinsUpdate,
+    subscribeToGuildEmojisUpdate,
+    subscribeToGuildStickersUpdate,
   } = useGateway()
   const [messages, setMessages] = useState<Message[]>([])
   // Latest-state mirror so event callbacks can snapshot without stale closures.
@@ -116,6 +119,119 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
   const [guildRoles, setGuildRoles] = useState<Role[]>([])
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null)
   const [pendingJumpId, setPendingJumpId] = useState<string | null>(null)
+
+  const [customEmojiGroups, setCustomEmojiGroups] = useState<ServerEmojiGroup[]>([])
+  const [customStickerGroups, setCustomStickerGroups] = useState<ServerStickerGroup[]>([])
+
+  useEffect(() => {
+    if (!guilds || guilds.length === 0) {
+      setCustomEmojiGroups([])
+      setCustomStickerGroups([])
+      return
+    }
+
+    let isCancelled = false
+
+    Promise.allSettled(
+      guilds.map(async (g) => {
+        const [emojis, stickers] = await Promise.all([
+          api.getGuildEmojis(g.id).catch(() => [] as GuildEmoji[]),
+          api.getGuildStickers(g.id).catch(() => [] as GuildSticker[]),
+        ])
+        return { guild: g, emojis, stickers }
+      })
+    ).then((results) => {
+      if (isCancelled) return
+      const emojiGroups: ServerEmojiGroup[] = []
+      const stickerGroups: ServerStickerGroup[] = []
+
+      for (const res of results) {
+        if (res.status === 'fulfilled') {
+          const { guild, emojis, stickers } = res.value
+          if (emojis && emojis.length > 0) {
+            emojiGroups.push({
+              guildId: guild.id,
+              guildName: guild.name,
+              guildIcon: guild.icon,
+              emojis,
+            })
+          }
+          if (stickers && stickers.length > 0) {
+            stickerGroups.push({
+              guildId: guild.id,
+              guildName: guild.name,
+              guildIcon: guild.icon,
+              stickers,
+            })
+          }
+        }
+      }
+
+      setCustomEmojiGroups(emojiGroups)
+      setCustomStickerGroups(stickerGroups)
+    })
+
+    return () => {
+      isCancelled = true
+    }
+  }, [guilds])
+
+  useEffect(() => {
+    const unsubEmoji = subscribeToGuildEmojisUpdate((payload) => {
+      setCustomEmojiGroups((prev) => {
+        const exists = prev.some((g) => g.guildId === payload.guild_id)
+        if (!exists) {
+          const guild = guilds.find((g) => g.id === payload.guild_id)
+          if (!guild || payload.emojis.length === 0) return prev
+          return [
+            ...prev,
+            {
+              guildId: guild.id,
+              guildName: guild.name,
+              guildIcon: guild.icon,
+              emojis: payload.emojis,
+            },
+          ]
+        }
+        if (payload.emojis.length === 0) {
+          return prev.filter((g) => g.guildId !== payload.guild_id)
+        }
+        return prev.map((g) =>
+          g.guildId === payload.guild_id ? { ...g, emojis: payload.emojis } : g
+        )
+      })
+    })
+
+    const unsubSticker = subscribeToGuildStickersUpdate((payload) => {
+      setCustomStickerGroups((prev) => {
+        const exists = prev.some((g) => g.guildId === payload.guild_id)
+        if (!exists) {
+          const guild = guilds.find((g) => g.id === payload.guild_id)
+          if (!guild || payload.stickers.length === 0) return prev
+          return [
+            ...prev,
+            {
+              guildId: guild.id,
+              guildName: guild.name,
+              guildIcon: guild.icon,
+              stickers: payload.stickers,
+            },
+          ]
+        }
+        if (payload.stickers.length === 0) {
+          return prev.filter((g) => g.guildId !== payload.guild_id)
+        }
+        return prev.map((g) =>
+          g.guildId === payload.guild_id ? { ...g, stickers: payload.stickers } : g
+        )
+      })
+    })
+
+    return () => {
+      unsubEmoji()
+      unsubSticker()
+    }
+  }, [subscribeToGuildEmojisUpdate, subscribeToGuildStickersUpdate, guilds])
 
   // Resolve channel-scoped permissions for the current user (null = unknown).
   // Declared before the upload logic: addFiles gates on canAttach.
@@ -1111,6 +1227,35 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
     }
   }
 
+  const handleSendSticker = async (sticker: GuildSticker) => {
+    if (!currentGuild || !currentChannel || sending) return
+    setSending(true)
+    setError(null)
+    try {
+      const messageReference = replyingTo ? { message_id: replyingTo.id } : undefined
+      const sent = await api.sendMessage(
+        currentGuild.id,
+        currentChannel.id,
+        '',
+        undefined,
+        messageReference,
+        [sticker.id]
+      )
+      setReplyingTo(null)
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === sent.id)) return prev
+        return [...prev, sent]
+      })
+      setIsViewingHistory(false)
+      setHasNewer(false)
+      requestAnimationFrame(() => scrollToBottom(true))
+    } catch (err: any) {
+      setError(err.message || 'Failed to send sticker')
+    } finally {
+      setSending(false)
+    }
+  }
+
   // Drag-drop + paste support (Discord-style). Container-level so drops
   // anywhere over the chat surface attach to the visible channel.
   const handleDragEnter = (e: DragEvent) => {
@@ -1330,8 +1475,12 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
                   {isPickerOpen && (
                     <ReactionPicker
                       onSelectEmoji={(emoji) => handleToggleReaction(msg.id, emoji)}
+                      onSelectCustomEmoji={(customEmoji) =>
+                        handleToggleReaction(msg.id, `${customEmoji.name}:${customEmoji.id}`)
+                      }
                       onClose={() => setActivePicker(null)}
                       position={activePicker?.position}
+                      customEmojiGroups={customEmojiGroups}
                     />
                   )}
 
@@ -1438,6 +1587,18 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
                           ))}
                         </div>
                       )}
+                      {msg.sticker_ids && msg.sticker_ids.length > 0 && (
+                        <div className="message-stickers">
+                          {msg.sticker_ids.map((sId) => (
+                            <img
+                              key={sId}
+                              src={`/stickers/${sId}.png`}
+                              alt="sticker"
+                              className="chat-message-sticker"
+                            />
+                          ))}
+                        </div>
+                      )}
                       {msg.reactions && msg.reactions.length > 0 && (
                         <ReactionPills
                           reactions={msg.reactions}
@@ -1540,6 +1701,9 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], onSelect
             replyingTo={replyingTo}
             onCancelReply={() => setReplyingTo(null)}
             inputRef={chatInputRef}
+            customEmojiGroups={customEmojiGroups}
+            customStickerGroups={customStickerGroups}
+            onSelectSticker={handleSendSticker}
           />
         </div>
 

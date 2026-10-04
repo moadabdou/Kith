@@ -233,6 +233,21 @@ export function PinnedMessagesDrawer({
                     ))}
                   </div>
                 )}
+
+                {/* Stickers if any */}
+                {pin.sticker_ids && pin.sticker_ids.length > 0 && (
+                  <div className="message-stickers" style={{ marginTop: 6 }}>
+                    {pin.sticker_ids.map((sId) => (
+                      <img
+                        key={sId}
+                        src={`/stickers/${sId}.png`}
+                        alt="sticker"
+                        className="chat-message-sticker"
+                        style={{ width: 100, height: 100 }}
+                      />
+                    ))}
+                  </div>
+                )}
               </div>
             ))}
           </div>

@@ -3,6 +3,8 @@ import { useAuth } from '../context/useAuth'
 import type {
   ChannelEventPayload,
   ChannelPinsUpdatePayload,
+  GuildEmojisUpdatePayload,
+  GuildStickersUpdatePayload,
   MemberAddPayload,
   MemberChunkPayload,
   MemberRemovePayload,
@@ -157,6 +159,14 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
     return gatewayClient.onVoiceServerUpdate(callback)
   }
 
+  const subscribeToGuildEmojisUpdate = (callback: (payload: GuildEmojisUpdatePayload) => void) => {
+    return gatewayClient.onGuildEmojisUpdate(callback)
+  }
+
+  const subscribeToGuildStickersUpdate = (callback: (payload: GuildStickersUpdatePayload) => void) => {
+    return gatewayClient.onGuildStickersUpdate(callback)
+  }
+
   const reconnectNow = () => {
     gatewayClient.reconnectNow()
   }
@@ -196,6 +206,8 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
         sendVoiceStateUpdate,
         subscribeToVoiceStateUpdates,
         subscribeToVoiceServerUpdates,
+        subscribeToGuildEmojisUpdate,
+        subscribeToGuildStickersUpdate,
       }}
     >
       {children}

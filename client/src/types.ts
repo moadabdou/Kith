@@ -16,6 +16,7 @@ export interface AuthResponse {
 export interface Guild {
   id: string
   name: string
+  icon?: string
   owner_id: string
   created_at: string
   voice_states?: Record<string, VoiceState>
@@ -87,6 +88,7 @@ export interface Message {
   edited_timestamp?: string | null
   attachments?: Attachment[]
   reactions?: ReactionTally[]
+  sticker_ids?: string[]
 }
 
 export interface Attachment {
@@ -285,4 +287,36 @@ export interface MessageReactionEvent {
   message_id: string
   guild_id: string
   emoji: string
+}
+
+export interface GuildEmoji {
+  id: string
+  guild_id: string
+  name: string
+  uploader_id: string
+  animated: boolean
+  content_type: string
+  created_at: string
+  url?: string
+}
+
+export interface GuildSticker {
+  id: string
+  guild_id: string
+  name: string
+  description?: string
+  uploader_id: string
+  content_type: string
+  created_at: string
+  url?: string
+}
+
+export interface GuildEmojisUpdatePayload {
+  guild_id: string
+  emojis: GuildEmoji[]
+}
+
+export interface GuildStickersUpdatePayload {
+  guild_id: string
+  stickers: GuildSticker[]
 }

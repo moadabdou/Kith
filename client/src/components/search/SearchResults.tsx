@@ -3,7 +3,76 @@ import { ArrowRight, ChevronLeft, ChevronRight, Hash, Loader2, Search, User, X }
 import { highlightMatches } from '../../lib/search'
 import { memberNameColor } from '../../lib/members'
 import type { Channel, Member, Message, Role } from '../../types'
+import { AttachmentView } from '../chat/AttachmentView'
 import { SearchFilterDropdown } from './SearchFilterDropdown'
+
+export function SearchResultContent({ content, query }: { content: string; query: string }): React.ReactNode {
+  if (!content) return null
+
+  // Split by custom emojis: <:name:id> or <a:name:id>
+  const emojiRegex = /(<a?:[a-zA-Z0-9_]+:\d+>)/g
+  const parts = content.split(emojiRegex)
+
+  const elements: React.ReactNode[] = []
+
+  parts.forEach((part, partIdx) => {
+    if (!part) return
+
+    const emojiMatch = part.match(/^<(a)?:([a-zA-Z0-9_]+):(\d+)>$/)
+    if (emojiMatch) {
+      const animated = !!emojiMatch[1]
+      const name = emojiMatch[2]
+      const id = emojiMatch[3]
+      const ext = animated ? 'gif' : 'png'
+
+      // Check if search query matches the emoji name
+      const rawWords = query.trim().split(/\s+/).filter(Boolean)
+      const isMatch = rawWords.some((w) => name.toLowerCase().includes(w.toLowerCase()))
+
+      const img = (
+        <img
+          key={`emoji-${partIdx}`}
+          src={`/emojis/${id}.${ext}`}
+          alt={`:${name}:`}
+          title={`:${name}:`}
+          className="chat-custom-emoji"
+          loading="lazy"
+        />
+      )
+
+      if (isMatch) {
+        elements.push(
+          <mark
+            key={`mark-emoji-${partIdx}`}
+            className="search-highlight"
+            style={{ padding: '1px 2px', display: 'inline-flex', alignItems: 'center' }}
+          >
+            {img}
+          </mark>
+        )
+      } else {
+        elements.push(img)
+      }
+    } else {
+      const segments = highlightMatches(part, query)
+      segments.forEach((seg, segIdx) => {
+        if (seg.isMatch) {
+          elements.push(
+            <mark key={`m-${partIdx}-${segIdx}`} className="search-highlight">
+              {seg.text}
+            </mark>
+          )
+        } else {
+          elements.push(
+            <span key={`s-${partIdx}-${segIdx}`}>{seg.text}</span>
+          )
+        }
+      })
+    }
+  })
+
+  return elements
+}
 
 interface SearchResultsProps {
   isOpen: boolean
@@ -235,7 +304,6 @@ export function SearchResults({
             {results.map((msg) => {
               const channelName = channelMap.get(msg.channel_id) || 'channel'
               const isCurrent = currentChannel?.id === msg.channel_id
-              const segments = highlightMatches(msg.content, query)
 
               return (
                 <div
@@ -296,18 +364,36 @@ export function SearchResults({
                     )
                   })()}
 
-                  {/* Message Content with Highlighted Query Terms */}
-                  <div className="search-result-text">
-                    {segments.map((seg, i) =>
-                      seg.isMatch ? (
-                        <mark key={i} className="search-highlight">
-                          {seg.text}
-                        </mark>
-                      ) : (
-                        <span key={i}>{seg.text}</span>
-                      )
-                    )}
-                  </div>
+                  {/* Message Content with Highlighted Query Terms & Custom Emojis */}
+                  {msg.content ? (
+                    <div className="search-result-text">
+                      <SearchResultContent content={msg.content} query={query} />
+                    </div>
+                  ) : null}
+
+                  {/* Stickers if any */}
+                  {msg.sticker_ids && msg.sticker_ids.length > 0 && (
+                    <div className="message-stickers" style={{ marginTop: 6 }}>
+                      {msg.sticker_ids.map((sId) => (
+                        <img
+                          key={sId}
+                          src={`/stickers/${sId}.png`}
+                          alt="sticker"
+                          className="chat-message-sticker"
+                          style={{ width: 90, height: 90 }}
+                        />
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Attachments if any */}
+                  {msg.attachments && msg.attachments.length > 0 && (
+                    <div className="message-attachments" style={{ marginTop: 6 }}>
+                      {msg.attachments.map((a) => (
+                        <AttachmentView key={a.id} attachment={a} channelId={msg.channel_id} />
+                      ))}
+                    </div>
+                  )}
                 </div>
               )
             })}

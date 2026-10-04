@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -52,6 +53,7 @@ type Message struct {
 	EditedAt      *time.Time         `json:"edited_timestamp"`
 	Attachments   []media.Attachment `json:"attachments,omitempty"`
 	Reactions     []ReactionTally    `json:"reactions,omitempty"`
+	StickerIDs    []string           `json:"sticker_ids,omitempty"`
 }
 
 type ReferencedMsg struct {
@@ -106,6 +108,17 @@ type MediaLinker interface {
 	LinkAttachmentsToMessage(ctx context.Context, messageID int64, attachmentIDs []int64, channelID, uploaderID int64) ([]media.Attachment, error)
 }
 
+// EmojiValidator defines methods to authorize cross-server custom emoji and sticker usage.
+type EmojiValidator interface {
+	ValidateEmojisAccess(ctx context.Context, userID, currentGuildID int64, emojiIDs []int64, hasExternalPerm bool) error
+	ValidateStickersAccess(ctx context.Context, userID, currentGuildID int64, stickerIDs []int64, hasExternalPerm bool) error
+}
+
+var (
+	customEmojiRegex         = regexp.MustCompile(`<(a)?:([a-zA-Z0-9_]{2,32}):([0-9]+)>`)
+	customEmojiReactionRegex = regexp.MustCompile(`^<?(?:a)?:?([a-zA-Z0-9_]{2,32}):([0-9]+)>?$`)
+)
+
 type Service struct {
 	db         *sql.DB
 	store      Store
@@ -114,6 +127,7 @@ type Service struct {
 	mediaStore MediaLinker
 	signer     *media.URLSigner
 	reactions  ReactionsStore
+	emojis     EmojiValidator
 }
 
 func NewService(db *sql.DB, store Store, sf *snowflake.Node, pub events.Publisher, mediaStores ...MediaLinker) *Service {
@@ -137,6 +151,11 @@ func (s *Service) SetReactionsStore(reactions ReactionsStore) {
 	s.reactions = reactions
 }
 
+// SetEmojiValidator sets the EmojiValidator for custom emoji & sticker authorization.
+func (s *Service) SetEmojiValidator(emojis EmojiValidator) {
+	s.emojis = emojis
+}
+
 // Send is the hot path (plan/02 §3): perm placeholder → snowflake →
 // store insert → **publish AFTER Commit** → respond.
 //
@@ -152,8 +171,8 @@ func (s *Service) Send(ctx context.Context, userID, channelID int64, content str
 	return s.SendWithReference(ctx, userID, channelID, content, attIDs, nil)
 }
 
-// SendWithReference handles message creation with an optional parent message reference (inline reply).
-func (s *Service) SendWithReference(ctx context.Context, userID, channelID int64, content string, attIDs []string, refMsg *MessageReference) (*Message, error) {
+// SendWithReference handles message creation with an optional parent message reference (inline reply) and stickers.
+func (s *Service) SendWithReference(ctx context.Context, userID, channelID int64, content string, attIDs []string, refMsg *MessageReference, stickerIDs ...[]string) (*Message, error) {
 	ref, perms, err := s.requireChannelPerms(ctx, userID, channelID)
 	if err != nil {
 		return nil, err
@@ -169,12 +188,51 @@ func (s *Service) SendWithReference(ctx context.Context, userID, channelID int64
 			return nil, ErrMissingPermissions
 		}
 	}
-	if content == "" && len(attIDs) == 0 {
+	hasStickers := len(stickerIDs) > 0 && len(stickerIDs[0]) > 0
+	if content == "" && len(attIDs) == 0 && !hasStickers {
 		return nil, ErrContentRequired
 	}
 	if strings.Contains(content, "@everyone") || strings.Contains(content, "@here") {
 		if !permissions.Has(perms, permissions.MENTION_EVERYONE) {
 			return nil, ErrMissingPermissions
+		}
+	}
+
+	// Validate custom emojis in message content
+	if s.emojis != nil {
+		matches := customEmojiRegex.FindAllStringSubmatch(content, -1)
+		if len(matches) > 0 {
+			var emojiIDs []int64
+			for _, m := range matches {
+				if len(m) >= 4 {
+					if eid, err := strconv.ParseInt(m[3], 10, 64); err == nil && eid > 0 {
+						emojiIDs = append(emojiIDs, eid)
+					}
+				}
+			}
+			if len(emojiIDs) > 0 {
+				hasExternal := permissions.Has(perms, permissions.USE_EXTERNAL_EMOJIS)
+				if err := s.emojis.ValidateEmojisAccess(ctx, userID, ref.GuildID, emojiIDs, hasExternal); err != nil {
+					return nil, ErrMissingPermissions
+				}
+			}
+		}
+	}
+
+	var sids []int64
+	var rawSids []string
+	if hasStickers {
+		rawSids = stickerIDs[0]
+		for _, s := range rawSids {
+			if sid, err := strconv.ParseInt(s, 10, 64); err == nil && sid > 0 {
+				sids = append(sids, sid)
+			}
+		}
+		if s.emojis != nil && len(sids) > 0 {
+			hasExternal := permissions.Has(perms, permissions.USE_EXTERNAL_EMOJIS)
+			if err := s.emojis.ValidateStickersAccess(ctx, userID, ref.GuildID, sids, hasExternal); err != nil {
+				return nil, ErrMissingPermissions
+			}
 		}
 	}
 
@@ -184,10 +242,11 @@ func (s *Service) SendWithReference(ctx context.Context, userID, channelID int64
 	}
 
 	m := &Message{
-		ID:        snowflake.String(id),
-		ChannelID: strconv.FormatInt(channelID, 10),
-		Author:    AuthorRef{ID: strconv.FormatInt(userID, 10)},
-		Content:   content,
+		ID:         snowflake.String(id),
+		ChannelID:  strconv.FormatInt(channelID, 10),
+		Author:     AuthorRef{ID: strconv.FormatInt(userID, 10)},
+		Content:    content,
+		StickerIDs: rawSids,
 	}
 	if ref.GuildID > 0 {
 		m.GuildID = strconv.FormatInt(ref.GuildID, 10)
@@ -759,6 +818,28 @@ func (s *Service) AddReaction(ctx context.Context, userID, channelID, messageID 
 		}
 		if !hasEmoji {
 			return ErrMissingPermissions
+		}
+	}
+
+	if s.emojis != nil {
+		var customEmojiID int64
+		if match := customEmojiReactionRegex.FindStringSubmatch(emoji); len(match) >= 3 {
+			if eid, err := strconv.ParseInt(match[2], 10, 64); err == nil && eid > 0 {
+				customEmojiID = eid
+			}
+		} else if strings.Contains(emoji, ":") {
+			parts := strings.Split(emoji, ":")
+			if len(parts) == 2 {
+				if eid, err := strconv.ParseInt(parts[1], 10, 64); err == nil && eid > 0 {
+					customEmojiID = eid
+				}
+			}
+		}
+		if customEmojiID > 0 {
+			hasExternal := permissions.Has(perms, permissions.USE_EXTERNAL_EMOJIS)
+			if err := s.emojis.ValidateEmojisAccess(ctx, userID, ref.GuildID, []int64{customEmojiID}, hasExternal); err != nil {
+				return ErrMissingPermissions
+			}
 		}
 	}
 

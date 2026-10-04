@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS messages (
     mentions list<bigint>,
     type smallint,
     reply_to bigint,
+    sticker_ids list<text>,
     PRIMARY KEY ((channel_id, bucket), message_id)
 ) WITH CLUSTERING ORDER BY (message_id DESC)
   AND compaction = {

@@ -1,4 +1,4 @@
-import type { Attachment, AuthResponse, Channel, ChannelLatest, ChannelOverwrite, Guild, Member, Message, PresignedUpload, ReadState, Role, SearchFilters, SearchResponse, User } from './types'
+import type { Attachment, AuthResponse, Channel, ChannelLatest, ChannelOverwrite, Guild, GuildEmoji, GuildSticker, Member, Message, PresignedUpload, ReadState, Role, SearchFilters, SearchResponse, User } from './types'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api'
 
@@ -251,7 +251,8 @@ class ApiClient {
     channelId: string,
     content: string,
     attachmentIds?: string[],
-    messageReference?: { message_id: string }
+    messageReference?: { message_id: string },
+    stickerIds?: string[]
   ): Promise<Message> {
     return this.request<Message>(`/guilds/${guildId}/channels/${channelId}/messages`, {
       method: 'POST',
@@ -259,6 +260,7 @@ class ApiClient {
         content,
         attachment_ids: attachmentIds ?? [],
         message_reference: messageReference,
+        sticker_ids: stickerIds,
       }),
     })
   }
@@ -392,6 +394,48 @@ class ApiClient {
 
   async getChannelReadState(channelId: string): Promise<ReadState> {
     return this.request<ReadState>(`/channels/${channelId}/read-state`)
+  }
+
+  // ── Guild Custom Emojis & Stickers (Phase 9, Issue #118) ───
+  async getGuildEmojis(guildId: string): Promise<GuildEmoji[]> {
+    return this.request<GuildEmoji[]>(`/guilds/${guildId}/emojis`)
+  }
+
+  async uploadGuildEmoji(guildId: string, name: string, file: File): Promise<GuildEmoji> {
+    const formData = new FormData()
+    formData.append('name', name)
+    formData.append('image', file)
+    return this.request<GuildEmoji>(`/guilds/${guildId}/emojis`, {
+      method: 'POST',
+      body: formData,
+    })
+  }
+
+  async deleteGuildEmoji(guildId: string, emojiId: string): Promise<void> {
+    await this.request(`/guilds/${guildId}/emojis/${emojiId}`, {
+      method: 'DELETE',
+    })
+  }
+
+  async getGuildStickers(guildId: string): Promise<GuildSticker[]> {
+    return this.request<GuildSticker[]>(`/guilds/${guildId}/stickers`)
+  }
+
+  async uploadGuildSticker(guildId: string, name: string, file: File, description?: string): Promise<GuildSticker> {
+    const formData = new FormData()
+    formData.append('name', name)
+    if (description) formData.append('description', description)
+    formData.append('file', file)
+    return this.request<GuildSticker>(`/guilds/${guildId}/stickers`, {
+      method: 'POST',
+      body: formData,
+    })
+  }
+
+  async deleteGuildSticker(guildId: string, stickerId: string): Promise<void> {
+    await this.request(`/guilds/${guildId}/stickers/${stickerId}`, {
+      method: 'DELETE',
+    })
   }
 }
 

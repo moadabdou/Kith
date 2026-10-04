@@ -17,6 +17,7 @@ import (
 	"github.com/gocql/gocql"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/moadabdou/Kith/api/internal/auth"
+	"github.com/moadabdou/Kith/api/internal/emojis"
 	"github.com/moadabdou/Kith/api/internal/events"
 	"github.com/moadabdou/Kith/api/internal/guilds"
 	"github.com/moadabdou/Kith/api/internal/httpx"
@@ -308,6 +309,13 @@ func main() {
 	slog.Info("message write path configured",
 		"max_inflight", messagesHandler.Inflight.Cap())
 
+	// Guild Custom Emojis & Stickers (Phase 9, Issue #118)
+	emojisStore := emojis.NewPostgresStore(db, mediaStorage.PublicURL)
+	emojisSvc := emojis.NewService(db, emojisStore, node, mediaStorage, publisher)
+	emojisHandler := emojis.NewHandler(emojisSvc)
+	messagesSvc.SetEmojiValidator(emojisSvc)
+	slog.Info("guild emojis & stickers service initialized")
+
 	// Search Rung 2: Meilisearch query engine with ScyllaDB hydration & reconciliation scanner (plan/04 §3–4)
 	meiliURL := envOr("MEILISEARCH_URL", "")
 	meiliKey := envOr("MEILISEARCH_KEY", "")
@@ -505,6 +513,21 @@ func main() {
 			http.HandlerFunc(searchHandler.Search))))
 	mux.Handle("POST /api/guilds/{id}/messages/search/reconcile",
 		auth.RequireAuth(jwt, http.HandlerFunc(searchHandler.Reconcile)))
+
+	// guild custom emojis & stickers (Phase 9, Issue #118)
+	mux.Handle("GET /api/guilds/{id}/emojis",
+		auth.RequireAuth(jwt, http.HandlerFunc(emojisHandler.ListEmojis)))
+	mux.Handle("POST /api/guilds/{id}/emojis",
+		auth.RequireAuth(jwt, http.HandlerFunc(emojisHandler.CreateEmoji)))
+	mux.Handle("DELETE /api/guilds/{id}/emojis/{emoji_id}",
+		auth.RequireAuth(jwt, http.HandlerFunc(emojisHandler.DeleteEmoji)))
+
+	mux.Handle("GET /api/guilds/{id}/stickers",
+		auth.RequireAuth(jwt, http.HandlerFunc(emojisHandler.ListStickers)))
+	mux.Handle("POST /api/guilds/{id}/stickers",
+		auth.RequireAuth(jwt, http.HandlerFunc(emojisHandler.CreateSticker)))
+	mux.Handle("DELETE /api/guilds/{id}/stickers/{sticker_id}",
+		auth.RequireAuth(jwt, http.HandlerFunc(emojisHandler.DeleteSticker)))
 
 	srv := &http.Server{
 		Addr:              ":" + port,

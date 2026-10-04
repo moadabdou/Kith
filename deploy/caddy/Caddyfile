@@ -25,6 +25,16 @@ cdn.localhost, :80 {
 			header_down Cache-Control "public, max-age=3600"
 		}
 	}
+	handle /emojis/* {
+		reverse_proxy minio:9000 {
+			header_down Cache-Control "public, max-age=86400"
+		}
+	}
+	handle /stickers/* {
+		reverse_proxy minio:9000 {
+			header_down Cache-Control "public, max-age=86400"
+		}
+	}
 	handle {
 		reverse_proxy client:5173
 	}

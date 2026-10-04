@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, ChevronUp, Plus, Shield, ShieldAlert, Trash2, X } from 'lucide-react'
+import { useCallback, useEffect, useState } from 'react'
+import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, ChevronUp, Plus, Shield, ShieldAlert, Smile, Sticker as StickerIcon, Trash2, Upload, X } from 'lucide-react'
 import { api } from '../../api'
 import { hexToRoleColor, roleColorHex } from '../../lib/members'
 import {
@@ -34,7 +34,7 @@ import {
   VIEW_CHANNEL,
   VIEW_GUILD_INSIGHTS,
 } from '../../lib/permissions'
-import type { Guild, Role } from '../../types'
+import type { Guild, GuildEmoji, GuildSticker, Role } from '../../types'
 
 import { useAuth } from '../../context/useAuth'
 
@@ -115,7 +115,7 @@ export function ServerSettingsModal({
     callerHighestPosition ?? (effectiveIsOwner ? Infinity : 0)
   )
 
-  const [activeTab, setActiveTab] = useState<'overview' | 'roles'>('roles')
+  const [activeTab, setActiveTab] = useState<'overview' | 'roles' | 'emojis' | 'stickers'>('roles')
   const [roles, setRoles] = useState<Role[]>([])
   const [selectedRoleId, setSelectedRoleId] = useState<string | null>(null)
   const [roleSubTab, setRoleSubTab] = useState<'display' | 'permissions'>('display')
@@ -126,6 +126,154 @@ export function ServerSettingsModal({
   const [draftHoist, setDraftHoist] = useState(false)
   const [draftMentionable, setDraftMentionable] = useState(false)
   const [draftPermissions, setDraftPermissions] = useState<bigint>(0n)
+
+  // Emojis & Stickers state
+  const [emojis, setEmojis] = useState<GuildEmoji[]>([])
+  const [stickers, setStickers] = useState<GuildSticker[]>([])
+  const [emojiName, setEmojiName] = useState('')
+  const [emojiFile, setEmojiFile] = useState<File | null>(null)
+  const [emojiPreview, setEmojiPreview] = useState<string | null>(null)
+  const [stickerName, setStickerName] = useState('')
+  const [stickerFile, setStickerFile] = useState<File | null>(null)
+  const [stickerPreview, setStickerPreview] = useState<string | null>(null)
+  const [loadingItems, setLoadingItems] = useState(false)
+  const [uploadingItem, setUploadingItem] = useState(false)
+
+  const canManageGuild =
+    effectiveIsOwner ||
+    (internalPermissions != null &&
+      (hasPermission(internalPermissions, ADMINISTRATOR) ||
+        hasPermission(internalPermissions, MANAGE_GUILD)))
+
+  const fetchEmojis = useCallback(async () => {
+    if (!guild) return
+    setLoadingItems(true)
+    try {
+      const data = await api.getGuildEmojis(guild.id)
+      setEmojis(data)
+    } catch (err: any) {
+      setError(err?.message || 'Failed to load emojis')
+    } finally {
+      setLoadingItems(false)
+    }
+  }, [guild])
+
+  const fetchStickers = useCallback(async () => {
+    if (!guild) return
+    setLoadingItems(true)
+    try {
+      const data = await api.getGuildStickers(guild.id)
+      setStickers(data)
+    } catch (err: any) {
+      setError(err?.message || 'Failed to load stickers')
+    } finally {
+      setLoadingItems(false)
+    }
+  }, [guild])
+
+  const handleEmojiFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    if (file.size > 256 * 1024) {
+      setError('Emoji file size must be under 256 KB')
+      return
+    }
+    setEmojiFile(file)
+    const baseName = file.name
+      .replace(/\.[^/.]+$/, '')
+      .replace(/[^a-zA-Z0-9_]/g, '_')
+      .toLowerCase()
+      .slice(0, 32)
+    if (!emojiName) {
+      setEmojiName(baseName)
+    }
+    const reader = new FileReader()
+    reader.onload = () => setEmojiPreview(reader.result as string)
+    reader.readAsDataURL(file)
+  }
+
+  const handleUploadEmoji = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!guild || !emojiFile || !emojiName.trim()) return
+    setUploadingItem(true)
+    setError(null)
+    setSuccess(null)
+    try {
+      await api.uploadGuildEmoji(guild.id, emojiName.trim(), emojiFile)
+      setEmojiName('')
+      setEmojiFile(null)
+      setEmojiPreview(null)
+      setSuccess('Emoji uploaded successfully!')
+      fetchEmojis()
+    } catch (err: any) {
+      setError(err?.message || 'Failed to upload emoji')
+    } finally {
+      setUploadingItem(false)
+    }
+  }
+
+  const handleDeleteEmoji = async (emojiId: string) => {
+    if (!guild) return
+    try {
+      await api.deleteGuildEmoji(guild.id, emojiId)
+      setEmojis((prev) => prev.filter((e) => e.id !== emojiId))
+      setSuccess('Emoji deleted')
+    } catch (err: any) {
+      setError(err?.message || 'Failed to delete emoji')
+    }
+  }
+
+  const handleStickerFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    if (file.size > 512 * 1024) {
+      setError('Sticker file size must be under 512 KB')
+      return
+    }
+    setStickerFile(file)
+    const baseName = file.name
+      .replace(/\.[^/.]+$/, '')
+      .replace(/[^a-zA-Z0-9_ ]/g, '')
+      .trim()
+      .slice(0, 30)
+    if (!stickerName) {
+      setStickerName(baseName)
+    }
+    const reader = new FileReader()
+    reader.onload = () => setStickerPreview(reader.result as string)
+    reader.readAsDataURL(file)
+  }
+
+  const handleUploadSticker = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!guild || !stickerFile || !stickerName.trim()) return
+    setUploadingItem(true)
+    setError(null)
+    setSuccess(null)
+    try {
+      await api.uploadGuildSticker(guild.id, stickerName.trim(), stickerFile)
+      setStickerName('')
+      setStickerFile(null)
+      setStickerPreview(null)
+      setSuccess('Sticker uploaded successfully!')
+      fetchStickers()
+    } catch (err: any) {
+      setError(err?.message || 'Failed to upload sticker')
+    } finally {
+      setUploadingItem(false)
+    }
+  }
+
+  const handleDeleteSticker = async (stickerId: string) => {
+    if (!guild) return
+    try {
+      await api.deleteGuildSticker(guild.id, stickerId)
+      setStickers((prev) => prev.filter((s) => s.id !== stickerId))
+      setSuccess('Sticker deleted')
+    } catch (err: any) {
+      setError(err?.message || 'Failed to delete sticker')
+    }
+  }
 
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -476,6 +624,46 @@ export function ServerSettingsModal({
             >
               <Shield size={16} /> Roles
             </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('emojis')}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '8px 12px',
+                borderRadius: 4,
+                border: 'none',
+                background: activeTab === 'emojis' ? 'var(--bg-hover)' : 'transparent',
+                color: activeTab === 'emojis' ? 'var(--text-header)' : 'var(--text-muted)',
+                fontWeight: activeTab === 'emojis' ? 600 : 500,
+                fontSize: 14,
+                cursor: 'pointer',
+                textAlign: 'left',
+              }}
+            >
+              <Smile size={16} /> Emoji
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('stickers')}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '8px 12px',
+                borderRadius: 4,
+                border: 'none',
+                background: activeTab === 'stickers' ? 'var(--bg-hover)' : 'transparent',
+                color: activeTab === 'stickers' ? 'var(--text-header)' : 'var(--text-muted)',
+                fontWeight: activeTab === 'stickers' ? 600 : 500,
+                fontSize: 14,
+                cursor: 'pointer',
+                textAlign: 'left',
+              }}
+            >
+              <StickerIcon size={16} /> Stickers
+            </button>
           </div>
 
           <div style={{ marginTop: 'auto', padding: '0 10px' }}>
@@ -500,7 +688,13 @@ export function ServerSettingsModal({
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-header)' }}>
-                {activeTab === 'overview' ? 'Server Overview' : 'Server Roles'}
+                {activeTab === 'overview'
+                  ? 'Server Overview'
+                  : activeTab === 'roles'
+                  ? 'Server Roles'
+                  : activeTab === 'emojis'
+                  ? 'Server Emojis'
+                  : 'Server Stickers'}
               </span>
             </div>
             <button
@@ -1168,6 +1362,495 @@ export function ServerSettingsModal({
                 ) : (
                   <div style={{ padding: 32, color: 'var(--text-muted)', fontSize: 14, textAlign: 'center' }}>
                     No role selected.
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Tab: Emojis */}
+          {activeTab === 'emojis' && (
+            <div style={{ flex: 1, overflowY: 'auto', padding: 24, display: 'flex', flexDirection: 'column', gap: 24 }}>
+              <div>
+                <h3 style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-header)', marginBottom: 6 }}>
+                  Emoji Management
+                </h3>
+                <p style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.5, maxWidth: 640 }}>
+                  Upload custom emojis for your server. Members of this server can use them anywhere across Kith
+                  with the <code>USE_EXTERNAL_EMOJIS</code> permission. Slots: {emojis.length} / 50.
+                </p>
+              </div>
+
+              {canManageGuild ? (
+                <form
+                  onSubmit={handleUploadEmoji}
+                  style={{
+                    backgroundColor: 'var(--bg-secondary)',
+                    border: '1px solid var(--border-subtle)',
+                    borderRadius: 8,
+                    padding: 16,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 16,
+                    maxWidth: 640,
+                  }}
+                >
+                  <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-header)' }}>
+                    Upload New Emoji
+                  </div>
+
+                  <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
+                    <div
+                      style={{
+                        width: 64,
+                        height: 64,
+                        borderRadius: 8,
+                        border: '2px dashed var(--border-subtle)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        backgroundColor: 'var(--bg-chat)',
+                        overflow: 'hidden',
+                        flexShrink: 0,
+                      }}
+                    >
+                      {emojiPreview ? (
+                        <img src={emojiPreview} alt="Preview" style={{ width: 44, height: 44, objectFit: 'contain' }} />
+                      ) : (
+                        <Smile size={28} style={{ color: 'var(--text-muted)' }} />
+                      )}
+                    </div>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flex: 1 }}>
+                      <input
+                        type="file"
+                        id="emoji-file-input"
+                        accept=".png,.jpg,.jpeg,.gif,.webp"
+                        onChange={handleEmojiFileChange}
+                        style={{ display: 'none' }}
+                      />
+                      <label
+                        htmlFor="emoji-file-input"
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 6,
+                          padding: '6px 14px',
+                          backgroundColor: 'var(--brand)',
+                          color: 'white',
+                          borderRadius: 4,
+                          fontSize: 13,
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                          width: 'fit-content',
+                        }}
+                      >
+                        <Upload size={14} /> Choose Image
+                      </label>
+                      <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                        Recommended size 128x128. Max 256 KB. Supported formats: PNG, JPG, GIF, WebP.
+                      </span>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                    <div style={{ flex: 1 }}>
+                      <label
+                        htmlFor="emoji-name-input"
+                        style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 4 }}
+                      >
+                        Emoji Name
+                      </label>
+                      <input
+                        id="emoji-name-input"
+                        type="text"
+                        value={emojiName}
+                        onChange={(e) => setEmojiName(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
+                        placeholder="e.g. pepe_happy"
+                        maxLength={32}
+                        style={{
+                          width: '100%',
+                          padding: '8px 12px',
+                          backgroundColor: 'var(--bg-chat)',
+                          border: '1px solid var(--border-subtle)',
+                          borderRadius: 4,
+                          color: 'var(--text-normal)',
+                          fontSize: 14,
+                        }}
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={uploadingItem || !emojiFile || !emojiName.trim() || emojiName.trim().length < 2}
+                      style={{
+                        alignSelf: 'flex-end',
+                        padding: '8px 18px',
+                        backgroundColor: '#23a55a',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: 4,
+                        fontWeight: 600,
+                        fontSize: 13,
+                        cursor:
+                          uploadingItem || !emojiFile || !emojiName.trim() || emojiName.trim().length < 2
+                            ? 'not-allowed'
+                            : 'pointer',
+                        opacity:
+                          uploadingItem || !emojiFile || !emojiName.trim() || emojiName.trim().length < 2 ? 0.5 : 1,
+                      }}
+                    >
+                      {uploadingItem ? 'Uploading…' : 'Upload'}
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <div
+                  style={{
+                    backgroundColor: 'rgba(255,255,255,0.03)',
+                    border: '1px solid var(--border-subtle)',
+                    borderRadius: 6,
+                    padding: '12px 16px',
+                    fontSize: 13,
+                    color: 'var(--text-muted)',
+                  }}
+                >
+                  You need the <strong>Manage Server</strong> permission to upload or delete emojis.
+                </div>
+              )}
+
+              {/* Emoji List Grid */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
+                  Uploaded Emojis ({emojis.length})
+                </div>
+
+                {loadingItems ? (
+                  <div style={{ padding: 24, color: 'var(--text-muted)', fontSize: 13 }}>Loading emojis…</div>
+                ) : emojis.length === 0 ? (
+                  <div
+                    style={{
+                      padding: 32,
+                      border: '1px dashed var(--border-subtle)',
+                      borderRadius: 8,
+                      textAlign: 'center',
+                      color: 'var(--text-muted)',
+                      fontSize: 14,
+                    }}
+                  >
+                    No custom emojis uploaded yet.
+                  </div>
+                ) : (
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
+                      gap: 12,
+                    }}
+                  >
+                    {emojis.map((emoji) => (
+                      <div
+                        key={emoji.id}
+                        style={{
+                          backgroundColor: 'var(--bg-secondary)',
+                          border: '1px solid var(--border-subtle)',
+                          borderRadius: 6,
+                          padding: '10px 12px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 10,
+                          justifyContent: 'space-between',
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, overflow: 'hidden' }}>
+                          <img
+                            src={`/emojis/${emoji.id}.png`}
+                            alt={emoji.name}
+                            style={{ width: 36, height: 36, objectFit: 'contain', flexShrink: 0 }}
+                          />
+                          <div style={{ overflow: 'hidden' }}>
+                            <div
+                              style={{
+                                fontSize: 13,
+                                fontWeight: 600,
+                                color: 'var(--text-header)',
+                                textOverflow: 'ellipsis',
+                                overflow: 'hidden',
+                                whiteSpace: 'nowrap',
+                              }}
+                              title={`:${emoji.name}:`}
+                            >
+                              :{emoji.name}:
+                            </div>
+                            {emoji.animated && (
+                              <span style={{ fontSize: 10, color: 'var(--brand)', fontWeight: 700 }}>ANIMATED</span>
+                            )}
+                          </div>
+                        </div>
+                        {canManageGuild && (
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteEmoji(emoji.id)}
+                            title="Delete Emoji"
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              color: 'var(--text-muted)',
+                              cursor: 'pointer',
+                              padding: 4,
+                              borderRadius: 4,
+                            }}
+                            onMouseEnter={(e) => (e.currentTarget.style.color = '#da373c')}
+                            onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-muted)')}
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Tab: Stickers */}
+          {activeTab === 'stickers' && (
+            <div style={{ flex: 1, overflowY: 'auto', padding: 24, display: 'flex', flexDirection: 'column', gap: 24 }}>
+              <div>
+                <h3 style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-header)', marginBottom: 6 }}>
+                  Sticker Management
+                </h3>
+                <p style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.5, maxWidth: 640 }}>
+                  Upload custom stickers for your server. Members of this server can send them in chat across Kith.
+                  Slots: {stickers.length} / 50.
+                </p>
+              </div>
+
+              {canManageGuild ? (
+                <form
+                  onSubmit={handleUploadSticker}
+                  style={{
+                    backgroundColor: 'var(--bg-secondary)',
+                    border: '1px solid var(--border-subtle)',
+                    borderRadius: 8,
+                    padding: 16,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 16,
+                    maxWidth: 640,
+                  }}
+                >
+                  <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-header)' }}>
+                    Upload New Sticker
+                  </div>
+
+                  <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
+                    <div
+                      style={{
+                        width: 80,
+                        height: 80,
+                        borderRadius: 8,
+                        border: '2px dashed var(--border-subtle)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        backgroundColor: 'var(--bg-chat)',
+                        overflow: 'hidden',
+                        flexShrink: 0,
+                      }}
+                    >
+                      {stickerPreview ? (
+                        <img src={stickerPreview} alt="Preview" style={{ width: 64, height: 64, objectFit: 'contain' }} />
+                      ) : (
+                        <StickerIcon size={32} style={{ color: 'var(--text-muted)' }} />
+                      )}
+                    </div>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flex: 1 }}>
+                      <input
+                        type="file"
+                        id="sticker-file-input"
+                        accept=".png,.webp"
+                        onChange={handleStickerFileChange}
+                        style={{ display: 'none' }}
+                      />
+                      <label
+                        htmlFor="sticker-file-input"
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 6,
+                          padding: '6px 14px',
+                          backgroundColor: 'var(--brand)',
+                          color: 'white',
+                          borderRadius: 4,
+                          fontSize: 13,
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                          width: 'fit-content',
+                        }}
+                      >
+                        <Upload size={14} /> Choose Image
+                      </label>
+                      <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                        Recommended size 320x320. Max 512 KB. Supported formats: PNG, WebP.
+                      </span>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                    <div style={{ flex: 1 }}>
+                      <label
+                        htmlFor="sticker-name-input"
+                        style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 4 }}
+                      >
+                        Sticker Name
+                      </label>
+                      <input
+                        id="sticker-name-input"
+                        type="text"
+                        value={stickerName}
+                        onChange={(e) => setStickerName(e.target.value)}
+                        placeholder="e.g. dancing cat"
+                        maxLength={30}
+                        style={{
+                          width: '100%',
+                          padding: '8px 12px',
+                          backgroundColor: 'var(--bg-chat)',
+                          border: '1px solid var(--border-subtle)',
+                          borderRadius: 4,
+                          color: 'var(--text-normal)',
+                          fontSize: 14,
+                        }}
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={uploadingItem || !stickerFile || !stickerName.trim() || stickerName.trim().length < 2}
+                      style={{
+                        alignSelf: 'flex-end',
+                        padding: '8px 18px',
+                        backgroundColor: '#23a55a',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: 4,
+                        fontWeight: 600,
+                        fontSize: 13,
+                        cursor:
+                          uploadingItem || !stickerFile || !stickerName.trim() || stickerName.trim().length < 2
+                            ? 'not-allowed'
+                            : 'pointer',
+                        opacity:
+                          uploadingItem || !stickerFile || !stickerName.trim() || stickerName.trim().length < 2 ? 0.5 : 1,
+                      }}
+                    >
+                      {uploadingItem ? 'Uploading…' : 'Upload'}
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <div
+                  style={{
+                    backgroundColor: 'rgba(255,255,255,0.03)',
+                    border: '1px solid var(--border-subtle)',
+                    borderRadius: 6,
+                    padding: '12px 16px',
+                    fontSize: 13,
+                    color: 'var(--text-muted)',
+                  }}
+                >
+                  You need the <strong>Manage Server</strong> permission to upload or delete stickers.
+                </div>
+              )}
+
+              {/* Stickers List Grid */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
+                  Uploaded Stickers ({stickers.length})
+                </div>
+
+                {loadingItems ? (
+                  <div style={{ padding: 24, color: 'var(--text-muted)', fontSize: 13 }}>Loading stickers…</div>
+                ) : stickers.length === 0 ? (
+                  <div
+                    style={{
+                      padding: 32,
+                      border: '1px dashed var(--border-subtle)',
+                      borderRadius: 8,
+                      textAlign: 'center',
+                      color: 'var(--text-muted)',
+                      fontSize: 14,
+                    }}
+                  >
+                    No custom stickers uploaded yet.
+                  </div>
+                ) : (
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
+                      gap: 16,
+                    }}
+                  >
+                    {stickers.map((sticker) => (
+                      <div
+                        key={sticker.id}
+                        style={{
+                          backgroundColor: 'var(--bg-secondary)',
+                          border: '1px solid var(--border-subtle)',
+                          borderRadius: 8,
+                          padding: 12,
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          gap: 10,
+                          position: 'relative',
+                        }}
+                      >
+                        <img
+                          src={`/stickers/${sticker.id}.png`}
+                          alt={sticker.name}
+                          style={{ width: 80, height: 80, objectFit: 'contain' }}
+                        />
+                        <div
+                          style={{
+                            fontSize: 13,
+                            fontWeight: 600,
+                            color: 'var(--text-header)',
+                            textAlign: 'center',
+                            width: '100%',
+                            textOverflow: 'ellipsis',
+                            overflow: 'hidden',
+                            whiteSpace: 'nowrap',
+                          }}
+                          title={sticker.name}
+                        >
+                          {sticker.name}
+                        </div>
+                        {canManageGuild && (
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteSticker(sticker.id)}
+                            title="Delete Sticker"
+                            style={{
+                              position: 'absolute',
+                              top: 8,
+                              right: 8,
+                              background: 'rgba(0,0,0,0.4)',
+                              border: 'none',
+                              color: 'var(--text-muted)',
+                              cursor: 'pointer',
+                              padding: 4,
+                              borderRadius: 4,
+                            }}
+                            onMouseEnter={(e) => (e.currentTarget.style.color = '#da373c')}
+                            onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-muted)')}
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>

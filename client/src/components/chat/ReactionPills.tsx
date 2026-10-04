@@ -8,6 +8,23 @@ export interface ReactionPillsProps {
   canAddReaction?: boolean
 }
 
+function renderEmojiDisplay(emoji: string) {
+  const match = /^<?(?:a)?:?([a-zA-Z0-9_]{2,32}):([0-9]+)>?$/.exec(emoji)
+  if (match) {
+    const name = match[1]
+    const id = match[2]
+    return (
+      <img
+        src={`/emojis/${id}.png`}
+        alt={`:${name}:`}
+        title={`:${name}:`}
+        className="reaction-pill-custom-emoji"
+      />
+    )
+  }
+  return <span className="reaction-pill-emoji">{emoji}</span>
+}
+
 export function ReactionPills({
   reactions,
   onToggleReaction,
@@ -29,7 +46,7 @@ export function ReactionPills({
           title={tally.me ? `Remove your ${tally.emoji} reaction` : `React with ${tally.emoji}`}
           aria-pressed={tally.me}
         >
-          <span className="reaction-pill-emoji">{tally.emoji}</span>
+          {renderEmojiDisplay(tally.emoji)}
           <span className="reaction-pill-count">{tally.count}</span>
         </button>
       ))}

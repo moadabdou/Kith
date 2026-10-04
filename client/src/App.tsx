@@ -364,6 +364,7 @@ function Dashboard() {
           currentGuild={currentGuild}
           currentChannel={currentChannel}
           channels={channels}
+          guilds={guilds}
           onSelectChannel={(id) => setSelectedChannelId(id)}
         />
       )}

@@ -102,6 +102,7 @@ func (h *Handler) Send(w http.ResponseWriter, r *http.Request) {
 		Content          string            `json:"content"`
 		Attachments      []string          `json:"attachments"`
 		AttachmentIDs    []string          `json:"attachment_ids"`
+		StickerIDs       []string          `json:"sticker_ids,omitempty"`
 		MessageReference *MessageReference `json:"message_reference,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -116,7 +117,8 @@ func (h *Handler) Send(w http.ResponseWriter, r *http.Request) {
 		errs.Write(w, errs.FormBody("Invalid Form Body: bad message reference"))
 		return
 	}
-	if e := validateContentOrAttachment(req.Content, len(attachmentIDs) > 0); e != nil {
+	hasMedia := len(attachmentIDs) > 0 || len(req.StickerIDs) > 0
+	if e := validateContentOrAttachment(req.Content, hasMedia); e != nil {
 		errs.Write(w, e)
 		return
 	}
@@ -131,7 +133,7 @@ func (h *Handler) Send(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer h.Inflight.Release()
-	m, err := h.Svc.SendWithReference(r.Context(), mustUser(r), cid, req.Content, attachmentIDs, req.MessageReference)
+	m, err := h.Svc.SendWithReference(r.Context(), mustUser(r), cid, req.Content, attachmentIDs, req.MessageReference, req.StickerIDs)
 	if err != nil {
 		h.writeErr(w, err)
 		return

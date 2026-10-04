@@ -15,6 +15,7 @@ export type ASTNode =
   | { type: 'user_mention'; userId: string }
   | { type: 'role_mention'; roleId: string }
   | { type: 'special_mention'; mention: string }
+  | { type: 'custom_emoji'; name: string; id: string; animated?: boolean }
   | { type: 'newline' }
 
 export interface MarkdownOptions {
@@ -152,6 +153,21 @@ function findFirstInlineMatch(text: string): InlineMatch | null {
       index: roleMentionMatch.index,
       length: roleMentionMatch[0].length,
       node: { type: 'role_mention', roleId: roleMentionMatch[1] },
+    })
+  }
+
+  // 9b. Custom emojis: <:name:id> or <a:name:id>
+  const customEmojiMatch = /<(a)?:([a-zA-Z0-9_]{2,32}):([0-9]+)>/.exec(text)
+  if (customEmojiMatch && customEmojiMatch.index !== undefined) {
+    matches.push({
+      index: customEmojiMatch.index,
+      length: customEmojiMatch[0].length,
+      node: {
+        type: 'custom_emoji',
+        name: customEmojiMatch[2],
+        id: customEmojiMatch[3],
+        animated: Boolean(customEmojiMatch[1]),
+      },
     })
   }
 
@@ -464,6 +480,20 @@ export function renderASTNode(
           {node.mention}
         </span>
       )
+
+    case 'custom_emoji': {
+      const ext = node.animated ? 'gif' : 'png'
+      return (
+        <img
+          key={key}
+          src={`/emojis/${node.id}.${ext}`}
+          alt={`:${node.name}:`}
+          title={`:${node.name}:`}
+          className="chat-custom-emoji"
+          loading="lazy"
+        />
+      )
+    }
 
     case 'newline':
       return <br key={key} />

@@ -1,6 +1,8 @@
 import type {
   ChannelEventPayload,
   ChannelPinsUpdatePayload,
+  GuildEmojisUpdatePayload,
+  GuildStickersUpdatePayload,
   MemberAddPayload,
   MemberChunkPayload,
   MemberRemovePayload,
@@ -252,6 +254,14 @@ export class GatewayClient {
 
   public onGuildRoleDelete(callback: (payload: RoleDeletePayload) => void): () => void {
     return this.on('GUILD_ROLE_DELETE', callback)
+  }
+
+  public onGuildEmojisUpdate(callback: (payload: GuildEmojisUpdatePayload) => void): () => void {
+    return this.on('GUILD_EMOJIS_UPDATE', callback)
+  }
+
+  public onGuildStickersUpdate(callback: (payload: GuildStickersUpdatePayload) => void): () => void {
+    return this.on('GUILD_STICKERS_UPDATE', callback)
   }
 
   public onChannelCreate(callback: (payload: ChannelEventPayload) => void): () => void {

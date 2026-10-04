@@ -2,6 +2,8 @@ import { createContext } from 'react'
 import type {
   ChannelEventPayload,
   ChannelPinsUpdatePayload,
+  GuildEmojisUpdatePayload,
+  GuildStickersUpdatePayload,
   MemberAddPayload,
   MemberChunkPayload,
   MemberRemovePayload,
@@ -63,6 +65,8 @@ export interface GatewayContextValue {
   ) => boolean
   subscribeToVoiceStateUpdates: (callback: (payload: VoiceStateUpdatePayload) => void) => () => void
   subscribeToVoiceServerUpdates: (callback: (payload: VoiceServerUpdatePayload) => void) => () => void
+  subscribeToGuildEmojisUpdate: (callback: (payload: GuildEmojisUpdatePayload) => void) => () => void
+  subscribeToGuildStickersUpdate: (callback: (payload: GuildStickersUpdatePayload) => void) => () => void
 }
 
 export const GatewayContext = createContext<GatewayContextValue | null>(null)

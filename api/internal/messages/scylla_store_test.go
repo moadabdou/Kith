@@ -418,3 +418,61 @@ func TestScyllaStore_BeforeAndAfterPagination(t *testing.T) {
 		t.Errorf("page 3 count = %d, want 0", len(page3))
 	}
 }
+
+func TestScyllaStore_Stickers(t *testing.T) {
+	session := newTestScyllaSession(t)
+	ctx := context.Background()
+	store := NewScyllaStore(session, nil)
+
+	node, _ := snowflake.NewNode(1)
+	channelID, _ := node.Generate()
+	authorID, _ := node.Generate()
+	msgID, _ := node.Generate()
+
+	msg := &Message{
+		ID:         strconv.FormatInt(msgID, 10),
+		ChannelID:  strconv.FormatInt(channelID, 10),
+		Author:     AuthorRef{ID: strconv.FormatInt(authorID, 10)},
+		Content:    "",
+		StickerIDs: []string{"9876543210"},
+	}
+
+	if err := store.Insert(ctx, msg); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	// 1. Get
+	fetched, err := store.Get(ctx, channelID, msgID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(fetched.StickerIDs) != 1 || fetched.StickerIDs[0] != "9876543210" {
+		t.Fatalf("Get StickerIDs = %v, want ['9876543210']", fetched.StickerIDs)
+	}
+
+	// 2. List
+	listed, err := store.List(ctx, channelID, Cursor{}, 10)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("List count = %d, want 1", len(listed))
+	}
+	if len(listed[0].StickerIDs) != 1 || listed[0].StickerIDs[0] != "9876543210" {
+		t.Fatalf("List StickerIDs = %v, want ['9876543210']", listed[0].StickerIDs)
+	}
+
+	// 3. ListAfter
+	afterCursor := Cursor{MessageID: 1}
+	afterListed, err := store.ListAfter(ctx, channelID, afterCursor, 10)
+	if err != nil {
+		t.Fatalf("ListAfter: %v", err)
+	}
+	if len(afterListed) != 1 {
+		t.Fatalf("ListAfter count = %d, want 1", len(afterListed))
+	}
+	if len(afterListed[0].StickerIDs) != 1 || afterListed[0].StickerIDs[0] != "9876543210" {
+		t.Fatalf("ListAfter StickerIDs = %v, want ['9876543210']", afterListed[0].StickerIDs)
+	}
+}
+

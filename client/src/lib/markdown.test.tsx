@@ -126,4 +126,26 @@ describe('Discord AST Markdown Parser', () => {
     expect(html).not.toContain('<img')
     expect(html).toContain('&lt;script&gt;alert(&quot;pwned&quot;)&lt;/script&gt;')
   })
+
+  it('parses custom emojis <:name:id> and animated emojis <a:name:id>', () => {
+    const content = 'Look at this <:pepe:1234567890> and animated <a:party_parrot:9876543210>!'
+    const html = renderToStaticMarkup(<MarkdownView content={content} />)
+
+    expect(html).toContain('src="/emojis/1234567890.png"')
+    expect(html).toContain('alt=":pepe:"')
+    expect(html).toContain('title=":pepe:"')
+    expect(html).toContain('class="chat-custom-emoji"')
+
+    expect(html).toContain('src="/emojis/9876543210.gif"')
+    expect(html).toContain('alt=":party_parrot:"')
+    expect(html).toContain('title=":party_parrot:"')
+  })
+
+  it('supports custom emojis inside bold formatting', () => {
+    const content = '**<:pepe:1234567890>**'
+    const html = renderToStaticMarkup(<MarkdownView content={content} />)
+
+    expect(html).toContain('<strong class="markdown-bold">')
+    expect(html).toContain('src="/emojis/1234567890.png"')
+  })
 })

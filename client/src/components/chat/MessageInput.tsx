@@ -1,11 +1,23 @@
-import { useState, useRef, useEffect, type FormEvent, type RefObject } from 'react'
+import { useState, useRef, useEffect, useMemo, type FormEvent, type RefObject } from 'react'
 import { AlertCircle, FileText, Loader2, Plus, Send, Smile, X } from 'lucide-react'
 import type { GuildEmoji, GuildSticker, Message } from '../../types'
 import type { PendingUpload } from '../../lib/uploads'
 import { formatBytes } from '../../lib/uploads'
+import {
+  cycleIndex,
+  extractMentionQuery,
+  rankSuggestions,
+  splitMentionChunks,
+  suggestionInsertText,
+  type MentionSuggestion,
+  type SuggestMember,
+  type SuggestRole,
+} from '../../lib/mentionSuggest'
 import { ReplyBar } from './ReplyBar'
 import { ReactionPicker, type ServerEmojiGroup, type ServerStickerGroup } from './ReactionPicker'
 import { GifPicker } from './GifPicker'
+
+export type { SuggestMember, SuggestRole }
 
 function serializeEditable(element: HTMLElement): string {
   let result = ''
@@ -19,6 +31,16 @@ function serializeEditable(element: HTMLElement): string {
         const name = el.dataset.name || ''
         const id = el.dataset.id || ''
         result += isAnim ? `<a:${name}:${id}>` : `<:${name}:${id}>`
+      } else if (el.tagName === 'SPAN' && el.dataset.mentionKind) {
+        // Accepted @-mention (Issue #123): plain tinted text in the composer,
+        // wire syntax in the content.
+        const kind = el.dataset.mentionKind
+        const id = el.dataset.mentionId || ''
+        if (kind === 'user' && id) result += `<@${id}>`
+        else if (kind === 'role' && id) result += `<@&${id}>`
+        else if (kind === 'everyone') result += '@everyone'
+        else if (kind === 'here') result += '@here'
+        else result += el.textContent || ''
       } else if (el.tagName === 'BR') {
         result += '\n'
       } else {
@@ -29,39 +51,100 @@ function serializeEditable(element: HTMLElement): string {
   return result
 }
 
-function renderStringToEditable(element: HTMLElement, text: string) {
+/** Builds a composer mention node: tinted plain text, atomic, syntax-backed. */
+export function buildMentionNode(s: MentionSuggestion): HTMLElement {
+  const span = document.createElement('span')
+  span.dataset.mentionKind = s.kind
+  if (s.kind === 'user' || s.kind === 'role') {
+    span.dataset.mentionId = s.id
+  }
+  span.textContent = suggestionInsertText(s)
+  span.className = 'chat-input-mention'
+  span.contentEditable = 'false'
+  return span
+}
+
+export interface MentionLabelResolver {
+  userLabel?: (id: string) => string | undefined
+  roleLabel?: (id: string) => string | undefined
+}
+
+function appendMentionNode(
+  parent: HTMLElement,
+  kind: 'user' | 'role',
+  id: string,
+  label: string | undefined,
+  raw: string,
+) {
+  if (label === undefined) {
+    // Unknown id (or no resolver): keep raw syntax as text so the
+    // serialize round-trip stays exact.
+    parent.appendChild(document.createTextNode(raw))
+    return
+  }
+  const span = document.createElement('span')
+  span.dataset.mentionKind = kind
+  span.dataset.mentionId = id
+  span.textContent = label
+  span.className = 'chat-input-mention'
+  span.contentEditable = 'false'
+  parent.appendChild(span)
+}
+
+function renderStringToEditable(
+  element: HTMLElement,
+  text: string,
+  resolveMention?: MentionLabelResolver,
+) {
   element.innerHTML = ''
   if (!text) return
 
   const regex = /<(a)?:([a-zA-Z0-9_]{2,32}):([0-9]+)>/g
-  let lastIndex = 0
-  let match: RegExpExecArray | null
 
-  while ((match = regex.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      element.appendChild(document.createTextNode(text.slice(lastIndex, match.index)))
+  // Mentions first: split text into mention/non-mention chunks, then run
+  // the legacy emoji pass over the non-mention chunks.
+  const chunks = splitMentionChunks(text)
+  const effective = chunks.length > 0 ? chunks : [{ text }]
+
+  const renderEmojiPass = (parent: HTMLElement, chunk: string) => {
+    regex.lastIndex = 0
+    let idx = 0
+    let em: RegExpExecArray | null
+    while ((em = regex.exec(chunk)) !== null) {
+      if (em.index > idx) {
+        parent.appendChild(document.createTextNode(chunk.slice(idx, em.index)))
+      }
+      const animated = Boolean(em[1])
+      const name = em[2]
+      const id = em[3]
+      const img = document.createElement('img')
+      img.src = `/emojis/${id}.${animated ? 'gif' : 'png'}`
+      img.alt = `:${name}:`
+      img.title = `:${name}:`
+      img.dataset.type = 'custom-emoji'
+      img.dataset.name = name
+      img.dataset.id = id
+      img.dataset.animated = animated ? 'true' : 'false'
+      img.className = 'chat-input-inline-emoji'
+      img.contentEditable = 'false'
+      img.draggable = false
+      parent.appendChild(img)
+      idx = regex.lastIndex
     }
-    const animated = Boolean(match[1])
-    const name = match[2]
-    const id = match[3]
-    const img = document.createElement('img')
-    img.src = `/emojis/${id}.${animated ? 'gif' : 'png'}`
-    img.alt = `:${name}:`
-    img.title = `:${name}:`
-    img.dataset.type = 'custom-emoji'
-    img.dataset.name = name
-    img.dataset.id = id
-    img.dataset.animated = animated ? 'true' : 'false'
-    img.className = 'chat-input-inline-emoji'
-    img.contentEditable = 'false'
-    img.draggable = false
-    element.appendChild(img)
-
-    lastIndex = regex.lastIndex
+    if (idx < chunk.length) {
+      parent.appendChild(document.createTextNode(chunk.slice(idx)))
+    }
   }
 
-  if (lastIndex < text.length) {
-    element.appendChild(document.createTextNode(text.slice(lastIndex)))
+  for (const chunk of effective) {
+    if (chunk.mention) {
+      const { kind, id, raw } = chunk.mention
+      const label =
+        kind === 'user' ? resolveMention?.userLabel?.(id) : resolveMention?.roleLabel?.(id)
+      appendMentionNode(element, kind, id, label, raw)
+    } else {
+      renderEmojiPass(element, chunk.text)
+    }
   }
 }
 
@@ -119,6 +202,10 @@ interface MessageInputProps {
   customStickerGroups?: ServerStickerGroup[]
   onSelectSticker?: (sticker: GuildSticker) => void
   onSendGif?: (url: string) => void
+  // Mention autocomplete (Issue #123). When omitted/empty the popover never opens.
+  mentionMembers?: SuggestMember[]
+  mentionRoles?: SuggestRole[]
+  canMentionEveryone?: boolean
 }
 
 export function MessageInput({
@@ -141,11 +228,21 @@ export function MessageInput({
   customStickerGroups = [],
   onSelectSticker,
   onSendGif,
+  mentionMembers = [],
+  mentionRoles = [],
+  canMentionEveryone = false,
 }: MessageInputProps) {
   const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false)
   const [isGifPickerOpen, setIsGifPickerOpen] = useState(false)
+  // Mention autocomplete state (Issue #123): the active @-query (null when
+  // the caret is not inside a trigger), the highlighted index, and the
+  // popover anchor relative to the input wrapper.
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null)
+  const [mentionIndex, setMentionIndex] = useState(0)
+  const [mentionPos, setMentionPos] = useState<{ left: number; top: number } | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const innerRef = useRef<HTMLDivElement>(null)
+  const wrapperRef = useRef<HTMLDivElement>(null)
 
   const setRef = (el: HTMLDivElement | null) => {
     (innerRef as any).current = el
@@ -165,17 +262,226 @@ export function MessageInput({
     if (!innerRef.current) return
     const currentSerialized = serializeEditable(innerRef.current)
     if (currentSerialized !== inputText) {
-      renderStringToEditable(innerRef.current, inputText)
+      renderStringToEditable(innerRef.current, inputText, mentionResolver)
     }
   }, [inputText])
+
+  // Display-name lookup for re-rendering accepted mentions from stored
+  // syntax (edits, drafts, external changes). Unknown ids fall back to raw
+  // syntax text so the serialize round-trip stays exact.
+  const mentionResolver: MentionLabelResolver = {
+    userLabel: (id) => {
+      const m = mentionMembers.find((mm) => String(mm.id) === String(id))
+      if (!m) return undefined
+      return `@${m.nick || m.username}`
+    },
+    roleLabel: (id) => {
+      const r = mentionRoles.find((rr) => String(rr.id) === String(id))
+      if (!r) return undefined
+      return `@${r.name}`
+    },
+  }
+
+  const mentionSuggestions = useMemo(
+    () => (mentionQuery === null ? [] : rankSuggestions(mentionQuery, mentionMembers, mentionRoles, canMentionEveryone)),
+    [mentionQuery, mentionMembers, mentionRoles, canMentionEveryone],
+  )
+
+  // Caret-relative helpers for the autocomplete trigger.
+  const textBeforeCaret = (): string | null => {
+    const root = innerRef.current
+    const sel = window.getSelection()
+    if (!root || !sel || sel.rangeCount === 0 || !sel.isCollapsed) return null
+    if (!root.contains(sel.anchorNode)) return null
+    const caret = sel.getRangeAt(0)
+    const probe = caret.cloneRange()
+    probe.selectNodeContents(root)
+    try {
+      probe.setEnd(caret.endContainer, caret.endOffset)
+    } catch {
+      return null
+    }
+    return probe.toString()
+  }
+
+  const updateMentionQuery = () => {
+    if (!canSend) {
+      setMentionQuery(null)
+      return
+    }
+    const before = textBeforeCaret()
+    const query = before === null ? null : extractMentionQuery(before)
+    setMentionQuery(query)
+    if (query === null) {
+      setMentionPos(null)
+      return
+    }
+    // Anchor the popover at the caret.
+    const sel = window.getSelection()
+    const wrapper = wrapperRef.current
+    if (sel && sel.rangeCount > 0 && wrapper) {
+      const caretRect = sel.getRangeAt(0).getBoundingClientRect()
+      const wrapRect = wrapper.getBoundingClientRect()
+      if (caretRect.width >= 0) {
+        setMentionPos({
+          left: Math.max(0, Math.min(caretRect.left - wrapRect.left, wrapRect.width - 40)),
+          top: caretRect.top - wrapRect.top,
+        })
+      }
+    }
+  }
+
+  const closeMentionPopover = () => {
+    setMentionQuery(null)
+    setMentionIndex(0)
+    setMentionPos(null)
+  }
+
+  // Reset the highlighted index whenever the query (or list) changes.
+  useEffect(() => {
+    setMentionIndex(0)
+  }, [mentionQuery])
+
+  // Sending clears the input: drop any stale trigger with it.
+  useEffect(() => {
+    if (!inputText) {
+      setMentionQuery(null)
+      setMentionPos(null)
+    }
+  }, [inputText])
+
+  const acceptMention = (s: MentionSuggestion) => {
+    const root = innerRef.current
+    const sel = window.getSelection()
+    if (!root || !sel || sel.rangeCount === 0 || !sel.isCollapsed) return
+    const caret = sel.getRangeAt(0)
+    const container = caret.endContainer
+    if (container.nodeType !== Node.TEXT_NODE || !root.contains(container)) return
+
+    // Collect contiguous text backwards across text-node siblings (typing
+    // may split nodes), then locate the "@query" tail.
+    let tail = ''
+    const nodes: Text[] = []
+    let node: Node | null = container
+    while (node && node !== root && tail.length < 44) {
+      if (node.nodeType !== Node.TEXT_NODE) break
+      const chunk =
+        node === container
+          ? (node.textContent ?? '').slice(0, caret.endOffset)
+          : (node.textContent ?? '')
+      tail = chunk + tail
+      nodes.unshift(node as Text)
+      node = previousTextishSibling(node, root)
+    }
+    const tailMatch = /(?:^|\s)@([A-Za-z0-9_]{0,32})$/.exec(tail)
+    if (!tailMatch || nodes.length === 0) return
+
+    // Delete exactly "@query" (not a preceding space): walk back from the
+    // caret across the collected nodes.
+    let remaining = tailMatch[0].startsWith('@') ? tailMatch[0].length : tailMatch[0].length - 1
+    let startNode: Node = container
+    let startOffset = caret.endOffset
+    for (let i = nodes.length - 1; i >= 0 && remaining > 0; i--) {
+      const n = nodes[i]
+      const avail = i === nodes.length - 1 ? caret.endOffset : (n.textContent ?? '').length
+      if (avail >= remaining) {
+        startNode = n
+        startOffset = avail - remaining
+        remaining = 0
+      } else {
+        remaining -= avail
+      }
+    }
+    if (remaining > 0) return
+
+    const range = document.createRange()
+    try {
+      range.setStart(startNode, Math.max(0, startOffset))
+      range.setEnd(container, caret.endOffset)
+    } catch {
+      return
+    }
+    range.deleteContents()
+
+    const pill = buildMentionNode(s)
+    range.insertNode(pill)
+    const space = document.createTextNode(' ')
+    if (pill.nextSibling) {
+      root.insertBefore(space, pill.nextSibling)
+    } else {
+      root.appendChild(space)
+    }
+    const after = document.createRange()
+    after.setStartAfter(space)
+    after.collapse(true)
+    sel.removeAllRanges()
+    sel.addRange(after)
+
+    closeMentionPopover()
+    handleInput()
+    root.focus()
+  }
+
+  // Previous sibling that can carry typed text (skip atomic pills/emoji).
+  function previousTextishSibling(n: Node, root: HTMLElement): Node | null {
+    let sib = n.previousSibling
+    while (sib) {
+      if (sib.nodeType === Node.TEXT_NODE) return sib
+      if (sib.nodeType === Node.ELEMENT_NODE) {
+        const el = sib as HTMLElement
+        if (el.dataset.mentionKind || el.dataset.type === 'custom-emoji' || el.contentEditable === 'false') {
+          return null
+        }
+        // Recurse into the last text descendant of a plain element.
+        let deep: Node | null = el.lastChild
+        while (deep && deep.nodeType !== Node.TEXT_NODE) {
+          deep = deep.lastChild
+        }
+        if (deep) return deep
+        return null
+      }
+      sib = sib.previousSibling
+    }
+    // Cross element boundaries (e.g. nested formatting) one level up.
+    const parent = n.parentNode
+    if (parent && parent !== root) return previousTextishSibling(parent, root)
+    return null
+  }
 
   const handleInput = () => {
     if (!innerRef.current) return
     const serialized = serializeEditable(innerRef.current)
     onChange(serialized)
+    updateMentionQuery()
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    // Mention popover takes over navigation keys while open with results.
+    if (mentionQuery !== null && mentionSuggestions.length > 0) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault()
+        setMentionIndex((prev) =>
+          cycleIndex(prev, e.key === 'ArrowDown' ? 1 : -1, mentionSuggestions.length),
+        )
+        return
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault()
+        const target =
+          mentionSuggestions[Math.min(mentionIndex, mentionSuggestions.length - 1)]
+        if (target) acceptMention(target)
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        closeMentionPopover()
+        return
+      }
+    } else if (e.key === 'Escape' && mentionQuery !== null) {
+      e.preventDefault()
+      closeMentionPopover()
+      return
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       if (canSubmit) {
@@ -190,7 +496,7 @@ export function MessageInput({
     if (!text) return
 
     const temp = document.createElement('div')
-    renderStringToEditable(temp, text)
+    renderStringToEditable(temp, text, mentionResolver)
 
     const fragment = document.createDocumentFragment()
     while (temp.firstChild) {
@@ -325,7 +631,42 @@ export function MessageInput({
             </button>
           </>
         )}
-        <div className="chat-input-wrapper" style={{ position: 'relative', flex: 1, display: 'flex', alignItems: 'center' }}>
+        <div ref={wrapperRef} className="chat-input-wrapper" style={{ position: 'relative', flex: 1, display: 'flex', alignItems: 'center' }}>
+          {mentionQuery !== null && mentionSuggestions.length > 0 && (
+            <div
+              className="mention-suggest-pop"
+              role="listbox"
+              aria-label="Mention suggestions"
+              style={
+                mentionPos
+                  ? { left: mentionPos.left, bottom: `calc(100% - ${mentionPos.top}px)` }
+                  : undefined
+              }
+            >
+              {mentionSuggestions.map((s, i) => {
+                const key = `${s.kind}:${s.id}`
+                const activeCls = i === Math.min(mentionIndex, mentionSuggestions.length - 1) ? 'active' : ''
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    role="option"
+                    aria-selected={i === mentionIndex}
+                    className={`mention-suggest-item ${activeCls}`}
+                    // mousedown fires before blur so the caret is still valid.
+                    onMouseDown={(e) => {
+                      e.preventDefault()
+                      acceptMention(s)
+                    }}
+                  >
+                    <span className={`mention-suggest-kind kind-${s.kind}`}>{s.kind}</span>
+                    <span className="mention-suggest-label">{s.label}</span>
+                    {'sub' in s && s.sub && <span className="mention-suggest-sub">{s.sub}</span>}
+                  </button>
+                )
+              })}
+            </div>
+          )}
           {!inputText && (
             <div
               className="chat-input-placeholder"
@@ -351,6 +692,8 @@ export function MessageInput({
             onInput={handleInput}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
+            onSelect={updateMentionQuery}
+            onClick={updateMentionQuery}
             className="chat-input"
             role="textbox"
             aria-multiline="false"

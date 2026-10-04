@@ -4,7 +4,7 @@ import { api } from '../../api'
 import { useAuth } from '../../context/useAuth'
 import { useGateway } from '../../gateway/useGateway'
 import { memberNameColor } from '../../lib/members'
-import { ADD_REACTIONS, ATTACH_FILES, hasPermission, MANAGE_MESSAGES, resolveChannelPermissions, SEND_MESSAGES } from '../../lib/permissions'
+import { ADD_REACTIONS, ATTACH_FILES, hasPermission, MANAGE_MESSAGES, MENTION_EVERYONE, resolveChannelPermissions, SEND_MESSAGES } from '../../lib/permissions'
 import { applyMessageUpdate } from '../../lib/message-updates'
 import { applyReactionAdd, applyReactionRemove, toggleReactionOptimistic } from '../../lib/reactions'
 import { parseSearchQuery } from '../../lib/search'
@@ -273,6 +273,24 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
     channelPerms === 'owner' || (channelPerms != null && hasPermission(channelPerms, ADD_REACTIONS))
   const canManageMessages =
     channelPerms === 'owner' || (channelPerms != null && hasPermission(channelPerms, MANAGE_MESSAGES))
+
+  // Mention autocomplete data (Issue #123): guild members/roles shaped for
+  // the composer, plus the broadcast gate mirroring the server's validation.
+  const mentionMembers = useMemo(
+    () =>
+      guildMembers.map((m) => ({
+        id: m.user.id,
+        username: m.user.username,
+        nick: m.nick,
+      })),
+    [guildMembers],
+  )
+  const mentionRoles = useMemo(
+    () => guildRoles.map((r) => ({ id: r.id, name: r.name, mentionable: r.mentionable })),
+    [guildRoles],
+  )
+  const canMentionEveryone =
+    channelPerms === 'owner' || (channelPerms != null && hasPermission(channelPerms, MENTION_EVERYONE))
 
   const EDIT_WINDOW_MS = 15 * 60 * 1000
 
@@ -1783,6 +1801,9 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
             customStickerGroups={customStickerGroups}
             onSelectSticker={handleSendSticker}
             onSendGif={handleSendGif}
+            mentionMembers={mentionMembers}
+            mentionRoles={mentionRoles}
+            canMentionEveryone={canMentionEveryone}
           />
         </div>
 

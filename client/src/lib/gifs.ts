@@ -27,3 +27,24 @@ export function extractGifUrls(content: string): string[] {
 
   return gifUrls
 }
+
+/**
+ * Strips embedded GIF URLs from text so the raw URL string does not appear in chat.
+ */
+export function stripGifUrls(content: string): string {
+  if (!content) return ''
+  const gifUrls = extractGifUrls(content)
+  if (gifUrls.length === 0) return content
+
+  let text = content
+  for (const url of gifUrls) {
+    text = text.split(`<${url}>`).join('')
+    text = text.split(url).join('')
+  }
+  return text
+    .split('\n')
+    .map((line) => line.replace(/[ \t]+/g, ' ').trim())
+    .filter((line) => line.length > 0)
+    .join('\n')
+    .trim()
+}

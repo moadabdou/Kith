@@ -1,4 +1,5 @@
 import type { ReferencedMsg } from '../../types'
+import { stripGifUrls } from '../../lib/gifs'
 
 interface ParentQuoteProps {
   replyToId: string
@@ -44,7 +45,7 @@ export function ParentQuote({ replyToId, referencedMessage, onJump }: ParentQuot
             @{referencedMessage.author?.username || 'Unknown'}
           </span>
           <span className="reply-quote-text">
-            {referencedMessage.content || '(attachment)'}
+            {stripGifUrls(referencedMessage.content || '') || (referencedMessage.content ? 'GIF' : '(attachment)')}
           </span>
         </div>
       )}

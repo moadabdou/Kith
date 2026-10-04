@@ -22,7 +22,7 @@ import type { Channel, Guild, GuildEmoji, GuildSticker, Member, Message, Role, S
 import { SearchBar } from '../search/SearchBar'
 import { SearchResults } from '../search/SearchResults'
 import { AttachmentView } from './AttachmentView'
-import { extractGifUrls } from '../../lib/gifs'
+import { extractGifUrls, stripGifUrls } from '../../lib/gifs'
 import { DeleteMessageModal } from './DeleteMessageModal'
 import { MessageInput } from './MessageInput'
 import { MessageToolbar } from './MessageToolbar'
@@ -1591,23 +1591,30 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
                             </span>
                           </div>
                         </div>
-                      ) : (
-                        <div className="message-text">
-                          <MarkdownView
-                            content={msg.content}
-                            members={guildMembers}
-                            roles={guildRoles}
-                          />
-                          {msg.edited_timestamp && (
-                            <span
-                              className="message-edited-tag"
-                              title={formatFullDateTime(msg.edited_timestamp)}
-                            >
-                              (edited)
-                            </span>
-                          )}
-                        </div>
-                      )}
+                      ) : (() => {
+                        const gifUrls = extractGifUrls(msg.content)
+                        const textContent = gifUrls.length > 0 ? stripGifUrls(msg.content) : msg.content
+                        if (!textContent && !msg.edited_timestamp) return null
+                        return (
+                          <div className="message-text">
+                            {textContent && (
+                              <MarkdownView
+                                content={textContent}
+                                members={guildMembers}
+                                roles={guildRoles}
+                              />
+                            )}
+                            {msg.edited_timestamp && (
+                              <span
+                                className="message-edited-tag"
+                                title={formatFullDateTime(msg.edited_timestamp)}
+                              >
+                                (edited)
+                              </span>
+                            )}
+                          </div>
+                        )
+                      })()}
 
                       {msg.attachments && msg.attachments.length > 0 && (
                         <div className="message-attachments">

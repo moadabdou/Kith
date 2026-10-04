@@ -199,6 +199,28 @@ func TestEmojis_NameValidation(t *testing.T) {
 	}
 }
 
+func TestStickers_NameValidation(t *testing.T) {
+	cases := []struct {
+		name  string
+		valid bool
+	}{
+		{"a", false},
+		{"dancing cat", true},
+		{"party_popper-1", true},
+		{"cool-sticker", true},
+		{"this_name_is_way_too_long_for_a_sticker_123456", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			match := validStickerNameRegex.MatchString(tc.name)
+			if match != tc.valid {
+				t.Fatalf("sticker name %q valid = %v, want %v", tc.name, match, tc.valid)
+			}
+		})
+	}
+}
+
 func TestEmojis_CrossServerAccessValidation(t *testing.T) {
 	store := newMockStore()
 	node, _ := snowflake.NewNode(1)

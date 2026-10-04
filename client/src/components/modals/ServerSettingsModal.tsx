@@ -171,11 +171,26 @@ export function ServerSettingsModal({
     }
   }, [guild])
 
+  // Automatically fetch emojis or stickers when respective tab is active
+  useEffect(() => {
+    if (!isOpen || !guild) return
+    setError(null)
+    setSuccess(null)
+    if (activeTab === 'emojis') {
+      fetchEmojis()
+    } else if (activeTab === 'stickers') {
+      fetchStickers()
+    }
+  }, [isOpen, guild, activeTab, fetchEmojis, fetchStickers])
+
   const handleEmojiFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
+    setError(null)
+    setSuccess(null)
     if (file.size > 256 * 1024) {
-      setError('Emoji file size must be under 256 KB')
+      setError(`Emoji file size (${(file.size / 1024).toFixed(1)} KB) exceeds the 256 KB limit`)
+      e.target.value = ''
       return
     }
     setEmojiFile(file)
@@ -184,12 +199,11 @@ export function ServerSettingsModal({
       .replace(/[^a-zA-Z0-9_]/g, '_')
       .toLowerCase()
       .slice(0, 32)
-    if (!emojiName) {
-      setEmojiName(baseName)
-    }
+    setEmojiName(baseName || 'custom_emoji')
     const reader = new FileReader()
     reader.onload = () => setEmojiPreview(reader.result as string)
     reader.readAsDataURL(file)
+    e.target.value = ''
   }
 
   const handleUploadEmoji = async (e: React.FormEvent) => {
@@ -226,22 +240,24 @@ export function ServerSettingsModal({
   const handleStickerFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
+    setError(null)
+    setSuccess(null)
     if (file.size > 512 * 1024) {
-      setError('Sticker file size must be under 512 KB')
+      setError(`Sticker file size (${(file.size / 1024).toFixed(1)} KB) exceeds the 512 KB limit`)
+      e.target.value = ''
       return
     }
     setStickerFile(file)
     const baseName = file.name
       .replace(/\.[^/.]+$/, '')
-      .replace(/[^a-zA-Z0-9_ ]/g, '')
+      .replace(/[^a-zA-Z0-9_ -]/g, '')
       .trim()
       .slice(0, 30)
-    if (!stickerName) {
-      setStickerName(baseName)
-    }
+    setStickerName(baseName || 'custom sticker')
     const reader = new FileReader()
     reader.onload = () => setStickerPreview(reader.result as string)
     reader.readAsDataURL(file)
+    e.target.value = ''
   }
 
   const handleUploadSticker = async (e: React.FormEvent) => {
@@ -1381,6 +1397,75 @@ export function ServerSettingsModal({
                 </p>
               </div>
 
+              {error && (
+                <div
+                  style={{
+                    backgroundColor: 'rgba(218, 55, 60, 0.15)',
+                    border: '1px solid var(--danger)',
+                    color: '#ff7b72',
+                    padding: '10px 14px',
+                    borderRadius: 6,
+                    fontSize: 13,
+                    maxWidth: 640,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 12,
+                  }}
+                >
+                  <span>{error}</span>
+                  <button
+                    type="button"
+                    onClick={() => setError(null)}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: '#ff7b72',
+                      cursor: 'pointer',
+                      fontSize: 16,
+                      lineHeight: 1,
+                      padding: 0,
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+              {success && (
+                <div
+                  style={{
+                    backgroundColor: 'rgba(35, 165, 90, 0.15)',
+                    border: '1px solid #23a55a',
+                    color: '#57f287',
+                    padding: '10px 14px',
+                    borderRadius: 6,
+                    fontSize: 13,
+                    maxWidth: 640,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 12,
+                  }}
+                >
+                  <span>{success}</span>
+                  <button
+                    type="button"
+                    onClick={() => setSuccess(null)}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: '#57f287',
+                      cursor: 'pointer',
+                      fontSize: 16,
+                      lineHeight: 1,
+                      padding: 0,
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+
               {canManageGuild ? (
                 <form
                   onSubmit={handleUploadEmoji}
@@ -1563,7 +1648,7 @@ export function ServerSettingsModal({
                       >
                         <div style={{ display: 'flex', alignItems: 'center', gap: 10, overflow: 'hidden' }}>
                           <img
-                            src={`/emojis/${emoji.id}.png`}
+                            src={emoji.url || `/emojis/${emoji.id}.${emoji.animated ? 'gif' : 'png'}`}
                             alt={emoji.name}
                             style={{ width: 36, height: 36, objectFit: 'contain', flexShrink: 0 }}
                           />
@@ -1625,6 +1710,75 @@ export function ServerSettingsModal({
                   Slots: {stickers.length} / 50.
                 </p>
               </div>
+
+              {error && (
+                <div
+                  style={{
+                    backgroundColor: 'rgba(218, 55, 60, 0.15)',
+                    border: '1px solid var(--danger)',
+                    color: '#ff7b72',
+                    padding: '10px 14px',
+                    borderRadius: 6,
+                    fontSize: 13,
+                    maxWidth: 640,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 12,
+                  }}
+                >
+                  <span>{error}</span>
+                  <button
+                    type="button"
+                    onClick={() => setError(null)}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: '#ff7b72',
+                      cursor: 'pointer',
+                      fontSize: 16,
+                      lineHeight: 1,
+                      padding: 0,
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+              {success && (
+                <div
+                  style={{
+                    backgroundColor: 'rgba(35, 165, 90, 0.15)',
+                    border: '1px solid #23a55a',
+                    color: '#57f287',
+                    padding: '10px 14px',
+                    borderRadius: 6,
+                    fontSize: 13,
+                    maxWidth: 640,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 12,
+                  }}
+                >
+                  <span>{success}</span>
+                  <button
+                    type="button"
+                    onClick={() => setSuccess(null)}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: '#57f287',
+                      cursor: 'pointer',
+                      fontSize: 16,
+                      lineHeight: 1,
+                      padding: 0,
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
 
               {canManageGuild ? (
                 <form
@@ -1808,7 +1962,7 @@ export function ServerSettingsModal({
                         }}
                       >
                         <img
-                          src={`/stickers/${sticker.id}.png`}
+                          src={sticker.url || `/stickers/${sticker.id}.png`}
                           alt={sticker.name}
                           style={{ width: 80, height: 80, objectFit: 'contain' }}
                         />

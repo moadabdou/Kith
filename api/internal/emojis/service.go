@@ -36,7 +36,8 @@ const (
 )
 
 var (
-	validNameRegex = regexp.MustCompile(`^[a-zA-Z0-9_]{2,32}$`)
+	validNameRegex        = regexp.MustCompile(`^[a-zA-Z0-9_]{2,32}$`)
+	validStickerNameRegex = regexp.MustCompile(`^[a-zA-Z0-9_ -]{2,32}$`)
 )
 
 // Service provides emoji and sticker management and cross-server authorization.
@@ -272,7 +273,7 @@ func (s *Service) CreateSticker(ctx context.Context, guildID, userID int64, name
 		return nil, err
 	}
 	name = strings.TrimSpace(name)
-	if !validNameRegex.MatchString(name) {
+	if !validStickerNameRegex.MatchString(name) {
 		return nil, ErrInvalidName
 	}
 	if len(description) > 100 {

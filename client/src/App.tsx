@@ -7,9 +7,11 @@ import { CreateChannelModal } from './components/modals/CreateChannelModal'
 import { CreateGuildModal } from './components/modals/CreateGuildModal'
 import { InviteModal } from './components/modals/InviteModal'
 import { ServerSettingsModal } from './components/modals/ServerSettingsModal'
+import { UserSettingsModal } from './components/modals/UserSettingsModal'
 import { ChannelSidebar } from './components/navigation/ChannelSidebar'
 import { MemberSidebar } from './components/navigation/MemberSidebar'
 import { ServerSidebar } from './components/navigation/ServerSidebar'
+import { gatewayClient } from './gateway/client'
 import { ConnectionBanner } from './components/common/ConnectionBanner'
 import { AuthProvider } from './context/AuthContext'
 import { useAuth } from './context/useAuth'
@@ -43,9 +45,10 @@ if (initialInvite && typeof window !== 'undefined') {
 }
 
 function Dashboard() {
-  const { user, loading } = useAuth()
+  const { user, loading, logout } = useAuth()
   const {
     onSessionReset,
+    subscribeToGuildUpdates,
     subscribeToChannelCreates,
     subscribeToChannelUpdates,
     subscribeToChannelDeletes,
@@ -65,8 +68,38 @@ function Dashboard() {
   const [createChannelDefaultType, setCreateChannelDefaultType] = useState<number>(0)
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false)
   const [isServerSettingsModalOpen, setIsServerSettingsModalOpen] = useState(false)
+  const [isUserSettingsModalOpen, setIsUserSettingsModalOpen] = useState(false)
   const [channelSettingsTarget, setChannelSettingsTarget] = useState<Channel | null>(null)
   const [inviteFeedback, setInviteFeedback] = useState<{ message: string; isError?: boolean } | null>(null)
+
+  const [userPresence, setUserPresence] = useState<'online' | 'idle' | 'dnd' | 'invisible'>(() => {
+    try {
+      const saved = localStorage.getItem('kith_user_presence')
+      if (saved === 'online' || saved === 'idle' || saved === 'dnd' || saved === 'invisible') {
+        return saved
+      }
+    } catch {}
+    return 'online'
+  })
+
+  const handlePresenceChange = useCallback((status: 'online' | 'idle' | 'dnd' | 'invisible') => {
+    setUserPresence(status)
+    try {
+      localStorage.setItem('kith_user_presence', status)
+    } catch {}
+    gatewayClient.sendStatusUpdate(status)
+  }, [])
+
+  // Keep presence in sync with gateway on connection and page load
+  useEffect(() => {
+    const unsub = gatewayClient.onReady(() => {
+      gatewayClient.sendStatusUpdate(userPresence)
+    })
+    if (gatewayClient.getStatus() === 'ready') {
+      gatewayClient.sendStatusUpdate(userPresence)
+    }
+    return unsub
+  }, [userPresence])
 
   const refreshChannels = useCallback(async () => {
     if (!selectedGuildId) return
@@ -234,6 +267,15 @@ function Dashboard() {
     subscribeToChannelDeletes,
   ])
 
+  // Real-time guild updates (icon, banner, name changes) via WebSocket
+  useEffect(() => {
+    return subscribeToGuildUpdates((updatedGuild) => {
+      setGuilds((prev) =>
+        prev.map((g) => (g.id === updatedGuild.id ? { ...g, ...updatedGuild } : g))
+      )
+    })
+  }, [subscribeToGuildUpdates])
+
   const handleCreateGuild = async (name: string) => {
     const newGuild = await api.createGuild(name)
     setGuilds((prev) => [...prev, newGuild])
@@ -387,6 +429,9 @@ function Dashboard() {
         mentionState={mentionState}
         setMentionState={setMentionState}
         onJumpToMention={handleJumpToMention}
+        onOpenUserSettings={() => setIsUserSettingsModalOpen(true)}
+        presenceStatus={userPresence}
+        onStatusChange={handlePresenceChange}
       />
 
       {/* Main Content Area: Voice Stage if voice channel, ChatArea if text channel */}
@@ -437,6 +482,11 @@ function Dashboard() {
         isOpen={isServerSettingsModalOpen}
         guild={currentGuild}
         onClose={() => setIsServerSettingsModalOpen(false)}
+        onGuildUpdated={(updatedGuild) => {
+          setGuilds((prev) =>
+            prev.map((g) => (g.id === updatedGuild.id ? { ...g, ...updatedGuild } : g))
+          )
+        }}
       />
 
       <ChannelSettingsModal
@@ -451,6 +501,15 @@ function Dashboard() {
             setSelectedChannelId(channels.find((c) => c.id !== deletedId)?.id ?? null)
           }
         }}
+      />
+
+      <UserSettingsModal
+        isOpen={isUserSettingsModalOpen}
+        onClose={() => setIsUserSettingsModalOpen(false)}
+        user={user}
+        presenceStatus={userPresence}
+        onStatusChange={handlePresenceChange}
+        onLogout={logout}
       />
       </div>
     </div>

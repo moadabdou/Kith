@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Check, Shield, X } from 'lucide-react'
+import { Check, Shield, UserX, X } from 'lucide-react'
 import { api } from '../../api'
 import { displayName, initialsOf, roleColorHex } from '../../lib/members'
 import type { Member, Role } from '../../types'
@@ -11,8 +11,12 @@ interface MemberRoleModalProps {
   callerHighestPosition: number
   isOwner: boolean
   canManageRoles: boolean
+  canKickMembers?: boolean
+  guildOwnerId?: string
+  currentUserId?: string
   onClose: () => void
   onRolesUpdated: (userId: string, newRoles: string[]) => void
+  onMemberKicked?: (userId: string) => void
 }
 
 export function MemberRoleModal({
@@ -22,12 +26,18 @@ export function MemberRoleModal({
   callerHighestPosition,
   isOwner,
   canManageRoles,
+  canKickMembers,
+  guildOwnerId,
+  currentUserId,
   onClose,
   onRolesUpdated,
+  onMemberKicked,
 }: MemberRoleModalProps) {
   const [currentRoles, setCurrentRoles] = useState<string[]>(member.roles)
   const [updatingRoleId, setUpdatingRoleId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [showKickConfirm, setShowKickConfirm] = useState(false)
+  const [isKicking, setIsKicking] = useState(false)
 
   // Filter out @everyone (id === guildId) and sort descending by position
   const assignableRoles = roles
@@ -70,6 +80,32 @@ export function MemberRoleModal({
     }
   }
 
+  const targetHighestPosition = Math.max(
+    0,
+    ...member.roles.map((rId) => roles.find((r) => r.id === rId)?.position ?? 0)
+  )
+  const isTargetOwner = Boolean(guildOwnerId && member.user.id === guildOwnerId)
+  const isTargetSelf = Boolean(currentUserId && member.user.id === currentUserId)
+  const canKickTarget =
+    Boolean(canKickMembers) &&
+    !isTargetOwner &&
+    !isTargetSelf &&
+    (isOwner || callerHighestPosition > targetHighestPosition)
+
+  const handleKickMember = async () => {
+    setIsKicking(true)
+    setError(null)
+    try {
+      await api.kickMember(guildId, member.user.id)
+      onMemberKicked?.(member.user.id)
+      onClose()
+    } catch (err: any) {
+      setError(err?.message || 'Failed to kick member')
+      setIsKicking(false)
+      setShowKickConfirm(false)
+    }
+  }
+
   const name = displayName(member)
 
   return (
@@ -98,8 +134,65 @@ export function MemberRoleModal({
           </button>
         </div>
 
-        {/* Roles Body */}
-        <div className="modal-body" style={{ padding: '16px 20px', maxHeight: 360, overflowY: 'auto' }}>
+        {showKickConfirm ? (
+          <div className="modal-body" style={{ padding: '20px' }}>
+            <div style={{ fontWeight: 700, fontSize: 16, color: 'var(--text-header)', marginBottom: 8 }}>
+              Kick '{name}' from the server?
+            </div>
+            <div style={{ fontSize: 14, color: 'var(--text-muted)', marginBottom: 20 }}>
+              Are you sure you want to kick <strong>{name}</strong> (@{member.user.username}#{member.user.discriminator})? They will be able to rejoin with a new invite link.
+            </div>
+            {error && (
+              <div style={{ backgroundColor: 'rgba(218, 55, 60, 0.15)', border: '1px solid var(--danger)', color: '#ff7b72', padding: '8px 12px', borderRadius: 4, fontSize: 13, marginBottom: 16 }}>
+                {error}
+              </div>
+            )}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+              <button
+                type="button"
+                onClick={() => setShowKickConfirm(false)}
+                disabled={isKicking}
+                style={{
+                  padding: '8px 16px',
+                  backgroundColor: 'transparent',
+                  color: 'var(--text-normal)',
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: 4,
+                  fontSize: 14,
+                  fontWeight: 500,
+                  cursor: 'pointer',
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleKickMember}
+                disabled={isKicking}
+                style={{
+                  padding: '8px 16px',
+                  backgroundColor: 'var(--danger, #da373c)',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: 4,
+                  fontSize: 14,
+                  fontWeight: 600,
+                  cursor: isKicking ? 'not-allowed' : 'pointer',
+                  opacity: isKicking ? 0.7 : 1,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                }}
+              >
+                <UserX size={15} />
+                {isKicking ? 'Kicking...' : 'Kick Member'}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            {/* Roles Body */}
+            <div className="modal-body" style={{ padding: '16px 20px', maxHeight: 360, overflowY: 'auto' }}>
           <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
             <Shield size={14} /> Server Roles ({assignableRoles.length})
           </div>
@@ -167,14 +260,14 @@ export function MemberRoleModal({
                         height: 20,
                         borderRadius: 4,
                         border: hasRole ? 'none' : '2px solid var(--text-muted)',
-                        backgroundColor: hasRole ? 'var(--brand)' : 'transparent',
+                        backgroundColor: hasRole ? '#ffffff' : 'transparent',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
-                        color: 'white',
+                        color: '#000000',
                       }}
                     >
-                      {hasRole && <Check size={14} strokeWidth={3} />}
+                      {hasRole && <Check size={14} strokeWidth={3} color="#000000" />}
                     </div>
                   </div>
                 )
@@ -184,14 +277,38 @@ export function MemberRoleModal({
         </div>
 
         {/* Footer */}
-        <div className="modal-footer" style={{ padding: '12px 20px', display: 'flex', justifyContent: 'flex-end' }}>
+        <div className="modal-footer" style={{ padding: '12px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          {canKickTarget ? (
+            <button
+              type="button"
+              onClick={() => setShowKickConfirm(true)}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '8px 14px',
+                backgroundColor: 'rgba(218, 55, 60, 0.12)',
+                color: '#ff7b72',
+                border: '1px solid rgba(218, 55, 60, 0.3)',
+                borderRadius: 4,
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: 'pointer',
+                transition: 'all 0.15s ease',
+              }}
+            >
+              <UserX size={15} />
+              Kick Member
+            </button>
+          ) : <div />}
+
           <button
             type="button"
             onClick={onClose}
             style={{
               padding: '8px 18px',
-              backgroundColor: 'var(--brand)',
-              color: 'white',
+              backgroundColor: '#ffffff',
+              color: '#000000',
               border: 'none',
               borderRadius: 4,
               fontWeight: 600,
@@ -202,6 +319,8 @@ export function MemberRoleModal({
             Done
           </button>
         </div>
+        </>
+        )}
       </div>
     </div>
   )

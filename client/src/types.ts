@@ -16,7 +16,8 @@ export interface AuthResponse {
 export interface Guild {
   id: string
   name: string
-  icon?: string
+  icon?: string | null
+  banner?: string | null
   owner_id: string
   created_at: string
   voice_states?: Record<string, VoiceState>

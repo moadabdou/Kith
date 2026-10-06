@@ -111,29 +111,26 @@ func (h *Handler) UpdateGuild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Name *string `json:"name"`
+		Name   *string `json:"name"`
+		Icon   *string `json:"icon"`
+		Banner *string `json:"banner"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		errs.Write(w, errs.InvalidJSON())
 		return
 	}
-	if req.Name == nil {
-		g, err := h.Svc.GetGuild(r.Context(), mustUser(r), id)
-		if err != nil {
-			h.writeErr(w, err)
+	if req.Name != nil {
+		name := strings.TrimSpace(*req.Name)
+		v := errs.NewValidator()
+		v.Check("name", len(name) >= 2 && len(name) <= 100, errs.CodeBadLength, "Must be between 2 and 100 in length.")
+		if v.Err() != nil {
+			errs.Write(w, v.Err())
 			return
 		}
-		httpx.JSON(w, http.StatusOK, g)
-		return
+		req.Name = &name
 	}
-	name := strings.TrimSpace(*req.Name)
-	v := errs.NewValidator()
-	v.Check("name", len(name) >= 2 && len(name) <= 100, errs.CodeBadLength, "Must be between 2 and 100 in length.")
-	if v.Err() != nil {
-		errs.Write(w, v.Err())
-		return
-	}
-	g, err := h.Svc.UpdateGuild(r.Context(), mustUser(r), id, name)
+
+	g, err := h.Svc.UpdateGuild(r.Context(), mustUser(r), id, req.Name, req.Icon, req.Banner)
 	if err != nil {
 		h.writeErr(w, err)
 		return

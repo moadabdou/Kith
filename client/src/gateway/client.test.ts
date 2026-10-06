@@ -520,5 +520,52 @@ describe('Gateway Client Reconnection & RESUME (#26)', () => {
 
       unsubscribe()
     })
+
+    it('re-asserts saved presence status when READY dispatch is received', () => {
+      const client = new GatewayClient()
+      // Manually set status to dnd
+      client.sendStatusUpdate('dnd')
+      expect(client.getCurrentPresenceStatus()).toBe('dnd')
+
+      client.connect('mock-jwt-token')
+      const ws = MockWebSocket.instances[0]
+      ws.receiveJson({ op: 10, d: { heartbeat_interval: 30000 } })
+
+      // Clear sent data (which includes IDENTIFY)
+      ws.sentData = []
+
+      // Server sends READY
+      ws.receiveJson({
+        op: 0,
+        s: 1,
+        t: 'READY',
+        d: { session_id: 'sess_1', user: { id: 'u1', username: 'alice' } },
+      })
+
+      // Client should immediately send op 3 status update declaring dnd
+      expect(ws.sentData.length).toBe(1)
+      const op3 = JSON.parse(ws.sentData[0])
+      expect(op3.op).toBe(3)
+      expect(op3.d.status).toBe('dnd')
+    })
+
+    it('does not overwrite manual presence status (idle/dnd/invisible) on user activity', () => {
+      const client = new GatewayClient()
+      client.sendStatusUpdate('idle')
+      expect(client.getCurrentPresenceStatus()).toBe('idle')
+
+      client.connect('mock-jwt-token')
+      const ws = MockWebSocket.instances[0]
+      ws.receiveJson({ op: 10, d: { heartbeat_interval: 30000 } })
+      ws.sentData = []
+
+      // Advance time beyond idle threshold and trigger user activity
+      client.noteUserActivity(Date.now() + 15 * 60 * 1000)
+
+      // It should NOT send op 3 online because manual status is idle
+      expect(ws.sentData.length).toBe(0)
+      expect(client.getCurrentPresenceStatus()).toBe('idle')
+    })
   })
 })
+

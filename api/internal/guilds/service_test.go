@@ -108,12 +108,19 @@ func TestGuildLifecycle(t *testing.T) {
 		t.Errorf("GetGuild(unknown) = %v, want ErrUnknownGuild", err)
 	}
 
-	if _, err := svc.UpdateGuild(ctx, b, gid, p+"renamed"); !errors.Is(err, ErrMissingPermissions) {
+	renamed := p + "renamed"
+	if _, err := svc.UpdateGuild(ctx, b, gid, &renamed, nil, nil); !errors.Is(err, ErrMissingPermissions) {
 		t.Errorf("UpdateGuild(non-owner) = %v, want ErrMissingPermissions", err)
 	}
-	upd, err := svc.UpdateGuild(ctx, a, gid, p+"renamed")
-	if err != nil || upd.Name != p+"renamed" {
-		t.Errorf("UpdateGuild(owner) = %v, %q; want nil, %q", err, upd.Name, p+"renamed")
+	upd, err := svc.UpdateGuild(ctx, a, gid, &renamed, nil, nil)
+	if err != nil || upd.Name != renamed {
+		t.Errorf("UpdateGuild(owner) = %v, %q; want nil, %q", err, upd.Name, renamed)
+	}
+	testIcon := "https://example.com/icon.png"
+	testBanner := "https://example.com/banner.png"
+	updAssets, err := svc.UpdateGuild(ctx, a, gid, nil, &testIcon, &testBanner)
+	if err != nil || updAssets.Icon == nil || *updAssets.Icon != testIcon || updAssets.Banner == nil || *updAssets.Banner != testBanner {
+		t.Errorf("UpdateGuild(icon, banner) = %v, %+v; want nil, icon & banner set", err, updAssets)
 	}
 
 	if err := svc.AddMember(ctx, a, gid, b); err != nil {

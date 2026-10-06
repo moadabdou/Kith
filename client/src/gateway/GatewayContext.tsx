@@ -19,6 +19,7 @@ import type {
   TypingStartPayload,
   VoiceServerUpdatePayload,
   VoiceStateUpdatePayload,
+  Guild,
 } from '../types'
 import { gatewayClient, type GatewayStatus, type ReconnectState } from './client'
 import { GatewayContext } from './gateway-context-def'
@@ -122,6 +123,10 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
     return gatewayClient.onGuildMemberUpdate(callback)
   }
 
+  const subscribeToGuildUpdates = (callback: (guild: Guild) => void) => {
+    return gatewayClient.onGuildUpdate(callback)
+  }
+
   const subscribeToRoleCreates = (callback: (payload: RoleEventPayload) => void) => {
     return gatewayClient.onGuildRoleCreate(callback)
   }
@@ -202,6 +207,7 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
         subscribeToMemberAdds,
         subscribeToMemberRemoves,
         subscribeToMemberUpdates,
+        subscribeToGuildUpdates,
         subscribeToRoleCreates,
         subscribeToRoleUpdates,
         subscribeToRoleDeletes,

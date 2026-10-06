@@ -21,7 +21,10 @@ export function ServerSidebar({
   guildMentionCounts,
 }: ServerSidebarProps) {
   const [hoveredGuildId, setHoveredGuildId] = useState<string | null>(null)
+  const [isHomeHovered, setIsHomeHovered] = useState(false)
   const [isAddHovered, setIsAddHovered] = useState(false)
+
+  const isHomeActive = selectedGuildId === ''
 
   const getInitials = (name: string) => {
     return name
@@ -35,9 +38,18 @@ export function ServerSidebar({
   return (
     <div className="server-rail">
       {/* Home / Kith logo icon */}
-      <div className="server-icon-wrapper">
+      <div
+        className="server-icon-wrapper"
+        onMouseEnter={() => setIsHomeHovered(true)}
+        onMouseLeave={() => setIsHomeHovered(false)}
+      >
+        <div
+          className={`pill-indicator ${isHomeActive ? 'active' : ''} ${
+            isHomeHovered ? 'hover' : ''
+          }`}
+        />
         <button
-          className="kith-home-btn"
+          className={`kith-home-btn ${isHomeActive ? 'active' : ''}`}
           title="Direct Messages"
           onClick={() => onSelectGuild('')}
         >
@@ -77,11 +89,15 @@ export function ServerSidebar({
               />
             )}
             <button
-              className={`server-icon-btn ${isActive ? 'active' : ''}`}
+              className={`server-icon-btn ${isActive ? 'active' : ''} ${guild.icon ? 'has-icon' : ''}`}
               onClick={() => onSelectGuild(guild.id)}
               title={guild.name}
             >
-              {getInitials(guild.name)}
+              {guild.icon ? (
+                <img src={guild.icon} alt={guild.name} className="server-icon-img" />
+              ) : (
+                getInitials(guild.name)
+              )}
             </button>
           </div>
         )

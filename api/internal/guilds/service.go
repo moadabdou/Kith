@@ -59,6 +59,7 @@ const (
 	eventTypeChannelCreate     = "CHANNEL_CREATE"
 	eventTypeChannelUpdate     = "CHANNEL_UPDATE"
 	eventTypeChannelDelete     = "CHANNEL_DELETE"
+	eventTypeGuildUpdate       = "GUILD_UPDATE"
 	eventVersion               = 1
 )
 
@@ -110,6 +111,8 @@ type channelUpdateEventPayload struct {
 type Guild struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
+	Icon      *string   `json:"icon,omitempty"`
+	Banner    *string   `json:"banner,omitempty"`
 	OwnerID   string    `json:"owner_id"`
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -231,8 +234,8 @@ func (s *Service) CreateGuild(ctx context.Context, ownerID int64, name string) (
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO guilds (id, name, owner_id)
 		VALUES ($1, $2, $3)
-		RETURNING id::text, name, owner_id::text, created_at`,
-		id, name, ownerID).Scan(&g.ID, &g.Name, &g.OwnerID, &g.CreatedAt)
+		RETURNING id::text, name, icon, banner, owner_id::text, created_at`,
+		id, name, ownerID).Scan(&g.ID, &g.Name, &g.Icon, &g.Banner, &g.OwnerID, &g.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -256,9 +259,9 @@ func (s *Service) CreateGuild(ctx context.Context, ownerID int64, name string) (
 func (s *Service) GetGuild(ctx context.Context, userID, guildID int64) (*Guild, error) {
 	var g Guild
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id::text, name, owner_id::text, created_at
+		SELECT id::text, name, icon, banner, owner_id::text, created_at
 		FROM guilds WHERE id = $1`, guildID,
-	).Scan(&g.ID, &g.Name, &g.OwnerID, &g.CreatedAt)
+	).Scan(&g.ID, &g.Name, &g.Icon, &g.Banner, &g.OwnerID, &g.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrUnknownGuild
 	}
@@ -271,30 +274,90 @@ func (s *Service) GetGuild(ctx context.Context, userID, guildID int64) (*Guild, 
 	return &g, nil
 }
 
-// UpdateGuild renames a guild (owner only until Phase 4).
-func (s *Service) UpdateGuild(ctx context.Context, userID, guildID int64, name string) (*Guild, error) {
-	if err := s.requireOwner(ctx, guildID, userID); err != nil {
+// UpdateGuild updates a guild's name, icon, or banner (owner or MANAGE_GUILD/ADMINISTRATOR).
+func (s *Service) UpdateGuild(ctx context.Context, userID, guildID int64, name, icon, banner *string) (*Guild, error) {
+	state, err := s.getMemberRoleState(ctx, guildID, userID)
+	if err != nil {
 		return nil, err
 	}
-	var g Guild
-	err := s.db.QueryRowContext(ctx, `
-		UPDATE guilds SET name = $2
-		WHERE id = $1
-		RETURNING id::text, name, owner_id::text, created_at`,
-		guildID, name).Scan(&g.ID, &g.Name, &g.OwnerID, &g.CreatedAt)
+	if !state.IsOwner && !permissions.Has(state.Permissions, permissions.ADMINISTRATOR) && !permissions.Has(state.Permissions, permissions.MANAGE_GUILD) {
+		return nil, ErrMissingPermissions
+	}
+
+	var curName string
+	var curIcon, curBanner *string
+	var ownerID int64
+	var createdAt time.Time
+	err = s.db.QueryRowContext(ctx, `
+		SELECT name, icon, banner, owner_id, created_at
+		FROM guilds WHERE id = $1`, guildID,
+	).Scan(&curName, &curIcon, &curBanner, &ownerID, &createdAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrUnknownGuild
 	}
 	if err != nil {
 		return nil, err
 	}
+
+	newName := curName
+	if name != nil {
+		newName = *name
+	}
+
+	newIcon := curIcon
+	if icon != nil {
+		if *icon == "" {
+			newIcon = nil
+		} else {
+			newIcon = icon
+		}
+	}
+
+	newBanner := curBanner
+	if banner != nil {
+		if *banner == "" {
+			newBanner = nil
+		} else {
+			newBanner = banner
+		}
+	}
+
+	var g Guild
+	err = s.db.QueryRowContext(ctx, `
+		UPDATE guilds
+		SET name = $2, icon = $3, banner = $4
+		WHERE id = $1
+		RETURNING id::text, name, icon, banner, owner_id::text, created_at`,
+		guildID, newName, newIcon, newBanner,
+	).Scan(&g.ID, &g.Name, &g.Icon, &g.Banner, &g.OwnerID, &g.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrUnknownGuild
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	s.publishGuildUpdate(ctx, guildID, g)
 	return &g, nil
+}
+
+func (s *Service) publishGuildUpdate(ctx context.Context, guildID int64, g Guild) {
+	gidStr := strconv.FormatInt(guildID, 10)
+	if err := s.pub.Publish(ctx, events.Event{
+		Type:    eventTypeGuildUpdate,
+		Version: eventVersion,
+		GuildID: gidStr,
+		Payload: g,
+	}); err != nil {
+		slog.ErrorContext(ctx, "failed to publish event",
+			"type", eventTypeGuildUpdate, "guild_id", gidStr, "error", err)
+	}
 }
 
 // MyGuilds lists guilds the user belongs to ("my guilds" query, members(user_id) index).
 func (s *Service) MyGuilds(ctx context.Context, userID int64) ([]Guild, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT g.id::text, g.name, g.owner_id::text, g.created_at
+		SELECT g.id::text, g.name, g.icon, g.banner, g.owner_id::text, g.created_at
 		FROM members m
 		JOIN guilds g ON g.id = m.guild_id
 		WHERE m.user_id = $1
@@ -307,7 +370,7 @@ func (s *Service) MyGuilds(ctx context.Context, userID int64) ([]Guild, error) {
 	guilds := []Guild{}
 	for rows.Next() {
 		var g Guild
-		if err := rows.Scan(&g.ID, &g.Name, &g.OwnerID, &g.CreatedAt); err != nil {
+		if err := rows.Scan(&g.ID, &g.Name, &g.Icon, &g.Banner, &g.OwnerID, &g.CreatedAt); err != nil {
 			return nil, err
 		}
 		guilds = append(guilds, g)
@@ -601,7 +664,7 @@ func (s *Service) publishMemberAdd(ctx context.Context, guildID, userID int64) {
 	}
 }
 
-// RemoveMember kicks (owner) or self-leaves. The owner is untouchable.
+// RemoveMember kicks or self-leaves. The owner is untouchable.
 func (s *Service) RemoveMember(ctx context.Context, actorID, guildID, targetID int64) error {
 	var ownerID int64
 	err := s.db.QueryRowContext(ctx,
@@ -613,10 +676,27 @@ func (s *Service) RemoveMember(ctx context.Context, actorID, guildID, targetID i
 		return err
 	}
 	if targetID == ownerID {
-		return ErrMissingPermissions // owner cannot be removed; delete guild instead (later)
+		return ErrMissingPermissions // owner cannot be removed
 	}
-	if actorID != targetID && actorID != ownerID {
-		return ErrMissingPermissions // only the owner kicks
+
+	if actorID != targetID {
+		actorState, err := s.getMemberRoleState(ctx, guildID, actorID)
+		if err != nil {
+			return err
+		}
+		if !actorState.IsOwner && !permissions.Has(actorState.Permissions, permissions.ADMINISTRATOR) && !permissions.Has(actorState.Permissions, permissions.KICK_MEMBERS) {
+			return ErrMissingPermissions
+		}
+
+		if !actorState.IsOwner {
+			targetState, err := s.getMemberRoleState(ctx, guildID, targetID)
+			if err != nil {
+				return err
+			}
+			if actorState.HighestPosition <= targetState.HighestPosition {
+				return ErrMissingPermissions
+			}
+		}
 	}
 	res, err := s.db.ExecContext(ctx,
 		`DELETE FROM members WHERE guild_id = $1 AND user_id = $2`, guildID, targetID)
@@ -755,9 +835,9 @@ func (s *Service) JoinInvite(ctx context.Context, userID int64, code string) (*G
 func (s *Service) guildByID(ctx context.Context, guildID int64) (*Guild, error) {
 	var g Guild
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id::text, name, owner_id::text, created_at
+		SELECT id::text, name, icon, banner, owner_id::text, created_at
 		FROM guilds WHERE id = $1`, guildID,
-	).Scan(&g.ID, &g.Name, &g.OwnerID, &g.CreatedAt)
+	).Scan(&g.ID, &g.Name, &g.Icon, &g.Banner, &g.OwnerID, &g.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrUnknownGuild
 	}

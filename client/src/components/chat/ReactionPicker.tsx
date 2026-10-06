@@ -5,14 +5,14 @@ import type { GuildEmoji, GuildSticker } from '../../types'
 export interface ServerEmojiGroup {
   guildId: string
   guildName: string
-  guildIcon?: string
+  guildIcon?: string | null
   emojis: GuildEmoji[]
 }
 
 export interface ServerStickerGroup {
   guildId: string
   guildName: string
-  guildIcon?: string
+  guildIcon?: string | null
   stickers: GuildSticker[]
 }
 

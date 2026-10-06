@@ -4,7 +4,7 @@ import { useAuth } from '../../context/useAuth'
 import { gatewayClient } from '../../gateway/client'
 import { useGateway } from '../../gateway/useGateway'
 import { buildMemberGroups, displayName, initialsOf, memberNameColor } from '../../lib/members'
-import { ADMINISTRATOR, ALL_PERMISSIONS, hasPermission, MANAGE_ROLES } from '../../lib/permissions'
+import { ADMINISTRATOR, ALL_PERMISSIONS, hasPermission, KICK_MEMBERS, MANAGE_ROLES } from '../../lib/permissions'
 import type { Guild, Member, PresenceStatus, Role } from '../../types'
 import { MemberRoleModal } from './MemberRoleModal'
 
@@ -272,6 +272,12 @@ export function MemberSidebar({ guildId, guild }: MemberSidebarProps) {
       (hasPermission(userPermissions, ADMINISTRATOR) ||
         hasPermission(userPermissions, MANAGE_ROLES)))
 
+  const canKickMembers =
+    isOwner ||
+    (userPermissions != null &&
+      (hasPermission(userPermissions, ADMINISTRATOR) ||
+        hasPermission(userPermissions, KICK_MEMBERS)))
+
   const callerMember = members.find((m) => m.user.id === user?.id)
   const callerHighestPosition = isOwner
     ? Infinity
@@ -289,6 +295,11 @@ export function MemberSidebar({ guildId, guild }: MemberSidebarProps) {
     if (selectedMemberForRoles && selectedMemberForRoles.user.id === userId) {
       setSelectedMemberForRoles((prev) => (prev ? { ...prev, roles: newRoles } : null))
     }
+  }
+
+  const handleMemberKicked = (userId: string) => {
+    setMembers((prev) => prev.filter((m) => m.user.id !== userId))
+    setSelectedMemberForRoles(null)
   }
 
   const groups = buildMemberGroups(members, roles, presences)
@@ -314,7 +325,9 @@ export function MemberSidebar({ guildId, guild }: MemberSidebarProps) {
                   {group.label} — {group.members.length}
                 </div>
                 {group.members.map((member) => {
-                  const status = presences.get(member.user.id) ?? 'offline'
+                  const status = (user && member.user.id === user.id)
+                    ? (presences.get(member.user.id) ?? gatewayClient.getCurrentPresenceStatus())
+                    : (presences.get(member.user.id) ?? 'offline')
                   const nameColor = memberNameColor(member, roles)
                   const isOffline = status === 'offline' || status === 'invisible'
                   const name = displayName(member)
@@ -324,11 +337,11 @@ export function MemberSidebar({ guildId, guild }: MemberSidebarProps) {
                       className="member-item"
                       style={{
                         ...(isOffline ? { opacity: 0.5 } : {}),
-                        cursor: canManageRoles ? 'pointer' : 'default',
+                        cursor: (canManageRoles || canKickMembers) ? 'pointer' : 'default',
                       }}
-                      title={`${name} (#${member.user.discriminator})${canManageRoles ? ' — Click to manage roles' : ''}`}
+                      title={`${name} (#${member.user.discriminator})${canManageRoles || canKickMembers ? ' — Click to manage' : ''}`}
                       onClick={() => {
-                        if (canManageRoles) {
+                        if (canManageRoles || canKickMembers) {
                           setSelectedMemberForRoles(member)
                         }
                       }}
@@ -360,8 +373,12 @@ export function MemberSidebar({ guildId, guild }: MemberSidebarProps) {
           callerHighestPosition={callerHighestPosition}
           isOwner={isOwner}
           canManageRoles={canManageRoles}
+          canKickMembers={canKickMembers}
+          guildOwnerId={guild?.owner_id}
+          currentUserId={user?.id}
           onClose={() => setSelectedMemberForRoles(null)}
           onRolesUpdated={handleRolesUpdated}
+          onMemberKicked={handleMemberKicked}
         />
       )}
     </div>

@@ -17,6 +17,7 @@ import type {
   TypingStartPayload,
   VoiceServerUpdatePayload,
   VoiceStateUpdatePayload,
+  Guild,
 } from '../types'
 
 export type GatewayStatus =
@@ -107,8 +108,25 @@ export class GatewayClient {
   // Typing throttle state: channel_id -> last sent timestamp (ms)
   private typingLastSentAt: Map<string, number> = new Map()
 
+  // Presence status persistence (survives refresh and reconnect)
+  private currentPresenceStatus: 'online' | 'idle' | 'dnd' | 'invisible' = (() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('kith_user_presence')
+        if (saved === 'online' || saved === 'idle' || saved === 'dnd' || saved === 'invisible') {
+          return saved
+        }
+      } catch {}
+    }
+    return 'online'
+  })()
+
   public getStatus(): GatewayStatus {
     return this.status
+  }
+
+  public getCurrentPresenceStatus(): 'online' | 'idle' | 'dnd' | 'invisible' {
+    return this.currentPresenceStatus
   }
 
   public getSessionId(): string | null {
@@ -242,6 +260,10 @@ export class GatewayClient {
 
   public onGuildMemberUpdate(callback: (payload: MemberUpdatePayload) => void): () => void {
     return this.on('GUILD_MEMBER_UPDATE', callback)
+  }
+
+  public onGuildUpdate(callback: (guild: Guild) => void): () => void {
+    return this.on('GUILD_UPDATE', callback)
   }
 
   public onGuildRoleCreate(callback: (payload: RoleEventPayload) => void): () => void {
@@ -686,7 +708,17 @@ export class GatewayClient {
    * Declares a presence status (op 3). Used to wake from idle instantly on
    * user input instead of waiting for the next heartbeat to carry activity.
    */
+  /**
+   * Declares a presence status (op 3). Used to wake from idle instantly on
+   * user input instead of waiting for the next heartbeat to carry activity.
+   */
   public sendStatusUpdate(status: 'online' | 'idle' | 'dnd' | 'invisible', opts?: { since?: number; afk?: boolean }) {
+    this.currentPresenceStatus = status
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem('kith_user_presence', status)
+      } catch {}
+    }
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return
     const d: Record<string, unknown> = { status }
     if (opts?.since !== undefined) d.since = opts.since
@@ -702,7 +734,9 @@ export class GatewayClient {
   public noteUserActivity(at: number = Date.now()) {
     const wasIdle = at - this.lastActivityAt >= IDLE_THRESHOLD_MS
     this.lastActivityAt = at
-    if (wasIdle) {
+    // Only wake to 'online' if user was originally 'online' (e.g. idle sweeper marked them idle on inactivity)
+    // Never override explicit manual statuses ('dnd', 'invisible', or manual 'idle')
+    if (wasIdle && this.currentPresenceStatus === 'online') {
       this.sendStatusUpdate('online', { since: at, afk: false })
     }
   }
@@ -729,10 +763,17 @@ export class GatewayClient {
       this.reconnectAttempt = 0
       console.log(`[Gateway] READY received! session_id=${this.sessionId}, user=${data.user?.username}`)
       this.setStatus('ready')
+      // Immediately assert user's persisted status so gateway Presence.Store and member list reflect it
+      if (this.currentPresenceStatus) {
+        this.sendStatusUpdate(this.currentPresenceStatus)
+      }
     } else if (this.status === 'resuming') {
       // Replayed dispatch on successful resume
       this.reconnectAttempt = 0
       this.setStatus('ready')
+      if (this.currentPresenceStatus) {
+        this.sendStatusUpdate(this.currentPresenceStatus)
+      }
     }
 
     this.emit(type, data)

@@ -18,6 +18,7 @@ import type {
   TypingStartPayload,
   VoiceServerUpdatePayload,
   VoiceStateUpdatePayload,
+  Guild,
 } from '../types'
 import type { GatewayStatus } from './client'
 
@@ -52,6 +53,7 @@ export interface GatewayContextValue {
   subscribeToMemberAdds: (callback: (payload: MemberAddPayload) => void) => () => void
   subscribeToMemberRemoves: (callback: (payload: MemberRemovePayload) => void) => () => void
   subscribeToMemberUpdates: (callback: (payload: MemberUpdatePayload) => void) => () => void
+  subscribeToGuildUpdates: (callback: (guild: Guild) => void) => () => void
   subscribeToRoleCreates: (callback: (payload: RoleEventPayload) => void) => () => void
   subscribeToRoleUpdates: (callback: (payload: RoleEventPayload) => void) => () => void
   subscribeToRoleDeletes: (callback: (payload: RoleDeletePayload) => void) => () => void

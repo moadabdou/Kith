@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  Check,
+  ChevronDown,
   Hash,
   Headphones,
   Lock,
-  LogOut,
   Mic,
   MicOff,
   Plus,
@@ -12,6 +13,7 @@ import {
   Volume2,
 } from 'lucide-react'
 import { api } from '../../api'
+import { gatewayClient } from '../../gateway/client'
 import { useAuth } from '../../context/useAuth'
 import { useVoice } from '../../context/useVoice'
 import { useGateway } from '../../gateway/useGateway'
@@ -49,6 +51,9 @@ interface ChannelSidebarProps {
   mentionState: MentionCountState
   setMentionState: React.Dispatch<React.SetStateAction<MentionCountState>>
   onJumpToMention?: (channelId: string, messageId: string) => void
+  onOpenUserSettings?: () => void
+  presenceStatus?: 'online' | 'idle' | 'dnd' | 'invisible'
+  onStatusChange?: (status: 'online' | 'idle' | 'dnd' | 'invisible') => void
 }
 
 function isPrivateChannel(channel: Channel, guildId?: string): boolean {
@@ -100,8 +105,11 @@ export function ChannelSidebar({
   mentionState,
   setMentionState,
   onJumpToMention,
+  onOpenUserSettings,
+  presenceStatus: externalPresence,
+  onStatusChange: externalStatusChange,
 }: ChannelSidebarProps) {
-  const { user, logout } = useAuth()
+  const { user } = useAuth()
   const {
     subscribeToMemberUpdates,
     subscribeToRoleUpdates,
@@ -353,54 +361,169 @@ export function ChannelSidebar({
   const textChannels = channels.filter((c) => !c.type || Number(c.type) === 0)
   const voiceChannels = channels.filter((c) => Number(c.type) === 2)
 
+  // Collapsed category state persisted in localStorage per guild
+  const [collapsedCategories, setCollapsedCategories] = useState<Record<string, boolean>>(() => {
+    try {
+      const saved = localStorage.getItem('kith_collapsed_categories')
+      return saved ? JSON.parse(saved) : {}
+    } catch {
+      return {}
+    }
+  })
+
+  const isTextCollapsed = Boolean(currentGuild && collapsedCategories[`${currentGuild.id}:text`])
+  const isVoiceCollapsed = Boolean(currentGuild && collapsedCategories[`${currentGuild.id}:voice`])
+
+  const toggleCategory = useCallback(
+    (type: 'text' | 'voice') => {
+      if (!currentGuild) return
+      const key = `${currentGuild.id}:${type}`
+      setCollapsedCategories((prev) => {
+        const next = { ...prev, [key]: !prev[key] }
+        try {
+          localStorage.setItem('kith_collapsed_categories', JSON.stringify(next))
+        } catch {
+          // ignore storage errors
+        }
+        return next
+      })
+    },
+    [currentGuild]
+  )
+
+  const textMentionTotal = useMemo(() => {
+    return textChannels.reduce((sum, ch) => sum + (mentionState.counts[ch.id] ?? 0), 0)
+  }, [textChannels, mentionState.counts])
+
+  const voiceMentionTotal = useMemo(() => {
+    return voiceChannels.reduce((sum, ch) => sum + (mentionState.counts[ch.id] ?? 0), 0)
+  }, [voiceChannels, mentionState.counts])
+
+  // Presence state: sync with external prop or localStorage
+  const [internalPresence, setInternalPresence] = useState<'online' | 'idle' | 'dnd' | 'invisible'>(() => {
+    try {
+      const saved = localStorage.getItem('kith_user_presence')
+      if (saved === 'online' || saved === 'idle' || saved === 'dnd' || saved === 'invisible') {
+        return saved
+      }
+    } catch {}
+    return 'online'
+  })
+
+  // Sync internal presence when external prop updates
+  useEffect(() => {
+    if (externalPresence) {
+      setInternalPresence(externalPresence)
+    }
+  }, [externalPresence])
+
+  const presenceStatus = externalPresence ?? internalPresence
+  const [isPresenceMenuOpen, setIsPresenceMenuOpen] = useState(false)
+  const presenceMenuRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    if (!isPresenceMenuOpen) return
+    const handleClickOutside = (e: MouseEvent) => {
+      if (presenceMenuRef.current && !presenceMenuRef.current.contains(e.target as Node)) {
+        setIsPresenceMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [isPresenceMenuOpen])
+
+  const handleStatusSelect = (status: 'online' | 'idle' | 'dnd' | 'invisible') => {
+    setInternalPresence(status)
+    try {
+      localStorage.setItem('kith_user_presence', status)
+    } catch {}
+    if (externalStatusChange) {
+      externalStatusChange(status)
+    } else {
+      gatewayClient.sendStatusUpdate(status)
+    }
+    setIsPresenceMenuOpen(false)
+  }
+
+  const PRESENCE_OPTIONS = [
+    { id: 'online' as const, label: 'Online', color: 'var(--presence-online, #23a55a)' },
+    { id: 'idle' as const, label: 'Idle', color: 'var(--presence-idle, #f0b232)' },
+    { id: 'dnd' as const, label: 'Do Not Disturb', color: 'var(--presence-dnd, #f23f43)' },
+    { id: 'invisible' as const, label: 'Invisible', color: 'var(--presence-offline, #80848e)' },
+  ]
+
   return (
     <div className="channel-sidebar">
-      {/* Guild Header */}
-      <div className="guild-header">
-        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {currentGuild?.name ?? 'Select a Server'}
-        </span>
-        {currentGuild && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            {canManageServer && onOpenServerSettingsModal && (
+      {/* Guild Header & Banner */}
+      {currentGuild?.banner ? (
+        <div className="guild-banner-header">
+          <img src={currentGuild.banner} alt={currentGuild.name} className="guild-banner-header-img" />
+          <div className="guild-banner-header-gradient" />
+          <div className="guild-header banner-overlay-header">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, overflow: 'hidden' }}>
+              {currentGuild.icon && (
+                <img src={currentGuild.icon} alt="" className="guild-header-icon" />
+              )}
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {currentGuild.name}
+              </span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+              {canManageServer && onOpenServerSettingsModal && (
+                <button
+                  type="button"
+                  onClick={onOpenServerSettingsModal}
+                  className="guild-header-btn"
+                  title="Server Settings"
+                >
+                  <Settings size={18} />
+                </button>
+              )}
               <button
                 type="button"
-                onClick={onOpenServerSettingsModal}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  color: 'var(--text-muted)',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  padding: 4,
-                  borderRadius: 4,
-                }}
-                title="Server Settings"
+                onClick={onOpenInviteModal}
+                className="guild-header-btn"
+                title="Invite People"
               >
-                <Settings size={18} />
+                <UserPlus size={18} />
               </button>
-            )}
-            <button
-              type="button"
-              onClick={onOpenInviteModal}
-              style={{
-                background: 'none',
-                border: 'none',
-                color: 'var(--text-muted)',
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                padding: 4,
-                borderRadius: 4,
-              }}
-              title="Invite People"
-            >
-              <UserPlus size={18} />
-            </button>
+            </div>
           </div>
-        )}
-      </div>
+        </div>
+      ) : (
+        <div className="guild-header">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, overflow: 'hidden' }}>
+            {currentGuild?.icon && (
+              <img src={currentGuild.icon} alt="" className="guild-header-icon" />
+            )}
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {currentGuild?.name ?? 'Select a Server'}
+            </span>
+          </div>
+          {currentGuild && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+              {canManageServer && onOpenServerSettingsModal && (
+                <button
+                  type="button"
+                  onClick={onOpenServerSettingsModal}
+                  className="guild-header-btn"
+                  title="Server Settings"
+                >
+                  <Settings size={18} />
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={onOpenInviteModal}
+                className="guild-header-btn"
+                title="Invite People"
+              >
+                <UserPlus size={18} />
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Channels List */}
       <div className="channels-scroll">
@@ -408,180 +531,230 @@ export function ChannelSidebar({
           <>
             {/* Text Channels Section */}
             <div className="channels-list-header">
-              <span>Text Channels</span>
-              {canManageChannels && (
-                <button
-                  type="button"
-                  onClick={() => onOpenCreateChannelModal(0)}
-                  style={{
-                    background: 'none',
-                    border: 'none',
-                    color: 'inherit',
-                    cursor: 'pointer',
-                    padding: 2,
-                    display: 'flex',
-                  }}
-                  title="Create Text Channel"
-                >
-                  <Plus size={16} />
-                </button>
-              )}
-            </div>
-
-            {textChannels.map((channel) => {
-              const isActive = selectedChannelId === channel.id
-              const isPrivate = isPrivateChannel(channel, currentGuild.id)
-              const isUnread = isChannelUnread(channel.id)
-              const mentionCount = mentionState.counts[channel.id] ?? 0
-              return (
-                <div
-                  key={channel.id}
-                  className={`channel-item ${isActive ? 'active' : ''} ${isUnread ? 'unread' : ''}`}
-                  onClick={() => handleSelectChannel(channel.id)}
-                  title={isPrivate ? `${channel.name} (Private Channel)` : channel.name}
-                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'relative' }}
-                >
-                  {isUnread && <span className="channel-unread-pill" />}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden' }}>
-                    {isPrivate ? <Lock size={18} /> : <Hash size={18} />}
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {channel.name}
-                    </span>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
-                    {mentionCount > 0 && (
-                      <button
-                        type="button"
-                        className="channel-mention-badge"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          handleMentionBadgeClick(channel.id)
-                        }}
-                        title={`${mentionCount} unread mention${mentionCount === 1 ? '' : 's'} — jump to first`}
-                      >
-                        {mentionCount > 99 ? '99+' : mentionCount}
-                      </button>
-                    )}
-                    {canManageChannels && onOpenChannelSettingsModal && (
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          onOpenChannelSettingsModal(channel)
-                        }}
-                        className="channel-settings-btn"
-                        style={{
-                          background: 'none',
-                          border: 'none',
-                          color: 'var(--text-muted)',
-                          cursor: 'pointer',
-                          padding: 2,
-                          display: 'flex',
-                          alignItems: 'center',
-                        }}
-                        title="Edit Channel"
-                      >
-                        <Settings size={14} />
-                      </button>
-                    )}
-                  </div>
-                </div>
-              )
-            })}
-
-            {/* Voice Channels Section */}
-            <div className="channels-list-header" style={{ marginTop: 12 }}>
-              <span>Voice Channels</span>
-              {canManageChannels && (
-                <button
-                  type="button"
-                  onClick={() => onOpenCreateChannelModal(2)}
-                  style={{
-                    background: 'none',
-                    border: 'none',
-                    color: 'inherit',
-                    cursor: 'pointer',
-                    padding: 2,
-                    display: 'flex',
-                  }}
-                  title="Create Voice Channel"
-                >
-                  <Plus size={16} />
-                </button>
-              )}
-            </div>
-
-            {voiceChannels.map((channel) => {
-              const isSelected = selectedChannelId === channel.id
-              const isConnected =
-                activeVoice?.guildId === currentGuild.id && activeVoice?.channelId === channel.id
-              const isPrivate = isPrivateChannel(channel, currentGuild.id)
-              const channelMembers = getChannelVoiceStates(currentGuild.id, channel.id)
-
-              return (
-                <div key={channel.id} className="voice-channel-group">
-                  <div
-                    className={`channel-item voice ${isSelected ? 'active' : ''} ${
-                      isConnected ? 'connected' : ''
-                    }`}
-                    onClick={() => {
-                      onSelectChannel(channel.id)
-                      joinVoice(currentGuild.id, channel.id)
-                    }}
-                    title={isPrivate ? `${channel.name} (Private Voice Channel)` : channel.name}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      cursor: 'pointer',
-                    }}
+              <button
+                type="button"
+                className="category-toggle-btn"
+                onClick={() => toggleCategory('text')}
+                aria-expanded={!isTextCollapsed}
+                title={isTextCollapsed ? 'Expand Text Channels' : 'Collapse Text Channels'}
+              >
+                <ChevronDown
+                  size={12}
+                  className={`category-chevron ${isTextCollapsed ? 'collapsed' : ''}`}
+                />
+                <span className="category-title">Text Channels</span>
+                {isTextCollapsed && textMentionTotal > 0 && (
+                  <span
+                    className="category-mention-pill"
+                    title={`${textMentionTotal} unread mention${textMentionTotal === 1 ? '' : 's'}`}
                   >
+                    {textMentionTotal > 99 ? '99+' : textMentionTotal}
+                  </span>
+                )}
+              </button>
+              {canManageChannels && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onOpenCreateChannelModal(0)
+                  }}
+                  className="category-add-btn"
+                  title="Create Text Channel"
+                  aria-label="Create Text Channel"
+                >
+                  <Plus size={16} />
+                </button>
+              )}
+            </div>
+
+            {!isTextCollapsed &&
+              textChannels.map((channel) => {
+                const isActive = selectedChannelId === channel.id
+                const isPrivate = isPrivateChannel(channel, currentGuild.id)
+                const isUnread = isChannelUnread(channel.id)
+                const mentionCount = mentionState.counts[channel.id] ?? 0
+                return (
+                  <div
+                    key={channel.id}
+                    className={`channel-item ${isActive ? 'active' : ''} ${isUnread ? 'unread' : ''}`}
+                    onClick={() => handleSelectChannel(channel.id)}
+                    title={isPrivate ? `${channel.name} (Private Channel)` : channel.name}
+                    style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'relative' }}
+                  >
+                    {isUnread && <span className="channel-unread-pill" />}
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden' }}>
-                      {isPrivate ? (
-                        <Lock size={18} />
-                      ) : (
-                        <Volume2
-                          size={18}
-                          className={isConnected ? 'voice-icon-connected' : ''}
-                          style={isConnected ? { color: 'var(--voice-connected, #23a55a)' } : undefined}
-                        />
-                      )}
-                      <span
-                        style={{
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                          color: isConnected ? 'var(--text-header)' : undefined,
-                          fontWeight: isConnected ? 600 : undefined,
-                        }}
-                      >
+                      {isPrivate ? <Lock size={18} /> : <Hash size={18} />}
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {channel.name}
                       </span>
                     </div>
-
-                    {canManageChannels && onOpenChannelSettingsModal && (
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          onOpenChannelSettingsModal(channel)
-                        }}
-                        className="channel-settings-btn"
-                        style={{
-                          background: 'none',
-                          border: 'none',
-                          color: 'var(--text-muted)',
-                          cursor: 'pointer',
-                          padding: 2,
-                          display: 'flex',
-                          alignItems: 'center',
-                        }}
-                        title="Edit Voice Channel"
-                      >
-                        <Settings size={14} />
-                      </button>
-                    )}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+                      {mentionCount > 0 && (
+                        <button
+                          type="button"
+                          className="channel-mention-badge"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            handleMentionBadgeClick(channel.id)
+                          }}
+                          title={`${mentionCount} unread mention${mentionCount === 1 ? '' : 's'} — jump to first`}
+                        >
+                          {mentionCount > 99 ? '99+' : mentionCount}
+                        </button>
+                      )}
+                      {onOpenInviteModal && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            onOpenInviteModal()
+                          }}
+                          className="channel-action-btn channel-invite-btn"
+                          title="Create Invite"
+                          aria-label="Create Invite"
+                        >
+                          <UserPlus size={14} />
+                        </button>
+                      )}
+                      {canManageChannels && onOpenChannelSettingsModal && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            onOpenChannelSettingsModal(channel)
+                          }}
+                          className="channel-action-btn channel-settings-btn"
+                          title="Edit Channel"
+                          aria-label="Edit Channel"
+                        >
+                          <Settings size={14} />
+                        </button>
+                      )}
+                    </div>
                   </div>
+                )
+              })}
+
+            {/* Voice Channels Section */}
+            <div className="channels-list-header" style={{ marginTop: 12 }}>
+              <button
+                type="button"
+                className="category-toggle-btn"
+                onClick={() => toggleCategory('voice')}
+                aria-expanded={!isVoiceCollapsed}
+                title={isVoiceCollapsed ? 'Expand Voice Channels' : 'Collapse Voice Channels'}
+              >
+                <ChevronDown
+                  size={12}
+                  className={`category-chevron ${isVoiceCollapsed ? 'collapsed' : ''}`}
+                />
+                <span className="category-title">Voice Channels</span>
+                {isVoiceCollapsed && voiceMentionTotal > 0 && (
+                  <span
+                    className="category-mention-pill"
+                    title={`${voiceMentionTotal} unread mention${voiceMentionTotal === 1 ? '' : 's'}`}
+                  >
+                    {voiceMentionTotal > 99 ? '99+' : voiceMentionTotal}
+                  </span>
+                )}
+              </button>
+              {canManageChannels && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onOpenCreateChannelModal(2)
+                  }}
+                  className="category-add-btn"
+                  title="Create Voice Channel"
+                  aria-label="Create Voice Channel"
+                >
+                  <Plus size={16} />
+                </button>
+              )}
+            </div>
+
+            {!isVoiceCollapsed &&
+              voiceChannels.map((channel) => {
+                const isSelected = selectedChannelId === channel.id
+                const isConnected =
+                  activeVoice?.guildId === currentGuild.id && activeVoice?.channelId === channel.id
+                const isPrivate = isPrivateChannel(channel, currentGuild.id)
+                const channelMembers = getChannelVoiceStates(currentGuild.id, channel.id)
+
+                return (
+                  <div key={channel.id} className="voice-channel-group">
+                    <div
+                      className={`channel-item voice ${isSelected ? 'active' : ''} ${
+                        isConnected ? 'connected' : ''
+                      }`}
+                      onClick={() => {
+                        onSelectChannel(channel.id)
+                        joinVoice(currentGuild.id, channel.id)
+                      }}
+                      title={isPrivate ? `${channel.name} (Private Voice Channel)` : channel.name}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden' }}>
+                        {isPrivate ? (
+                          <Lock size={18} />
+                        ) : (
+                          <Volume2
+                            size={18}
+                            className={isConnected ? 'voice-icon-connected' : ''}
+                            style={isConnected ? { color: 'var(--voice-connected, #23a55a)' } : undefined}
+                          />
+                        )}
+                        <span
+                          style={{
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                            color: isConnected ? 'var(--text-header)' : undefined,
+                            fontWeight: isConnected ? 600 : undefined,
+                          }}
+                        >
+                          {channel.name}
+                        </span>
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+                        {onOpenInviteModal && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              onOpenInviteModal()
+                            }}
+                            className="channel-action-btn channel-invite-btn"
+                            title="Create Invite"
+                            aria-label="Create Invite"
+                          >
+                            <UserPlus size={14} />
+                          </button>
+                        )}
+                        {canManageChannels && onOpenChannelSettingsModal && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              onOpenChannelSettingsModal(channel)
+                            }}
+                            className="channel-action-btn channel-settings-btn"
+                            title="Edit Voice Channel"
+                            aria-label="Edit Voice Channel"
+                          >
+                            <Settings size={14} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
 
                   {/* Nested Voice Members Tree */}
                   {channelMembers.length > 0 && (
@@ -649,10 +822,61 @@ export function ChannelSidebar({
       <VoiceStatusBar currentGuild={currentGuild} channels={channels} />
 
       {/* User profile bar at bottom */}
-      <div className="user-profile-bar">
-        <div className="user-info-area" title={`User ID: ${user?.id}`}>
-          <div className="user-avatar">
-            {user?.username?.substring(0, 2).toUpperCase() ?? 'U'}
+      <div className="user-profile-bar" ref={presenceMenuRef}>
+        {/* Presence Quick Popover */}
+        {isPresenceMenuOpen && (
+          <div className="user-presence-popover">
+            <div
+              style={{
+                padding: '6px 8px 4px',
+                fontSize: 11,
+                fontWeight: 700,
+                textTransform: 'uppercase',
+                color: 'var(--text-muted)',
+              }}
+            >
+              Set Status
+            </div>
+            {PRESENCE_OPTIONS.map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                className={`presence-option-btn ${presenceStatus === opt.id ? 'selected' : ''}`}
+                onClick={() => handleStatusSelect(opt.id)}
+              >
+                <span
+                  style={{
+                    width: 10,
+                    height: 10,
+                    borderRadius: '50%',
+                    backgroundColor: opt.color,
+                    flexShrink: 0,
+                  }}
+                />
+                <span style={{ flex: 1 }}>{opt.label}</span>
+                {presenceStatus === opt.id && <Check size={14} />}
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div
+          className="user-info-area"
+          title={`@${user?.username}#${user?.discriminator} (${presenceStatus})\nClick to change status`}
+          onClick={() => setIsPresenceMenuOpen((prev) => !prev)}
+        >
+          <div className="user-avatar-wrap">
+            <div className="user-avatar">
+              {user?.username?.substring(0, 2).toUpperCase() ?? 'U'}
+            </div>
+            <span
+              className="user-presence-dot"
+              style={{
+                backgroundColor:
+                  PRESENCE_OPTIONS.find((p) => p.id === presenceStatus)?.color ||
+                  'var(--presence-online, #23a55a)',
+              }}
+            />
           </div>
           <div className="user-text">
             <span className="user-username">{user?.username}</span>
@@ -660,59 +884,36 @@ export function ChannelSidebar({
           </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+        <div className="user-controls">
           {/* Quick Voice Controls: Mute & Deafen */}
           <button
             type="button"
+            className={`user-control-btn ${selfMute ? 'active-danger' : ''}`}
             onClick={toggleMute}
-            style={{
-              background: 'none',
-              border: 'none',
-              color: selfMute ? '#da373c' : 'var(--text-muted)',
-              cursor: 'pointer',
-              padding: 6,
-              borderRadius: 4,
-              display: 'flex',
-              alignItems: 'center',
-            }}
             title={selfMute ? 'Unmute' : 'Mute'}
+            aria-label={selfMute ? 'Unmute' : 'Mute'}
           >
             {selfMute ? <MicOff size={18} /> : <Mic size={18} />}
           </button>
 
           <button
             type="button"
+            className={`user-control-btn ${selfDeaf ? 'active-danger' : ''}`}
             onClick={toggleDeaf}
-            style={{
-              background: 'none',
-              border: 'none',
-              color: selfDeaf ? '#da373c' : 'var(--text-muted)',
-              cursor: 'pointer',
-              padding: 6,
-              borderRadius: 4,
-              display: 'flex',
-              alignItems: 'center',
-            }}
             title={selfDeaf ? 'Undeafen' : 'Deafen'}
+            aria-label={selfDeaf ? 'Undeafen' : 'Deafen'}
           >
             <Headphones size={18} />
           </button>
 
           <button
-            onClick={logout}
-            style={{
-              background: 'none',
-              border: 'none',
-              color: 'var(--text-muted)',
-              cursor: 'pointer',
-              padding: 6,
-              borderRadius: 4,
-              display: 'flex',
-              alignItems: 'center',
-            }}
-            title="Log Out"
+            type="button"
+            className="user-control-btn"
+            onClick={onOpenUserSettings}
+            title="User Settings"
+            aria-label="User Settings"
           >
-            <LogOut size={18} />
+            <Settings size={18} />
           </button>
         </div>
       </div>

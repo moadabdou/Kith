@@ -1,7 +1,28 @@
-import { useCallback, useEffect, useState } from 'react'
-import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, ChevronUp, Plus, Shield, ShieldAlert, Smile, Sticker as StickerIcon, Trash2, Upload, X } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  ArrowDown,
+  ArrowUp,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  ChevronUp,
+  Crown,
+  Image as ImageIcon,
+  Plus,
+  Search,
+  Shield,
+  ShieldAlert,
+  Sliders,
+  Smile,
+  Sticker as StickerIcon,
+  Trash2,
+  Upload,
+  UserX,
+  Users,
+  X,
+} from 'lucide-react'
 import { api } from '../../api'
-import { hexToRoleColor, roleColorHex } from '../../lib/members'
+import { displayName, hexToRoleColor, initialsOf, roleColorHex } from '../../lib/members'
 import {
   ADMINISTRATOR,
   ALL_PERMISSIONS,
@@ -34,7 +55,7 @@ import {
   VIEW_CHANNEL,
   VIEW_GUILD_INSIGHTS,
 } from '../../lib/permissions'
-import type { Guild, GuildEmoji, GuildSticker, Role } from '../../types'
+import type { Guild, GuildEmoji, GuildSticker, Member, Role } from '../../types'
 
 import { useAuth } from '../../context/useAuth'
 
@@ -46,6 +67,7 @@ interface ServerSettingsModalProps {
   isOwner?: boolean
   onClose: () => void
   onRolesChanged?: () => void
+  onGuildUpdated?: (guild: Guild) => void
 }
 
 interface PermissionDef {
@@ -99,6 +121,44 @@ const PALETTE_COLORS = [
   '#f1c40f', '#e67e22', '#e74c3c', '#95a5a6', '#607d8b',
 ]
 
+function readFileAsResizedDataUrl(
+  file: File,
+  maxWidth: number,
+  maxHeight: number,
+  quality = 0.88
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(new Error('Failed to read image file'))
+    reader.onload = () => {
+      const img = new Image()
+      img.onerror = () => reject(new Error('Failed to load image'))
+      img.onload = () => {
+        let width = img.width
+        let height = img.height
+        if (width > maxWidth || height > maxHeight) {
+          const ratio = Math.min(maxWidth / width, maxHeight / height)
+          width = Math.max(1, Math.round(width * ratio))
+          height = Math.max(1, Math.round(height * ratio))
+        }
+        const canvas = document.createElement('canvas')
+        canvas.width = width
+        canvas.height = height
+        const ctx = canvas.getContext('2d')
+        if (!ctx) {
+          resolve(reader.result as string)
+          return
+        }
+        ctx.drawImage(img, 0, 0, width, height)
+        const mime = file.type === 'image/png' ? 'image/png' : 'image/jpeg'
+        resolve(canvas.toDataURL(mime, quality))
+      }
+      img.src = reader.result as string
+    }
+    reader.readAsDataURL(file)
+  })
+}
+
 export function ServerSettingsModal({
   isOpen,
   guild,
@@ -107,6 +167,7 @@ export function ServerSettingsModal({
   isOwner,
   onClose,
   onRolesChanged,
+  onGuildUpdated,
 }: ServerSettingsModalProps) {
   const { user } = useAuth()
   const effectiveIsOwner = isOwner ?? Boolean(guild && user && guild.owner_id === user.id)
@@ -115,7 +176,23 @@ export function ServerSettingsModal({
     callerHighestPosition ?? (effectiveIsOwner ? Infinity : 0)
   )
 
-  const [activeTab, setActiveTab] = useState<'overview' | 'roles' | 'emojis' | 'stickers'>('roles')
+  const [activeTab, setActiveTab] = useState<'overview' | 'roles' | 'emojis' | 'stickers' | 'members'>('overview')
+
+  // Overview draft state
+  const [overviewName, setOverviewName] = useState(guild?.name ?? '')
+  const [overviewIcon, setOverviewIcon] = useState<string>(guild?.icon ?? '')
+  const [overviewBanner, setOverviewBanner] = useState<string>(guild?.banner ?? '')
+  const [isSavingOverview, setIsSavingOverview] = useState(false)
+  const iconFileInputRef = useRef<HTMLInputElement | null>(null)
+  const bannerFileInputRef = useRef<HTMLInputElement | null>(null)
+
+  // Members state
+  const [members, setMembers] = useState<Member[]>([])
+  const [loadingMembers, setLoadingMembers] = useState(false)
+  const [memberSearch, setMemberSearch] = useState('')
+  const [kickingMember, setKickingMember] = useState<Member | null>(null)
+  const [isKicking, setIsKicking] = useState(false)
+
   const [roles, setRoles] = useState<Role[]>([])
   const [selectedRoleId, setSelectedRoleId] = useState<string | null>(null)
   const [roleSubTab, setRoleSubTab] = useState<'display' | 'permissions'>('display')
@@ -145,6 +222,34 @@ export function ServerSettingsModal({
       (hasPermission(internalPermissions, ADMINISTRATOR) ||
         hasPermission(internalPermissions, MANAGE_GUILD)))
 
+  const canKickMembers =
+    effectiveIsOwner ||
+    (internalPermissions != null &&
+      (hasPermission(internalPermissions, ADMINISTRATOR) ||
+        hasPermission(internalPermissions, KICK_MEMBERS)))
+
+  // Sync overview state when guild changes
+  useEffect(() => {
+    if (guild) {
+      setOverviewName(guild.name)
+      setOverviewIcon(guild.icon ?? '')
+      setOverviewBanner(guild.banner ?? '')
+    }
+  }, [guild?.id, guild?.name, guild?.icon, guild?.banner])
+
+  const fetchMembers = useCallback(async () => {
+    if (!guild) return
+    setLoadingMembers(true)
+    try {
+      const data = await api.getMembers(guild.id)
+      setMembers(data)
+    } catch (err: any) {
+      setError(err?.message || 'Failed to load members')
+    } finally {
+      setLoadingMembers(false)
+    }
+  }, [guild])
+
   const fetchEmojis = useCallback(async () => {
     if (!guild) return
     setLoadingItems(true)
@@ -171,7 +276,7 @@ export function ServerSettingsModal({
     }
   }, [guild])
 
-  // Automatically fetch emojis or stickers when respective tab is active
+  // Automatically fetch emojis, stickers, or members when respective tab is active
   useEffect(() => {
     if (!isOpen || !guild) return
     setError(null)
@@ -180,8 +285,101 @@ export function ServerSettingsModal({
       fetchEmojis()
     } else if (activeTab === 'stickers') {
       fetchStickers()
+    } else if (activeTab === 'members') {
+      fetchMembers()
     }
-  }, [isOpen, guild, activeTab, fetchEmojis, fetchStickers])
+  }, [isOpen, guild, activeTab, fetchEmojis, fetchStickers, fetchMembers])
+
+  const handleIconUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setError(null)
+    setSuccess(null)
+    if (file.size > 8 * 1024 * 1024) {
+      setError(`Icon file size (${(file.size / 1024 / 1024).toFixed(1)} MB) exceeds the 8 MB limit`)
+      e.target.value = ''
+      return
+    }
+    try {
+      const dataUrl = await readFileAsResizedDataUrl(file, 512, 512, 0.9)
+      setOverviewIcon(dataUrl)
+    } catch {
+      setError('Failed to process image file')
+    }
+    e.target.value = ''
+  }
+
+  const handleBannerUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setError(null)
+    setSuccess(null)
+    if (file.size > 10 * 1024 * 1024) {
+      setError(`Banner file size (${(file.size / 1024 / 1024).toFixed(1)} MB) exceeds the 10 MB limit`)
+      e.target.value = ''
+      return
+    }
+    try {
+      const dataUrl = await readFileAsResizedDataUrl(file, 960, 540, 0.85)
+      setOverviewBanner(dataUrl)
+    } catch {
+      setError('Failed to process banner image file')
+    }
+    e.target.value = ''
+  }
+
+  const hasOverviewChanges =
+    Boolean(guild) &&
+    (overviewName.trim() !== (guild?.name ?? '') ||
+      overviewIcon !== (guild?.icon ?? '') ||
+      overviewBanner !== (guild?.banner ?? ''))
+
+  const handleResetOverview = () => {
+    if (!guild) return
+    setOverviewName(guild.name)
+    setOverviewIcon(guild.icon ?? '')
+    setOverviewBanner(guild.banner ?? '')
+    setError(null)
+    setSuccess(null)
+  }
+
+  const handleSaveOverview = async () => {
+    if (!guild || !canManageGuild || !overviewName.trim()) return
+    setIsSavingOverview(true)
+    setError(null)
+    setSuccess(null)
+    try {
+      const updated = await api.updateGuild(guild.id, {
+        name: overviewName.trim(),
+        icon: overviewIcon || null,
+        banner: overviewBanner || null,
+      })
+      onGuildUpdated?.(updated)
+      setSuccess('Server overview changes saved!')
+      setTimeout(() => setSuccess(null), 3000)
+    } catch (err: any) {
+      setError(err?.message || 'Failed to update server')
+    } finally {
+      setIsSavingOverview(false)
+    }
+  }
+
+  const handleConfirmKick = async () => {
+    if (!guild || !kickingMember) return
+    setIsKicking(true)
+    setError(null)
+    try {
+      await api.kickMember(guild.id, kickingMember.user.id)
+      setMembers((prev) => prev.filter((m) => m.user.id !== kickingMember.user.id))
+      setSuccess(`Kicked @${kickingMember.user.username} from the server`)
+      setKickingMember(null)
+      setTimeout(() => setSuccess(null), 3000)
+    } catch (err: any) {
+      setError(err?.message || 'Failed to kick member')
+    } finally {
+      setIsKicking(false)
+    }
+  }
 
   const handleEmojiFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -299,13 +497,19 @@ export function ServerSettingsModal({
   useEffect(() => {
     if (!isOpen || !guild || !user) return
 
+    let active = true
+
     if (effectiveIsOwner) {
       setInternalPermissions(ALL_PERMISSIONS)
       setInternalCallerPos(Infinity)
-      return
+      api.getMembers(guild.id).then((list) => {
+        if (active) setMembers(list)
+      }).catch(console.error)
+      return () => {
+        active = false
+      }
     }
 
-    let active = true
     Promise.all([
       api.getMyPermissions(guild.id),
       api.getRoles(guild.id),
@@ -314,6 +518,7 @@ export function ServerSettingsModal({
       .then(([permRes, rolesList, membersList]) => {
         if (!active) return
         setInternalPermissions(BigInt(permRes.permissions))
+        setMembers(membersList)
         const me = membersList.find((m) => m.user.id === user.id)
         if (me) {
           const highest = Math.max(
@@ -607,6 +812,7 @@ export function ServerSettingsModal({
               style={{
                 display: 'flex',
                 alignItems: 'center',
+                gap: 8,
                 padding: '8px 12px',
                 borderRadius: 4,
                 border: 'none',
@@ -618,7 +824,7 @@ export function ServerSettingsModal({
                 textAlign: 'left',
               }}
             >
-              Overview
+              <Sliders size={16} /> Overview
             </button>
             <button
               type="button"
@@ -639,6 +845,26 @@ export function ServerSettingsModal({
               }}
             >
               <Shield size={16} /> Roles
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('members')}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '8px 12px',
+                borderRadius: 4,
+                border: 'none',
+                background: activeTab === 'members' ? 'var(--bg-hover)' : 'transparent',
+                color: activeTab === 'members' ? 'var(--text-header)' : 'var(--text-muted)',
+                fontWeight: activeTab === 'members' ? 600 : 500,
+                fontSize: 14,
+                cursor: 'pointer',
+                textAlign: 'left',
+              }}
+            >
+              <Users size={16} /> Members
             </button>
             <button
               type="button"
@@ -708,6 +934,8 @@ export function ServerSettingsModal({
                   ? 'Server Overview'
                   : activeTab === 'roles'
                   ? 'Server Roles'
+                  : activeTab === 'members'
+                  ? 'Server Members'
                   : activeTab === 'emojis'
                   ? 'Server Emojis'
                   : 'Server Stickers'}
@@ -737,44 +965,690 @@ export function ServerSettingsModal({
 
           {/* Tab: Overview */}
           {activeTab === 'overview' && (
-            <div style={{ padding: 24, overflowY: 'auto', flex: 1 }}>
-              <div style={{ maxWidth: 500, display: 'flex', flexDirection: 'column', gap: 20 }}>
-                <div>
-                  <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
-                    Server Name
-                  </label>
-                  <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--text-header)', marginTop: 4 }}>
-                    {guild.name}
+            <div style={{ padding: '24px 32px', overflowY: 'auto', flex: 1 }}>
+              {error && (
+                <div style={{ backgroundColor: 'rgba(218, 55, 60, 0.15)', border: '1px solid var(--danger)', color: '#ff7b72', padding: '10px 14px', borderRadius: 6, fontSize: 13, marginBottom: 16 }}>
+                  {error}
+                </div>
+              )}
+              {success && (
+                <div style={{ backgroundColor: 'rgba(35, 165, 89, 0.15)', border: '1px solid #23a559', color: '#23a559', padding: '10px 14px', borderRadius: 6, fontSize: 13, marginBottom: 16 }}>
+                  {success}
+                </div>
+              )}
+
+              <div style={{ maxWidth: 640, display: 'flex', flexDirection: 'column', gap: 28 }}>
+                {/* Server Icon and Server Name section */}
+                <div style={{ display: 'flex', gap: 28, alignItems: 'flex-start' }}>
+                  {/* Icon Uploader */}
+                  <div>
+                    <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: 8 }}>
+                      Server Icon
+                    </label>
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
+                      <div
+                        onClick={() => canManageGuild && iconFileInputRef.current?.click()}
+                        style={{
+                          width: 96,
+                          height: 96,
+                          borderRadius: '50%',
+                          backgroundColor: 'rgba(255, 255, 255, 0.08)',
+                          border: '2px dashed var(--border-subtle)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          overflow: 'hidden',
+                          cursor: canManageGuild ? 'pointer' : 'default',
+                          position: 'relative',
+                        }}
+                        title={canManageGuild ? 'Click to upload server icon' : undefined}
+                      >
+                        {overviewIcon ? (
+                          <img
+                            src={overviewIcon}
+                            alt="Server Icon"
+                            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                          />
+                        ) : (
+                          <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--text-header)' }}>
+                            {initialsOf(overviewName || guild.name)}
+                          </div>
+                        )}
+                        {canManageGuild && (
+                          <div
+                            className="overview-upload-overlay"
+                            style={{
+                              position: 'absolute',
+                              inset: 0,
+                              backgroundColor: 'rgba(0,0,0,0.6)',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              opacity: 0,
+                              transition: 'opacity 0.15s ease',
+                              color: '#ffffff',
+                              fontSize: 10,
+                              fontWeight: 700,
+                              textTransform: 'uppercase',
+                              gap: 2,
+                            }}
+                          >
+                            <Upload size={18} />
+                            Change
+                          </div>
+                        )}
+                      </div>
+
+                      <input
+                        ref={iconFileInputRef}
+                        type="file"
+                        accept="image/*"
+                        style={{ display: 'none' }}
+                        onChange={handleIconUpload}
+                        disabled={!canManageGuild}
+                      />
+
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        {canManageGuild && (
+                          <button
+                            type="button"
+                            onClick={() => iconFileInputRef.current?.click()}
+                            style={{
+                              padding: '5px 12px',
+                              backgroundColor: '#ffffff',
+                              color: '#000000',
+                              border: 'none',
+                              borderRadius: 4,
+                              fontSize: 12,
+                              fontWeight: 600,
+                              cursor: 'pointer',
+                            }}
+                          >
+                            Upload
+                          </button>
+                        )}
+                        {canManageGuild && overviewIcon && (
+                          <button
+                            type="button"
+                            onClick={() => setOverviewIcon('')}
+                            style={{
+                              padding: '5px 8px',
+                              backgroundColor: 'transparent',
+                              color: '#ff7b72',
+                              border: '1px solid rgba(218, 55, 60, 0.3)',
+                              borderRadius: 4,
+                              fontSize: 12,
+                              fontWeight: 500,
+                              cursor: 'pointer',
+                            }}
+                          >
+                            Remove
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Server Name Input */}
+                  <div style={{ flex: 1 }}>
+                    <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: 8 }}>
+                      Server Name
+                    </label>
+                    <input
+                      type="text"
+                      value={overviewName}
+                      onChange={(e) => setOverviewName(e.target.value)}
+                      disabled={!canManageGuild}
+                      maxLength={100}
+                      style={{
+                        width: '100%',
+                        padding: '10px 14px',
+                        backgroundColor: 'rgba(0,0,0,0.25)',
+                        border: '1px solid var(--border-subtle)',
+                        borderRadius: 4,
+                        color: 'var(--text-header)',
+                        fontSize: 15,
+                        fontWeight: 500,
+                        outline: 'none',
+                      }}
+                      placeholder="Enter server name..."
+                    />
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>
+                      Give your server a distinctive name so your friends recognize it.
+                    </div>
                   </div>
                 </div>
 
-                <div>
-                  <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
-                    Server ID
+                {/* Server Banner Section */}
+                <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 20 }}>
+                  <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: 4 }}>
+                    Server Banner Background
                   </label>
-                  <div style={{ fontSize: 13, fontFamily: 'monospace', color: 'var(--text-muted)', marginTop: 4 }}>
-                    {guild.id}
+                  <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 12 }}>
+                    This image displays at the top of your channel sidebar as the server header background.
+                  </div>
+
+                  <div
+                    style={{
+                      width: '100%',
+                      maxWidth: 480,
+                      height: 160,
+                      borderRadius: 8,
+                      overflow: 'hidden',
+                      position: 'relative',
+                      backgroundColor: 'rgba(255, 255, 255, 0.04)',
+                      border: '1px solid var(--border-subtle)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    {overviewBanner ? (
+                      <>
+                        <img
+                          src={overviewBanner}
+                          alt="Server Banner Preview"
+                          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                        />
+                        <div
+                          style={{
+                            position: 'absolute',
+                            inset: 0,
+                            background: 'linear-gradient(180deg, rgba(0,0,0,0.1) 0%, rgba(0,0,0,0.7) 100%)',
+                            pointerEvents: 'none',
+                          }}
+                        />
+                        <div
+                          style={{
+                            position: 'absolute',
+                            bottom: 12,
+                            left: 14,
+                            color: '#ffffff',
+                            fontWeight: 700,
+                            fontSize: 14,
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 8,
+                          }}
+                        >
+                          {overviewIcon ? (
+                            <img
+                              src={overviewIcon}
+                              alt=""
+                              style={{ width: 22, height: 22, borderRadius: '50%', objectFit: 'cover' }}
+                            />
+                          ) : null}
+                          {overviewName || guild.name}
+                        </div>
+                      </>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, color: 'var(--text-muted)' }}>
+                        <ImageIcon size={32} opacity={0.6} />
+                        <span style={{ fontSize: 13, fontWeight: 500 }}>No banner set</span>
+                      </div>
+                    )}
+                  </div>
+
+                  <input
+                    ref={bannerFileInputRef}
+                    type="file"
+                    accept="image/*"
+                    style={{ display: 'none' }}
+                    onChange={handleBannerUpload}
+                    disabled={!canManageGuild}
+                  />
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 12 }}>
+                    {canManageGuild && (
+                      <button
+                        type="button"
+                        onClick={() => bannerFileInputRef.current?.click()}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 6,
+                          padding: '7px 14px',
+                          backgroundColor: '#ffffff',
+                          color: '#000000',
+                          border: 'none',
+                          borderRadius: 4,
+                          fontSize: 13,
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <Upload size={14} color="#000000" /> Upload Banner
+                      </button>
+                    )}
+                    {canManageGuild && overviewBanner && (
+                      <button
+                        type="button"
+                        onClick={() => setOverviewBanner('')}
+                        style={{
+                          padding: '7px 12px',
+                          backgroundColor: 'transparent',
+                          color: '#ff7b72',
+                          border: '1px solid rgba(218, 55, 60, 0.3)',
+                          borderRadius: 4,
+                          fontSize: 13,
+                          fontWeight: 500,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Remove Banner
+                      </button>
+                    )}
+                    <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                      16:9 ratio recommended (max 4 MB)
+                    </span>
                   </div>
                 </div>
 
-                <div>
-                  <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
-                    Owner
-                  </label>
-                  <div style={{ fontSize: 14, color: 'var(--text-normal)', marginTop: 4 }}>
-                    {isOwner ? 'You are the server owner' : `Owner ID: ${guild.owner_id}`}
+                {/* Server Metadata */}
+                <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 20, display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 16 }}>
+                  <div>
+                    <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
+                      Server ID
+                    </label>
+                    <div style={{ fontSize: 13, fontFamily: 'monospace', color: 'var(--text-normal)', marginTop: 4 }}>
+                      {guild.id}
+                    </div>
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
+                      Server Owner
+                    </label>
+                    <div style={{ fontSize: 13, color: 'var(--text-normal)', marginTop: 4 }}>
+                      {effectiveIsOwner ? 'You (Owner)' : `Owner ID: ${guild.owner_id}`}
+                    </div>
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
+                      Members
+                    </label>
+                    <div style={{ fontSize: 13, color: 'var(--text-normal)', marginTop: 4 }}>
+                      {members.length} total members
+                    </div>
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
+                      Roles
+                    </label>
+                    <div style={{ fontSize: 13, color: 'var(--text-normal)', marginTop: 4 }}>
+                      {roles.length} configured roles
+                    </div>
                   </div>
                 </div>
 
-                <div>
-                  <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
-                    Configured Roles
-                  </label>
-                  <div style={{ fontSize: 14, color: 'var(--text-normal)', marginTop: 4 }}>
-                    {roles.length} roles total
+                {/* Unsaved changes bar */}
+                {hasOverviewChanges && (
+                  <div
+                    style={{
+                      position: 'sticky',
+                      bottom: 0,
+                      backgroundColor: 'rgba(17, 18, 20, 0.95)',
+                      backdropFilter: 'blur(10px)',
+                      border: '1px solid var(--border-subtle)',
+                      borderRadius: 6,
+                      padding: '12px 16px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+                      marginTop: 8,
+                    }}
+                  >
+                    <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-header)' }}>
+                      Careful — you have unsaved changes!
+                    </span>
+                    <div style={{ display: 'flex', gap: 10 }}>
+                      <button
+                        type="button"
+                        onClick={handleResetOverview}
+                        disabled={isSavingOverview}
+                        style={{
+                          padding: '7px 14px',
+                          backgroundColor: 'transparent',
+                          color: 'var(--text-header)',
+                          border: 'none',
+                          fontSize: 13,
+                          fontWeight: 500,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Reset
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleSaveOverview}
+                        disabled={isSavingOverview || !overviewName.trim()}
+                        style={{
+                          padding: '7px 16px',
+                          backgroundColor: '#23a559',
+                          color: '#ffffff',
+                          border: 'none',
+                          borderRadius: 4,
+                          fontSize: 13,
+                          fontWeight: 600,
+                          cursor: isSavingOverview ? 'not-allowed' : 'pointer',
+                          opacity: isSavingOverview ? 0.7 : 1,
+                        }}
+                      >
+                        {isSavingOverview ? 'Saving...' : 'Save Changes'}
+                      </button>
+                    </div>
                   </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Tab: Members */}
+          {activeTab === 'members' && (
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+              {/* Members Header / Search Bar */}
+              <div
+                style={{
+                  padding: '16px 24px',
+                  borderBottom: '1px solid var(--border-subtle)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 16,
+                }}
+              >
+                <div style={{ position: 'relative', width: 280 }}>
+                  <Search
+                    size={16}
+                    style={{
+                      position: 'absolute',
+                      left: 10,
+                      top: '50%',
+                      transform: 'translateY(-50%)',
+                      color: 'var(--text-muted)',
+                    }}
+                  />
+                  <input
+                    type="text"
+                    value={memberSearch}
+                    onChange={(e) => setMemberSearch(e.target.value)}
+                    placeholder="Search members..."
+                    style={{
+                      width: '100%',
+                      padding: '7px 12px 7px 34px',
+                      backgroundColor: 'rgba(0,0,0,0.2)',
+                      border: '1px solid var(--border-subtle)',
+                      borderRadius: 4,
+                      color: 'var(--text-header)',
+                      fontSize: 13,
+                      outline: 'none',
+                    }}
+                  />
+                </div>
+
+                <div style={{ fontSize: 13, color: 'var(--text-muted)', fontWeight: 600 }}>
+                  {members.filter((m) => {
+                    const q = memberSearch.trim().toLowerCase()
+                    if (!q) return true
+                    return (
+                      m.user.username.toLowerCase().includes(q) ||
+                      (m.nick && m.nick.toLowerCase().includes(q))
+                    )
+                  }).length}{' '}
+                  Members
                 </div>
               </div>
+
+              {error && (
+                <div style={{ margin: '12px 24px 0', backgroundColor: 'rgba(218, 55, 60, 0.15)', border: '1px solid var(--danger)', color: '#ff7b72', padding: '10px 14px', borderRadius: 6, fontSize: 13 }}>
+                  {error}
+                </div>
+              )}
+              {success && (
+                <div style={{ margin: '12px 24px 0', backgroundColor: 'rgba(35, 165, 89, 0.15)', border: '1px solid #23a559', color: '#23a559', padding: '10px 14px', borderRadius: 6, fontSize: 13 }}>
+                  {success}
+                </div>
+              )}
+
+              {/* Members Scroll List */}
+              <div style={{ flex: 1, overflowY: 'auto', padding: '16px 24px' }}>
+                {loadingMembers ? (
+                  <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-muted)', fontSize: 14 }}>
+                    Loading members...
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {members
+                      .filter((m) => {
+                        const q = memberSearch.trim().toLowerCase()
+                        if (!q) return true
+                        return (
+                          m.user.username.toLowerCase().includes(q) ||
+                          (m.nick && m.nick.toLowerCase().includes(q))
+                        )
+                      })
+                      .map((member) => {
+                        const isOwnerMember = member.user.id === guild.owner_id
+                        const isSelf = member.user.id === user?.id
+                        const name = displayName(member)
+                        const targetHighest = Math.max(
+                          0,
+                          ...member.roles.map((rId) => roles.find((r) => r.id === rId)?.position ?? 0)
+                        )
+                        const canKickThisMember =
+                          canKickMembers &&
+                          !isOwnerMember &&
+                          !isSelf &&
+                          (effectiveIsOwner || effectiveCallerHighestPos > targetHighest)
+
+                        return (
+                          <div
+                            key={member.user.id}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              padding: '10px 14px',
+                              borderRadius: 6,
+                              backgroundColor: 'rgba(255, 255, 255, 0.02)',
+                              border: '1px solid rgba(255, 255, 255, 0.04)',
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 200 }}>
+                              <div
+                                style={{
+                                  width: 36,
+                                  height: 36,
+                                  borderRadius: '50%',
+                                  backgroundColor: 'rgba(255, 255, 255, 0.08)',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  fontSize: 14,
+                                  fontWeight: 600,
+                                  color: 'var(--text-header)',
+                                  flexShrink: 0,
+                                }}
+                              >
+                                {initialsOf(name)}
+                              </div>
+                              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                  <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-header)' }}>
+                                    {name}
+                                  </span>
+                                  {isOwnerMember && (
+                                    <span
+                                      title="Server Owner"
+                                      style={{ display: 'flex', alignItems: 'center', color: '#f1c40f' }}
+                                    >
+                                      <Crown size={14} />
+                                    </span>
+                                  )}
+                                </div>
+                                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                                  @{member.user.username}#{member.user.discriminator}
+                                </span>
+                              </div>
+                            </div>
+
+                            {/* Roles badges */}
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, flex: 1, margin: '0 16px' }}>
+                              {member.roles
+                                .filter((rId) => rId !== guild.id)
+                                .map((rId) => {
+                                  const role = roles.find((r) => r.id === rId)
+                                  if (!role) return null
+                                  const hex = roleColorHex(role.color) || '#99aab5'
+                                  return (
+                                    <span
+                                      key={role.id}
+                                      style={{
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: 5,
+                                        padding: '2px 8px',
+                                        borderRadius: 4,
+                                        backgroundColor: 'rgba(255, 255, 255, 0.06)',
+                                        border: '1px solid rgba(255, 255, 255, 0.08)',
+                                        fontSize: 11,
+                                        fontWeight: 600,
+                                        color: hex,
+                                      }}
+                                    >
+                                      <span
+                                        style={{
+                                          width: 7,
+                                          height: 7,
+                                          borderRadius: '50%',
+                                          backgroundColor: hex,
+                                        }}
+                                      />
+                                      {role.name}
+                                    </span>
+                                  )
+                                })}
+                            </div>
+
+                            {/* Actions */}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              {canKickThisMember ? (
+                                <button
+                                  type="button"
+                                  onClick={() => setKickingMember(member)}
+                                  style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 5,
+                                    padding: '6px 12px',
+                                    backgroundColor: 'rgba(218, 55, 60, 0.12)',
+                                    color: '#ff7b72',
+                                    border: '1px solid rgba(218, 55, 60, 0.25)',
+                                    borderRadius: 4,
+                                    fontSize: 12,
+                                    fontWeight: 600,
+                                    cursor: 'pointer',
+                                    transition: 'all 0.15s ease',
+                                  }}
+                                  title={`Kick ${name} from ${guild.name}`}
+                                >
+                                  <UserX size={14} /> Kick
+                                </button>
+                              ) : isOwnerMember ? (
+                                <span style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 500, padding: '4px 8px' }}>
+                                  Owner
+                                </span>
+                              ) : isSelf ? (
+                                <span style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 500, padding: '4px 8px' }}>
+                                  You
+                                </span>
+                              ) : null}
+                            </div>
+                          </div>
+                        )
+                      })}
+                  </div>
+                )}
+              </div>
+
+              {/* Kick Confirmation Dialog */}
+              {kickingMember && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+                    backdropFilter: 'blur(4px)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    zIndex: 100,
+                  }}
+                  onClick={() => !isKicking && setKickingMember(null)}
+                >
+                  <div
+                    style={{
+                      width: 440,
+                      maxWidth: '90%',
+                      backgroundColor: 'var(--bg-chat)',
+                      borderRadius: 8,
+                      border: '1px solid var(--border-subtle)',
+                      boxShadow: '0 16px 40px rgba(0,0,0,0.8)',
+                      padding: 24,
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-header)', marginBottom: 8 }}>
+                      Kick '{displayName(kickingMember)}' from {guild.name}?
+                    </div>
+                    <div style={{ fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.5, marginBottom: 20 }}>
+                      Are you sure you want to kick <strong>{displayName(kickingMember)}</strong> (@{kickingMember.user.username}#{kickingMember.user.discriminator})? They will be able to rejoin with a new invite link.
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+                      <button
+                        type="button"
+                        onClick={() => setKickingMember(null)}
+                        disabled={isKicking}
+                        style={{
+                          padding: '8px 16px',
+                          backgroundColor: 'transparent',
+                          color: 'var(--text-header)',
+                          border: '1px solid var(--border-subtle)',
+                          borderRadius: 4,
+                          fontSize: 14,
+                          fontWeight: 500,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleConfirmKick}
+                        disabled={isKicking}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 6,
+                          padding: '8px 18px',
+                          backgroundColor: 'var(--danger, #da373c)',
+                          color: '#ffffff',
+                          border: 'none',
+                          borderRadius: 4,
+                          fontSize: 14,
+                          fontWeight: 600,
+                          cursor: isKicking ? 'not-allowed' : 'pointer',
+                          opacity: isKicking ? 0.7 : 1,
+                        }}
+                      >
+                        <UserX size={15} />
+                        {isKicking ? 'Kicking...' : 'Kick'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -803,8 +1677,8 @@ export function ServerSettingsModal({
                     justifyContent: 'center',
                     gap: 6,
                     padding: '8px 12px',
-                    backgroundColor: canCreateRole ? 'var(--brand)' : 'rgba(255,255,255,0.05)',
-                    color: canCreateRole ? 'white' : 'var(--text-muted)',
+                    backgroundColor: canCreateRole ? '#ffffff' : 'rgba(255,255,255,0.05)',
+                    color: canCreateRole ? '#000000' : 'var(--text-muted)',
                     border: 'none',
                     borderRadius: 4,
                     fontWeight: 600,
@@ -814,7 +1688,7 @@ export function ServerSettingsModal({
                   }}
                   title={!canCreateRole ? 'You do not have permission to manage roles' : undefined}
                 >
-                  <Plus size={16} /> Create Role
+                  <Plus size={16} color={canCreateRole ? '#000000' : 'var(--text-muted)'} /> Create Role
                 </button>
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -1521,8 +2395,8 @@ export function ServerSettingsModal({
                           alignItems: 'center',
                           gap: 6,
                           padding: '6px 14px',
-                          backgroundColor: 'var(--brand)',
-                          color: 'white',
+                          backgroundColor: '#ffffff',
+                          color: '#000000',
                           borderRadius: 4,
                           fontSize: 13,
                           fontWeight: 600,
@@ -1530,7 +2404,7 @@ export function ServerSettingsModal({
                           width: 'fit-content',
                         }}
                       >
-                        <Upload size={14} /> Choose Image
+                        <Upload size={14} color="#000000" /> Choose Image
                       </label>
                       <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                         Recommended size 128x128. Max 256 KB. Supported formats: PNG, JPG, GIF, WebP.
@@ -1835,8 +2709,8 @@ export function ServerSettingsModal({
                           alignItems: 'center',
                           gap: 6,
                           padding: '6px 14px',
-                          backgroundColor: 'var(--brand)',
-                          color: 'white',
+                          backgroundColor: '#ffffff',
+                          color: '#000000',
                           borderRadius: 4,
                           fontSize: 13,
                           fontWeight: 600,
@@ -1844,7 +2718,7 @@ export function ServerSettingsModal({
                           width: 'fit-content',
                         }}
                       >
-                        <Upload size={14} /> Choose Image
+                        <Upload size={14} color="#000000" /> Choose Image
                       </label>
                       <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                         Recommended size 320x320. Max 512 KB. Supported formats: PNG, WebP.

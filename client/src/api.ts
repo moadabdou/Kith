@@ -116,6 +116,16 @@ class ApiClient {
     })
   }
 
+  async updateGuild(
+    guildId: string,
+    data: { name?: string; icon?: string | null; banner?: string | null }
+  ): Promise<Guild> {
+    return this.request<Guild>(`/guilds/${guildId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    })
+  }
+
   async getRoles(guildId: string): Promise<Role[]> {
     return this.request<Role[]>(`/guilds/${guildId}/roles`)
   }
@@ -177,6 +187,12 @@ class ApiClient {
 
   async unassignMemberRole(guildId: string, userId: string, roleId: string): Promise<void> {
     await this.request(`/guilds/${guildId}/members/${userId}/roles/${roleId}`, {
+      method: 'DELETE',
+    })
+  }
+
+  async kickMember(guildId: string, userId: string): Promise<void> {
+    await this.request(`/guilds/${guildId}/members/${userId}`, {
       method: 'DELETE',
     })
   }

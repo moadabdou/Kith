@@ -165,6 +165,18 @@ body {
   box-shadow: 0 0 16px rgba(255, 255, 255, 0.4);
 }
 
+.server-icon-btn.has-icon {
+  padding: 0;
+  background-color: transparent;
+}
+
+.server-icon-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
 .add-server-btn {
   color: #ffffff;
 }
@@ -247,8 +259,70 @@ body {
   -webkit-backdrop-filter: blur(16px);
 }
 
+.guild-header-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.guild-header-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border-radius: 4px;
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.guild-header-btn:hover {
+  color: var(--text-header);
+  background-color: var(--bg-hover);
+}
+
+.guild-banner-header {
+  position: relative;
+  width: 100%;
+  height: 135px;
+  overflow: hidden;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.guild-banner-header-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.guild-banner-header-gradient {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.2) 0%, rgba(0, 0, 0, 0.85) 100%);
+  pointer-events: none;
+}
+
+.guild-banner-header .banner-overlay-header {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: transparent;
+  border-bottom: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
 .channels-list-header {
-  padding: 16px 16px 6px;
+  padding: 16px 8px 6px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -257,6 +331,69 @@ body {
   text-transform: uppercase;
   color: var(--text-muted);
   letter-spacing: 0.02em;
+}
+
+.category-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: none;
+  padding: 2px 4px;
+  margin: 0;
+  margin-left: -4px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: color 0.15s ease, background-color 0.15s ease;
+  user-select: none;
+}
+
+.category-toggle-btn:hover {
+  color: var(--text-header);
+}
+
+.category-chevron {
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  flex-shrink: 0;
+}
+
+.category-chevron.collapsed {
+  transform: rotate(-90deg);
+}
+
+.category-add-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  transition: color 0.15s ease;
+}
+
+.category-add-btn:hover {
+  color: var(--text-header);
+}
+
+.category-mention-pill {
+  background-color: var(--danger, #da373c);
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 8px;
+  margin-left: 6px;
+  text-transform: none;
+  letter-spacing: normal;
 }
 
 .channels-scroll {
@@ -340,17 +477,34 @@ body {
   pointer-events: none;
 }
 
-.channel-item .channel-settings-btn {
+.channel-item .channel-settings-btn,
+.channel-item .channel-action-btn,
+.channel-item .channel-invite-btn {
   opacity: 0;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
   transition: opacity 0.15s ease, color 0.15s ease;
 }
 
 .channel-item:hover .channel-settings-btn,
-.channel-item.active .channel-settings-btn {
+.channel-item.active .channel-settings-btn,
+.channel-item:hover .channel-action-btn,
+.channel-item.active .channel-action-btn,
+.channel-item:hover .channel-invite-btn,
+.channel-item.active .channel-invite-btn {
   opacity: 1;
 }
 
-.channel-item .channel-settings-btn:hover {
+.channel-item .channel-settings-btn:hover,
+.channel-item .channel-action-btn:hover,
+.channel-item .channel-invite-btn:hover {
   color: var(--text-header);
 }
 
@@ -603,7 +757,7 @@ body {
 }
 
 .user-profile-bar {
-  height: 52px;
+  height: 54px;
   background-color: var(--bg-user-bar);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
@@ -612,6 +766,7 @@ body {
   align-items: center;
   justify-content: space-between;
   border-top: 1px solid var(--border-subtle);
+  position: relative;
 }
 
 .user-info-area {
@@ -619,13 +774,24 @@ body {
   align-items: center;
   gap: 8px;
   overflow: hidden;
-  padding: 4px;
+  padding: 4px 6px;
   border-radius: 4px;
   cursor: pointer;
+  transition: background-color 0.15s ease;
+  flex: 1;
+  min-width: 0;
+  margin-right: 4px;
 }
 
 .user-info-area:hover {
   background-color: var(--bg-hover);
+}
+
+.user-avatar-wrap {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
 }
 
 .user-avatar {
@@ -638,9 +804,27 @@ body {
   justify-content: center;
   color: #000000;
   font-weight: 700;
-  font-size: 14px;
-  flex-shrink: 0;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);
+  font-size: 13px;
+  overflow: hidden;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+
+.user-avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.user-presence-dot {
+  position: absolute;
+  bottom: -1px;
+  right: -1px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid var(--bg-user-bar, #0f1013);
+  pointer-events: none;
+  box-sizing: content-box;
 }
 
 .user-text {
@@ -648,10 +832,11 @@ body {
   flex-direction: column;
   overflow: hidden;
   line-height: 1.2;
+  min-width: 0;
 }
 
 .user-username {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--text-header);
   white-space: nowrap;
@@ -662,6 +847,89 @@ body {
 .user-discriminator {
   font-size: 11px;
   color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.user-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.user-control-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  transition: all 0.15s ease;
+}
+
+.user-control-btn:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-header);
+}
+
+.user-control-btn.active-danger {
+  color: #da373c;
+}
+
+.user-control-btn.active-danger:hover {
+  background-color: rgba(218, 55, 60, 0.15);
+  color: #ff7b72;
+}
+
+/* User Presence Quick Switcher Popover */
+.user-presence-popover {
+  position: absolute;
+  bottom: 60px;
+  left: 8px;
+  width: 230px;
+  background-color: var(--bg-chat, #111214);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.7);
+  padding: 6px;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.presence-option-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 4px;
+  background: none;
+  border: none;
+  color: var(--text-normal);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.15s ease;
+  width: 100%;
+}
+
+.presence-option-btn:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-header);
+}
+
+.presence-option-btn.selected {
+  font-weight: 600;
+  color: var(--text-header);
+  background-color: rgba(255, 255, 255, 0.05);
 }
 
 /* Right Chat Area (Flex-1) */
@@ -4885,5 +5153,9 @@ a.attachment-name:hover {
     bottom: 0;
     z-index: 50;
   }
+}
+
+div:hover > .overview-upload-overlay {
+  opacity: 1 !important;
 }
 

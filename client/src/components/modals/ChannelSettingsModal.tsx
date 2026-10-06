@@ -456,7 +456,7 @@ export function ChannelSettingsModal({
                     marginTop: 16,
                     padding: '8px 16px',
                     backgroundColor: 'var(--brand)',
-                    color: 'white',
+                    color: '#000000',
                     border: 'none',
                     borderRadius: 4,
                     fontWeight: 600,

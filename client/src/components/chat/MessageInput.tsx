@@ -206,6 +206,99 @@ interface MessageInputProps {
   mentionMembers?: SuggestMember[]
   mentionRoles?: SuggestRole[]
   canMentionEveryone?: boolean
+  // Power-user ergonomics (Issue #126): Up arrow in empty input triggers edit of user's last message.
+  onEditLastMessage?: () => void
+}
+
+export function shouldTriggerEditLastMessage(
+  key: string,
+  modifiers: { shiftKey?: boolean; altKey?: boolean; ctrlKey?: boolean; metaKey?: boolean },
+  inputText: string,
+  pendingCount: number,
+  hasActiveMention: boolean
+): boolean {
+  if (key !== 'ArrowUp') return false
+  if (modifiers.shiftKey || modifiers.altKey || modifiers.ctrlKey || modifiers.metaKey) return false
+  if (hasActiveMention) return false
+  if (inputText.trim() !== '') return false
+  if (pendingCount > 0) return false
+  return true
+}
+
+export function PendingUploadChip({
+  upload,
+  onRemove,
+}: {
+  upload: PendingUpload
+  onRemove: (key: string) => void
+}) {
+  const [thumbUrl, setThumbUrl] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (upload.file && upload.contentType?.startsWith('image/')) {
+      const url = URL.createObjectURL(upload.file)
+      setThumbUrl(url)
+      return () => {
+        URL.revokeObjectURL(url)
+      }
+    }
+    setThumbUrl(null)
+  }, [upload.file, upload.contentType])
+
+  return (
+    <div className={`pending-upload pending-${upload.state}`}>
+      {thumbUrl ? (
+        <div className="pending-upload-thumb">
+          <img src={thumbUrl} alt={upload.filename} />
+        </div>
+      ) : (
+        <FileText size={18} className="pending-upload-icon" />
+      )}
+      <div className="pending-upload-meta">
+        <span className="pending-upload-name" title={upload.filename}>
+          {upload.filename}
+        </span>
+        <span className="pending-upload-sub">
+          {upload.state === 'error' ? (
+            <span className="pending-upload-error">
+              <AlertCircle size={12} /> {upload.error ?? 'Upload failed'}
+            </span>
+          ) : upload.state === 'uploaded' ? (
+            formatBytes(upload.size)
+          ) : (
+            `${Math.round(upload.progress * 100)}% · ${formatBytes(upload.size)}`
+          )}
+        </span>
+        {(upload.state === 'presigning' || upload.state === 'uploading') && (
+          <span
+            className="pending-upload-bar"
+            role="progressbar"
+            aria-valuenow={Math.round(upload.progress * 100)}
+            aria-valuemin={0}
+            aria-valuemax={100}
+          >
+            <span
+              className="pending-upload-bar-fill"
+              style={{ width: `${Math.round(upload.progress * 100)}%` }}
+            />
+          </span>
+        )}
+      </div>
+      {upload.state === 'uploading' || upload.state === 'presigning' ? (
+        <Loader2 size={14} className="spin pending-upload-spinner" />
+      ) : (
+        <button
+          type="button"
+          className="pending-upload-remove"
+          onClick={() => onRemove(upload.key)}
+          title={upload.state === 'error' ? 'Dismiss' : 'Remove attachment'}
+          aria-label={`Remove ${upload.filename}`}
+        >
+          <X size={14} />
+        </button>
+      )}
+    </div>
+  )
 }
 
 export function MessageInput({
@@ -231,6 +324,7 @@ export function MessageInput({
   mentionMembers = [],
   mentionRoles = [],
   canMentionEveryone = false,
+  onEditLastMessage,
 }: MessageInputProps) {
   const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false)
   const [isGifPickerOpen, setIsGifPickerOpen] = useState(false)
@@ -482,6 +576,16 @@ export function MessageInput({
       closeMentionPopover()
       return
     }
+
+    // Power-user ergonomics (Issue #126): Up arrow in empty input triggers edit on user's last message
+    if (shouldTriggerEditLastMessage(e.key, e, inputText, pending.length, mentionQuery !== null)) {
+      if (onEditLastMessage) {
+        e.preventDefault()
+        onEditLastMessage()
+        return
+      }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       if (canSubmit) {
@@ -552,51 +656,7 @@ export function MessageInput({
       {canSend && pending.length > 0 && (
         <div className="pending-uploads" aria-live="polite">
           {pending.map((p) => (
-            <div key={p.key} className={`pending-upload pending-${p.state}`}>
-              <FileText size={16} className="pending-upload-icon" />
-              <div className="pending-upload-meta">
-                <span className="pending-upload-name" title={p.filename}>
-                  {p.filename}
-                </span>
-                <span className="pending-upload-sub">
-                  {p.state === 'error' ? (
-                    <span className="pending-upload-error">
-                      <AlertCircle size={12} /> {p.error ?? 'Upload failed'}
-                    </span>
-                  ) : p.state === 'uploaded' ? (
-                    formatBytes(p.size)
-                  ) : (
-                    `${Math.round(p.progress * 100)}% · ${formatBytes(p.size)}`
-                  )}
-                </span>
-                {(p.state === 'presigning' || p.state === 'uploading') && (
-                  <span
-                    className="pending-upload-bar"
-                    role="progressbar"
-                    aria-valuenow={Math.round(p.progress * 100)}
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                  >
-                    <span
-                      className="pending-upload-bar-fill"
-                      style={{ width: `${Math.round(p.progress * 100)}%` }}
-                    />
-                  </span>
-                )}
-              </div>
-              {p.state === 'uploading' || p.state === 'presigning' ? (
-                <Loader2 size={14} className="spin pending-upload-spinner" />
-              ) : (
-                <button
-                  type="button"
-                  className="pending-upload-remove"
-                  onClick={() => onRemovePending(p.key)}
-                  title={p.state === 'error' ? 'Dismiss' : 'Remove attachment'}
-                >
-                  <X size={14} />
-                </button>
-              )}
-            </div>
+            <PendingUploadChip key={p.key} upload={p} onRemove={onRemovePending} />
           ))}
         </div>
       )}

@@ -10,6 +10,7 @@ import { applyReactionAdd, applyReactionRemove, toggleReactionOptimistic } from 
 import { parseSearchQuery } from '../../lib/search'
 import { MarkdownView } from '../../lib/markdown'
 import { isMessageMentioningUser } from '../../lib/mentions'
+import { findLastEditableMessage, shouldGroupConsecutiveMessage } from '../../lib/message-grouping'
 import {
   MAX_PENDING_FILES,
   nextUploadKey,
@@ -30,6 +31,7 @@ import { ParentQuote } from './ParentQuote'
 import { PinnedMessagesDrawer } from './PinnedMessagesDrawer'
 import { ReactionPicker, type ServerEmojiGroup, type ServerStickerGroup } from './ReactionPicker'
 import { ReactionPills } from './ReactionPills'
+import { WelcomeHero } from './WelcomeHero'
 
 interface ChatAreaProps {
   currentGuild: Guild | null
@@ -1166,6 +1168,18 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [hoveredMessageId, editingMessageId, deletingMessage, canEditMessage])
 
+  // Power-user ergonomics (Issue #126): Up arrow in empty input triggers edit of user's last sent message
+  const handleEditLastMessage = useCallback(() => {
+    if (editingMessageId || deletingMessage || !user) return
+    const target = findLastEditableMessage(messagesRef.current, user.id, canEditMessage)
+    if (target) {
+      setEditingMessageId(target.id)
+      setEditingContent(target.content)
+      const el = document.getElementById(`msg-${target.id}`)
+      el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    }
+  }, [editingMessageId, deletingMessage, user, canEditMessage])
+
   const handleSaveEdit = async () => {
     if (!currentChannel || !editingMessageId || isSavingEdit) return
     const trimmed = editingContent.trim()
@@ -1629,17 +1643,12 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
             <div ref={messagesInnerRef} className="messages-inner-stream">
             {/* Channel Welcome Banner (rendered only when user scrolled to true beginning) */}
             {!hasMore && (
-              <div className="channel-welcome-banner">
-                <div className="welcome-hash-circle">
-                  <Hash size={40} style={{ color: 'white' }} />
-                </div>
-                <h2 className="welcome-title">Welcome to #{currentChannel.name}!</h2>
-                <p className="welcome-subtitle">This is the start of the #{currentChannel.name} channel.</p>
-              </div>
+              <WelcomeHero channel={currentChannel} empty={messages.length === 0} />
             )}
 
             {/* Message List */}
-            {messages.map((msg) => {
+            {messages.map((msg, idx) => {
+              const prevMsg = idx > 0 ? messages[idx - 1] : null
               const isHighlighted = highlightedMessageId === msg.id
               const authorMember = msg.author ? memberByUserId.get(msg.author.id) : undefined
               const authorColor = authorMember ? memberNameColor(authorMember, guildRoles) : null
@@ -1650,6 +1659,8 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
               const isMentioned = Boolean(
                 user && isMessageMentioningUser(msg.content, user.id, currentUserRoleIds)
               )
+              const isFirstUnread = firstUnreadMessageId === msg.id
+              const isConsecutive = shouldGroupConsecutiveMessage(prevMsg, msg, { isFirstUnread })
 
               return (
                 <Fragment key={msg.id}>
@@ -1662,7 +1673,7 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
                   )}
                   <div
                     id={`msg-${msg.id}`}
-                    className={`message-card ${msg.pinned ? 'is-pinned' : ''} ${isHighlighted ? 'message-highlighted' : ''} ${isReply ? 'is-reply' : ''} ${isEditing ? 'is-editing' : ''} ${isMentioned ? 'message-mentioned' : ''}`}
+                    className={`message-card ${isConsecutive ? 'is-consecutive' : 'has-header'} ${msg.pinned ? 'is-pinned' : ''} ${isHighlighted ? 'message-highlighted' : ''} ${isReply ? 'is-reply' : ''} ${isEditing ? 'is-editing' : ''} ${isMentioned ? 'message-mentioned' : ''}`}
                     onMouseEnter={() => setHoveredMessageId(msg.id)}
                     onMouseLeave={() => setHoveredMessageId((prev) => (prev === msg.id ? null : prev))}
                   >
@@ -1708,25 +1719,35 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
                   )}
 
                   <div className="message-main-row">
-                    <div className="user-avatar" style={{ width: 40, height: 40, fontSize: 16 }}>
-                      {msg.author?.username?.substring(0, 2).toUpperCase() ?? 'U'}
-                    </div>
-                    <div className="message-content-wrap">
-                      <div className="message-meta">
-                        <span
-                          className="message-author"
-                          style={authorColor ? { color: authorColor } : undefined}
-                        >
-                          {authorName}
-                        </span>
-                        <span className="message-time">{formatTime(msg.timestamp)}</span>
-                        {msg.pinned && (
-                          <span className="message-pinned-badge" title="This message is pinned to the channel">
-                            <Pin size={11} fill="currentColor" />
-                            <span>Pinned</span>
-                          </span>
-                        )}
+                    {isConsecutive ? (
+                      <div className="message-gutter-time" title={formatFullDateTime(msg.timestamp)}>
+                        {formatTime(msg.timestamp)}
                       </div>
+                    ) : (
+                      <div className="message-avatar" title={authorName}>
+                        {msg.author?.username?.substring(0, 2).toUpperCase() ?? 'U'}
+                      </div>
+                    )}
+                    <div className="message-content-wrap">
+                      {!isConsecutive && (
+                        <div className="message-meta">
+                          <span
+                            className="message-author"
+                            style={authorColor ? { color: authorColor } : undefined}
+                          >
+                            {authorName}
+                          </span>
+                          <span className="message-time" title={formatFullDateTime(msg.timestamp)}>
+                            {formatTime(msg.timestamp)}
+                          </span>
+                          {msg.pinned && (
+                            <span className="message-pinned-badge" title="This message is pinned to the channel">
+                              <Pin size={11} fill="currentColor" />
+                              <span>Pinned</span>
+                            </span>
+                          )}
+                        </div>
+                      )}
 
                       {isEditing ? (
                         <div className="message-inline-editor">
@@ -1956,6 +1977,7 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
             mentionMembers={mentionMembers}
             mentionRoles={mentionRoles}
             canMentionEveryone={canMentionEveryone}
+            onEditLastMessage={handleEditLastMessage}
           />
         </div>
 

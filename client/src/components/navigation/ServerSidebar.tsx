@@ -7,6 +7,7 @@ interface ServerSidebarProps {
   selectedGuildId: string | null
   onSelectGuild: (guildId: string) => void
   onOpenCreateModal: () => void
+  isCreateModalOpen?: boolean
   /** guild_id -> outstanding unread mention count (Issue #122). */
   guildMentionCounts?: Record<string, number>
 }
@@ -16,9 +17,11 @@ export function ServerSidebar({
   selectedGuildId,
   onSelectGuild,
   onOpenCreateModal,
+  isCreateModalOpen = false,
   guildMentionCounts,
 }: ServerSidebarProps) {
   const [hoveredGuildId, setHoveredGuildId] = useState<string | null>(null)
+  const [isAddHovered, setIsAddHovered] = useState(false)
 
   const getInitials = (name: string) => {
     return name
@@ -85,12 +88,21 @@ export function ServerSidebar({
       })}
 
       {/* Add Server button */}
-      <div className="server-icon-wrapper">
+      <div
+        className="server-icon-wrapper"
+        onMouseEnter={() => setIsAddHovered(true)}
+        onMouseLeave={() => setIsAddHovered(false)}
+      >
+        <div
+          className={`pill-indicator ${isCreateModalOpen ? 'active' : ''} ${
+            isAddHovered ? 'hover' : ''
+          }`}
+        />
         <button
-          className="server-icon-btn"
+          className={`server-icon-btn add-server-btn ${isCreateModalOpen ? 'active' : ''}`}
           onClick={onOpenCreateModal}
           title="Add a Server"
-          style={{ color: 'var(--success)' }}
+          aria-label="Add a Server"
         >
           <Plus size={24} />
         </button>

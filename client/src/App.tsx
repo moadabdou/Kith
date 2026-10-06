@@ -370,6 +370,7 @@ function Dashboard() {
         selectedGuildId={selectedGuildId}
         onSelectGuild={(id) => setSelectedGuildId(id)}
         onOpenCreateModal={() => setIsGuildModalOpen(true)}
+        isCreateModalOpen={isGuildModalOpen}
         guildMentionCounts={guildMentionCounts}
       />
 

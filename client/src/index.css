@@ -165,6 +165,18 @@ body {
   box-shadow: 0 0 16px rgba(255, 255, 255, 0.4);
 }
 
+.add-server-btn {
+  color: #ffffff;
+}
+
+.add-server-btn:hover,
+.add-server-btn.active {
+  background-color: #ffffff;
+  color: #000000;
+  border-color: transparent;
+  box-shadow: 0 0 16px rgba(255, 255, 255, 0.4);
+}
+
 .kith-home-btn {
   width: 52px;
   height: 52px;

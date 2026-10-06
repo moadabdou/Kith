@@ -698,15 +698,6 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
 
   // Execute full-text search query with channel, author, offset, and inline filter tokens
   useEffect(() => {
-    if (!currentGuild || !debouncedQuery) {
-      setSearchResults([])
-      setTotalSearchResults(0)
-      return
-    }
-
-    const abortController = new AbortController()
-    setIsSearching(true)
-
     const parsed = parseSearchQuery(debouncedQuery)
     const cleanText = parsed.text.trim()
 
@@ -728,6 +719,17 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
       if (match) authorId = match.user.id
     }
 
+    // Check if there is ANY query or filter active
+    const hasSearchActive = !!(cleanText || channelId || authorId)
+    if (!currentGuild || !hasSearchActive) {
+      setSearchResults([])
+      setTotalSearchResults(0)
+      return
+    }
+
+    const abortController = new AbortController()
+    setIsSearching(true)
+
     const offset = (searchPage - 1) * SEARCH_PAGE_SIZE
     const filters: SearchFilters = {
       channelId,
@@ -737,7 +739,7 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
       signal: abortController.signal,
     }
 
-    api.searchMessages(currentGuild.id, cleanText || debouncedQuery, filters)
+    api.searchMessages(currentGuild.id, cleanText, filters)
       .then((res) => {
         if (abortController.signal.aborted) return
         const msgs = res.messages ?? []
@@ -761,14 +763,16 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
     }
   }, [currentGuild, debouncedQuery, selectedChannelId, selectedAuthorId, searchPage, channels, guildMembers])
 
-  // Clear search results when query is cleared
+  // Clear search results when query is cleared (unless filter is still selected)
   const handleSearchChange = (val: string) => {
     setSearchQuery(val)
     setSearchPage(1)
     if (!val.trim()) {
       setDebouncedQuery('')
-      setSearchResults([])
-      setTotalSearchResults(0)
+      if (!selectedChannelId && !selectedAuthorId) {
+        setSearchResults([])
+        setTotalSearchResults(0)
+      }
     }
   }
 
@@ -1599,6 +1603,8 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
             onChange={handleSearchChange}
             onOpenDrawer={() => setIsSearchDrawerOpen(true)}
             channelName={currentChannel.name}
+            members={guildMembers}
+            channels={channels}
           />
         </div>
       </div>

@@ -73,12 +73,6 @@ func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	q := r.URL.Query().Get("q")
-	if q == "" {
-		errs.Write(w, errs.FormBody("Invalid Form Body: query parameter 'q' is required"))
-		return
-	}
-
 	var channelID int64
 	if cidStr := r.URL.Query().Get("channel_id"); cidStr != "" {
 		channelID, err = strconv.ParseInt(cidStr, 10, 64)
@@ -104,6 +98,12 @@ func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
 			errs.Write(w, errs.FormBody("Invalid Form Body: bad before cursor"))
 			return
 		}
+	}
+
+	q := r.URL.Query().Get("q")
+	if q == "" && channelID == 0 && authorID == 0 && before == 0 {
+		errs.Write(w, errs.FormBody("Invalid Form Body: query parameter 'q' or a filter is required"))
+		return
 	}
 
 	limit := 25

@@ -81,7 +81,7 @@ func NewService(db *sql.DB, opts ...ServiceOption) *Service {
 
 // SearchGuildMessages searches messages in a guild matching query and filters.
 func (s *Service) SearchGuildMessages(ctx context.Context, userID, guildID int64, params SearchParams) (*SearchResponse, error) {
-	if strings.TrimSpace(params.Query) == "" {
+	if strings.TrimSpace(params.Query) == "" && params.ChannelID == 0 && params.AuthorID == 0 && params.Before == 0 {
 		return nil, ErrQueryRequired
 	}
 

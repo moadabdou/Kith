@@ -63,5 +63,18 @@ describe('parseSearchQuery', () => {
     expect(res.in).toBeUndefined()
     expect(res.text).toBe('simple keyword search')
   })
+
+  it('handles filter-only queries without free text', () => {
+    const res = parseSearchQuery('from:alice')
+    expect(res.from).toBe('alice')
+    expect(res.in).toBeUndefined()
+    expect(res.text).toBe('')
+  })
+
+  it('handles dangling filter prefixes cleanly', () => {
+    const res = parseSearchQuery('from:')
+    expect(res.from).toBeUndefined()
+    expect(res.text).toBe('')
+  })
 })
 

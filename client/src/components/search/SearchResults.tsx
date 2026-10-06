@@ -198,7 +198,7 @@ export function SearchResults({
             <span className="search-drawer-title">
               {loading
                 ? 'Searching...'
-                : query
+                : (query || selectedChannelId || selectedAuthorId)
                   ? `${totalResults} ${totalResults === 1 ? 'Result' : 'Results'}`
                   : 'Search Messages'}
             </span>
@@ -239,11 +239,16 @@ export function SearchResults({
             placeholder="From: Anyone"
             options={[
               { value: '', label: 'From: Anyone' },
-              ...members.map((m) => ({
-                value: m.user.id,
-                label: `@${m.user.username}`,
-                icon: <User size={12} />,
-              })),
+              ...members.map((m) => {
+                const displayName = m.nick || m.user.username
+                const initials = (displayName[0] || '?').toUpperCase()
+                return {
+                  value: m.user.id,
+                  label: displayName,
+                  sublabel: `@${m.user.username}`,
+                  icon: <span className="search-dropdown-avatar-fallback">{initials}</span>,
+                }
+              }),
             ]}
             onChange={onSelectAuthorFilter}
             title="Filter by author"
@@ -300,7 +305,7 @@ export function SearchResults({
             <Loader2 size={24} className="spin" style={{ color: 'var(--brand)' }} />
             <p style={{ marginTop: 12, color: 'var(--text-muted)' }}>Searching messages...</p>
           </div>
-        ) : !query ? (
+        ) : !query && !selectedChannelId && !selectedAuthorId ? (
           <div className="search-state-view">
             <Search size={40} style={{ color: 'var(--text-muted)', opacity: 0.5 }} />
             <p className="search-state-title">Search for messages</p>
@@ -318,7 +323,11 @@ export function SearchResults({
             <Search size={40} style={{ color: 'var(--text-muted)', opacity: 0.5 }} />
             <p className="search-state-title">No Results Found</p>
             <p className="search-state-subtitle">
-              We searched all indexed messages for <strong>"{query}"</strong>, but found no matches.
+              {query ? (
+                <>We searched all indexed messages for <strong>"{query}"</strong>, but found no matches.</>
+              ) : (
+                <>No messages found matching the selected filters.</>
+              )}
             </p>
           </div>
         ) : (

@@ -120,4 +120,31 @@ describe('SearchResults Component', () => {
     // Search query match is highlighted
     expect(html).toContain('<mark class="search-highlight">hello</mark>')
   })
+
+  it('renders results when query is empty but author filter is active', () => {
+    const html = renderToStaticMarkup(
+      <SearchResults
+        isOpen={true}
+        onClose={vi.fn()}
+        query=""
+        results={[dummyMsg]}
+        totalResults={1}
+        loading={false}
+        currentPage={1}
+        pageSize={25}
+        onPageChange={vi.fn()}
+        channels={[dummyChannel]}
+        currentChannel={dummyChannel}
+        selectedChannelId=""
+        onSelectChannelFilter={vi.fn()}
+        selectedAuthorId="user-1"
+        onSelectAuthorFilter={vi.fn()}
+        onJumpToMessage={vi.fn()}
+      />
+    )
+
+    // Displays result message card instead of empty placeholder
+    expect(html).toContain('class="search-results-list"')
+    expect(html).toContain('1 Result')
+  })
 })

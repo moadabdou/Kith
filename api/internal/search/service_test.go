@@ -113,7 +113,7 @@ func (m *mockMessageStore) ListPins(ctx context.Context, channelID int64) ([]mes
 func TestSearchParamsValidation(t *testing.T) {
 	svc := NewService(nil)
 
-	// Empty query returns ErrQueryRequired
+	// Empty query without filters returns ErrQueryRequired
 	_, err := svc.SearchGuildMessages(context.Background(), 1, 1, SearchParams{Query: ""})
 	if err != ErrQueryRequired {
 		t.Fatalf("expected ErrQueryRequired, got %v", err)
@@ -122,6 +122,12 @@ func TestSearchParamsValidation(t *testing.T) {
 	_, err = svc.SearchGuildMessages(context.Background(), 1, 1, SearchParams{Query: "   "})
 	if err != ErrQueryRequired {
 		t.Fatalf("expected ErrQueryRequired for whitespace query, got %v", err)
+	}
+
+	// Empty query with filter (e.g. ChannelID or AuthorID) does NOT return ErrQueryRequired
+	_, err = svc.SearchGuildMessages(context.Background(), 1, 1, SearchParams{Query: "", ChannelID: 100})
+	if err == ErrQueryRequired {
+		t.Fatalf("did not expect ErrQueryRequired when ChannelID filter is set")
 	}
 }
 

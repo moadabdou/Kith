@@ -47,20 +47,29 @@ export function parseSearchQuery(input: string): ParsedSearchQuery {
   let inChannel: string | undefined
 
   // Match from:username or from:"user name" or from:@username
-  const fromRegex = /\bfrom:(?:"([^"]+)"|@?(\S+))/i
+  const fromRegex = /\bfrom:(?:"([^"]+)"|@?(\S+))?/i
   const fromMatch = text.match(fromRegex)
-  if (fromMatch) {
-    from = (fromMatch[1] || fromMatch[2]).toLowerCase()
+  if (fromMatch && fromMatch[0]) {
+    const val = fromMatch[1] || fromMatch[2]
+    if (val) {
+      from = val.toLowerCase()
+    }
     text = text.replace(fromMatch[0], ' ')
   }
 
   // Match in:channel or in:"channel name" or in:#channel
-  const inRegex = /\bin:(?:"([^"]+)"|#?(\S+))/i
+  const inRegex = /\bin:(?:"([^"]+)"|#?(\S+))?/i
   const inMatch = text.match(inRegex)
-  if (inMatch) {
-    inChannel = (inMatch[1] || inMatch[2]).toLowerCase()
+  if (inMatch && inMatch[0]) {
+    const val = inMatch[1] || inMatch[2]
+    if (val) {
+      inChannel = val.toLowerCase()
+    }
     text = text.replace(inMatch[0], ' ')
   }
+
+  // Strip dangling filter prefixes (from:, in:, etc.)
+  text = text.replace(/\b(from|in|mentions|has|before|during|after):/gi, ' ')
 
   return {
     text: text.replace(/\s+/g, ' ').trim(),

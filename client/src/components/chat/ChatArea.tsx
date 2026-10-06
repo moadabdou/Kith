@@ -1879,8 +1879,8 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
               </div>
             )}
 
-            <div ref={messagesEndRef} />
             </div>
+            <div ref={messagesEndRef} style={{ height: 0, margin: 0, padding: 0 }} />
           </div>
 
           {/* Viewing History Banner with Jump to Present button */}
@@ -1919,7 +1919,7 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
           )}
 
           {/* Typing Indicator */}
-          <div className="typing-indicator" aria-live="polite">
+          <div className={`typing-indicator ${typingText ? 'is-typing' : ''}`} aria-live="polite">
             {typingText && (
               <span className="typing-indicator-text">
                 {typingText}

@@ -703,16 +703,15 @@ body {
 .messages-scroll {
   flex: 1;
   overflow-y: auto;
-  padding: 20px 16px;
+  padding: 16px 16px 4px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
 }
 
 .messages-inner-stream {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
   width: 100%;
 }
 
@@ -2047,7 +2046,7 @@ body {
 
 /* Chat Input Bar */
 .chat-input-container {
-  padding: 0 16px 24px;
+  padding: 0 16px 16px;
   flex-shrink: 0;
 }
 
@@ -2591,14 +2590,25 @@ a.attachment-name:hover {
 
 /* ── Typing Indicator (#39) ─────────────────────────── */
 .typing-indicator {
-  height: 24px;
+  height: 0;
+  min-height: 0;
   padding: 0 16px;
   display: flex;
   align-items: center;
   flex-shrink: 0;
-  font-size: 13px;
+  font-size: 12px;
   color: var(--text-muted);
   font-weight: 500;
+  overflow: hidden;
+  opacity: 0;
+  transition: height 0.15s ease, opacity 0.15s ease, margin 0.15s ease;
+}
+
+.typing-indicator.is-typing,
+.typing-indicator:has(.typing-indicator-text) {
+  height: 18px;
+  opacity: 1;
+  margin-bottom: 2px;
 }
 
 .typing-indicator-text {

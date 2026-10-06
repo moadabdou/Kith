@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { MessageSquare, Plus } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import type { Guild } from '../../types'
 
 interface ServerSidebarProps {
@@ -31,14 +31,18 @@ export function ServerSidebar({
 
   return (
     <div className="server-rail">
-      {/* Home / Discord icon */}
+      {/* Home / Kith logo icon */}
       <div className="server-icon-wrapper">
         <button
-          className="server-icon-btn active"
+          className="server-icon-btn active kith-home-btn"
           title="Direct Messages"
-          style={{ backgroundColor: 'var(--brand)' }}
+          onClick={() => onSelectGuild('')}
         >
-          <MessageSquare size={24} />
+          <img
+            src="/assets/logo.png"
+            alt="Kith"
+            className="kith-logo-img"
+          />
         </button>
       </div>
 

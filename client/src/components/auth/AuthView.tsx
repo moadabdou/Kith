@@ -35,6 +35,10 @@ export function AuthView() {
   return (
     <div className="auth-wrapper">
       <div className="auth-card">
+        <div className="auth-brand-badge">
+          <img src="/assets/logo.png" alt="Kith" className="auth-logo-img" />
+          <span className="auth-brand-name">KITH</span>
+        </div>
         <div className="auth-header">
           <h2 className="auth-title">
             {isRegister ? 'Create an account' : 'Welcome back!'}

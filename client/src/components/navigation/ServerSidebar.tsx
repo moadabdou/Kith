@@ -34,7 +34,7 @@ export function ServerSidebar({
       {/* Home / Kith logo icon */}
       <div className="server-icon-wrapper">
         <button
-          className="server-icon-btn active kith-home-btn"
+          className="kith-home-btn"
           title="Direct Messages"
           onClick={() => onSelectGuild('')}
         >

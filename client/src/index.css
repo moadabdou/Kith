@@ -158,34 +158,45 @@ body {
 .server-icon-btn:hover,
 .server-icon-btn.active {
   border-radius: 16px;
-  background-color: var(--brand);
+  background-color: #ffffff;
   border-color: transparent;
-  color: white;
-  box-shadow: 0 4px 14px rgba(88, 101, 242, 0.4);
+  color: #000000;
+  font-weight: 700;
+  box-shadow: 0 0 16px rgba(255, 255, 255, 0.4);
 }
 
-.server-icon-btn.kith-home-btn {
-  background-color: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  padding: 8px;
+.kith-home-btn {
+  width: 52px;
+  height: 52px;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.server-icon-btn.kith-home-btn:hover,
-.server-icon-btn.kith-home-btn.active {
-  background-color: var(--brand);
-  border-color: transparent;
+.kith-home-btn:hover {
+  transform: scale(1.08);
+}
+
+.kith-home-btn:active {
+  transform: scale(0.96);
 }
 
 .kith-logo-img {
-  width: 100%;
-  height: 100%;
+  width: 46px;
+  height: 46px;
   object-fit: contain;
-  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.4));
-  transition: transform 0.2s ease;
+  filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.6));
+  transition: filter 0.22s ease;
 }
 
-.server-icon-btn:hover .kith-logo-img {
-  transform: scale(1.08);
+.kith-home-btn:hover .kith-logo-img {
+  filter: drop-shadow(0 0 12px rgba(255, 255, 255, 0.45));
 }
 
 .server-separator {
@@ -609,14 +620,15 @@ body {
   width: 32px;
   height: 32px;
   border-radius: 50%;
-  background-color: var(--brand);
+  background-color: #ffffff;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: white;
-  font-weight: 600;
+  color: #000000;
+  font-weight: 700;
   font-size: 14px;
   flex-shrink: 0;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);
 }
 
 .user-text {
@@ -2458,12 +2470,12 @@ a.attachment-name:hover {
   width: 32px;
   height: 32px;
   border-radius: 50%;
-  background-color: var(--bg-chat);
+  background-color: #ffffff;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--text-normal);
-  font-weight: 600;
+  color: #000000;
+  font-weight: 700;
   font-size: 12px;
 }
 

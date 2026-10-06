@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent } from 'react'
 import { AlertCircle, ArrowDown, Hash, Loader2, Pin } from 'lucide-react'
 import { api } from '../../api'
 import { useAuth } from '../../context/useAuth'
@@ -106,10 +106,15 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
   const [hasNewer, setHasNewer] = useState(false)
   const [loadingNewer, setLoadingNewer] = useState(false)
   const [isViewingHistory, setIsViewingHistory] = useState(false)
+  const isViewingHistoryRef = useRef(false)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
+  const messagesInnerRef = useRef<HTMLDivElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const isLoadingOlderRef = useRef(false)
   const isLoadingNewerRef = useRef(false)
+  const isAtBottomRef = useRef(true)
+  const userJustSentRef = useRef(0)
+  const [firstUnreadMessageId, setFirstUnreadMessageId] = useState<string | null>(null)
 
   // Search State & Filters
   const [searchQuery, setSearchQuery] = useState('')
@@ -470,9 +475,66 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
     dragDepth.current = 0
   }, [currentGuild?.id, currentChannel?.id])
 
-  const scrollToBottom = (smooth = false) => {
+  const scrollToBottom = useCallback((smooth = false) => {
+    const container = scrollContainerRef.current
+    if (container) {
+      if (smooth) {
+        container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' })
+      } else {
+        container.scrollTop = container.scrollHeight
+      }
+    }
     messagesEndRef.current?.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto' })
-  }
+  }, [])
+
+  const pinToBottom = useCallback((smooth = false) => {
+    isAtBottomRef.current = true
+    scrollToBottom(smooth)
+    requestAnimationFrame(() => scrollToBottom(smooth))
+    setTimeout(() => {
+      if (isAtBottomRef.current || Date.now() < userJustSentRef.current) scrollToBottom(false)
+    }, 80)
+    setTimeout(() => {
+      if (isAtBottomRef.current || Date.now() < userJustSentRef.current) scrollToBottom(false)
+    }, 250)
+  }, [scrollToBottom])
+
+  // Auto-follow content height expansions (GIFs, attachments, stickers loading)
+  useEffect(() => {
+    const inner = messagesInnerRef.current
+    const container = scrollContainerRef.current
+    if (!inner || !container) return
+
+    let prevHeight = inner.offsetHeight || container.scrollHeight
+
+    const handleContentResize = () => {
+      const currentHeight = inner.offsetHeight || container.scrollHeight
+      const grew = currentHeight > prevHeight
+      prevHeight = currentHeight
+
+      if (isAtBottomRef.current || Date.now() < userJustSentRef.current) {
+        if (grew) {
+          container.scrollTop = container.scrollHeight
+        }
+      }
+    }
+
+    const ro = new ResizeObserver(handleContentResize)
+    ro.observe(inner)
+
+    // Capture media element load events as images & GIFs finish decoding
+    const handleMediaLoad = () => {
+      if (isAtBottomRef.current || Date.now() < userJustSentRef.current) {
+        container.scrollTop = container.scrollHeight
+      }
+    }
+    container.addEventListener('load', handleMediaLoad, { capture: true })
+
+    return () => {
+      ro.disconnect()
+      container.removeEventListener('load', handleMediaLoad, { capture: true })
+    }
+  }, [])
 
   // Jump highlight helper
   const flashHighlight = useCallback((targetId: string) => {
@@ -567,13 +629,17 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
       setHasMore(msgs.length >= 50)
       setHasNewer(false)
       setIsViewingHistory(false)
-      requestAnimationFrame(() => scrollToBottom(false))
+      isViewingHistoryRef.current = false
+      setFirstUnreadMessageId(null)
+      isAtBottomRef.current = true
+      userJustSentRef.current = Date.now() + 3000
+      pinToBottom(true)
     } catch (err: any) {
       console.error('Failed to reset to latest messages:', err)
     } finally {
       setLoadingOlder(false)
     }
-  }, [currentGuild, currentChannel])
+  }, [currentGuild, currentChannel, pinToBottom])
 
   // Jump to targeted message in current channel (with bi-directional context window)
   const jumpToTargetInCurrentChannel = useCallback(async (targetId: string) => {
@@ -736,38 +802,72 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
     let active = true
 
     setIsViewingHistory(false)
+    isViewingHistoryRef.current = false
     setHasNewer(false)
+    setFirstUnreadMessageId(null)
 
-    api.getMessages(guildId, channelId)
-      .then((msgs) => {
+    Promise.all([
+      api.getMessages(guildId, channelId),
+      api.getChannelReadState(channelId).catch(() => null),
+    ])
+      .then(([msgs, readState]) => {
         if (!active) return
-        setMessages([...msgs].reverse())
+        const reversed = [...msgs].reverse()
+        setMessages(reversed)
         setHasMore(msgs.length >= 50)
         setLoadingOlder(false)
         setError(null)
-
-        if (msgs.length > 0) {
-          api.ackMessage(channelId, msgs[0].id).catch(() => {})
-        }
 
         // If there is a pending jump message waiting for channel switch
         if (pendingJumpId) {
           const target = pendingJumpId
           setPendingJumpId(null)
           setTimeout(() => jumpToTargetInCurrentChannel(target), 50)
+          return
+        }
+
+        // Discord-style unread resume: check if user has unread messages
+        const lastReadId = readState?.last_read_message_id
+        let targetUnreadId: string | null = null
+
+        if (lastReadId && reversed.length > 0) {
+          const lastReadIdx = reversed.findIndex((m) => m.id === lastReadId)
+          if (lastReadIdx !== -1 && lastReadIdx < reversed.length - 1) {
+            targetUnreadId = reversed[lastReadIdx + 1].id
+          }
+        }
+
+        if (targetUnreadId) {
+          // Scroll up to last read and allow scrolling down to read the rest
+          setFirstUnreadMessageId(targetUnreadId)
+          isAtBottomRef.current = false
+          setTimeout(() => {
+            if (!active) return
+            const targetEl = document.getElementById(`msg-${targetUnreadId}`) || document.getElementById('unread-divider')
+            targetEl?.scrollIntoView({ behavior: 'auto', block: 'start' })
+          }, 60)
         } else {
-          requestAnimationFrame(() => scrollToBottom(false))
+          // Fully caught up / on refresh: show the lowest part of the messages
+          setFirstUnreadMessageId(null)
+          isAtBottomRef.current = true
+          if (msgs.length > 0) {
+            api.ackMessage(channelId, msgs[0].id).catch(() => {})
+          }
+          pinToBottom(false)
         }
       })
       .catch((err: any) => {
         if (!active) return
         setError(err.message || 'Failed to fetch messages')
       })
+      .finally(() => {
+        if (active) setLoadingOlder(false)
+      })
 
     return () => {
       active = false
     }
-  }, [currentGuild, currentChannel, pendingJumpId, jumpToTargetInCurrentChannel])
+  }, [currentGuild, currentChannel, pendingJumpId, jumpToTargetInCurrentChannel, pinToBottom])
 
   // Refetch messages on session reset (Op 9 INVALID_SESSION) when resumption was rejected
   useEffect(() => {
@@ -878,8 +978,19 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
     if (!container) return
 
     const scrollBottom = container.scrollHeight - container.scrollTop - container.clientHeight
+    const atBottom = scrollBottom <= 100
+    isAtBottomRef.current = atBottom
+
     if (scrollBottom <= 20 && !hasNewer && isViewingHistory) {
       setIsViewingHistory(false)
+      isViewingHistoryRef.current = false
+    }
+
+    // If user scrolled to the bottom while unread banner was visible, ack and clear
+    if (scrollBottom <= 30 && firstUnreadMessageId && messages.length > 0 && currentChannel) {
+      const latest = messages[messages.length - 1]
+      api.ackMessage(currentChannel.id, latest.id).catch(() => {})
+      setFirstUnreadMessageId(null)
     }
 
     // Trigger infinite scroll upwards when within 80px of top (synchronously single-flight guarded)
@@ -910,20 +1021,27 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
           return [...prev, newMsg]
         })
 
-        // Auto-scroll only if user is already near bottom or sent by self and not viewing history
+        // Auto-scroll if user is at bottom or sent by self and not viewing history
         const container = scrollContainerRef.current
-        const isNearBottom = container
-          ? container.scrollHeight - container.scrollTop - container.clientHeight < 160
-          : true
+        const scrollBottom = container ? container.scrollHeight - container.scrollTop - container.clientHeight : 0
+        const isNearBottom = container ? scrollBottom < 240 : true
+        const isSentBySelf = newMsg.author.id === user?.id
 
-        if (!isViewingHistory && (isNearBottom || newMsg.author.id === user?.id)) {
-          requestAnimationFrame(() => scrollToBottom(true))
+        if (isSentBySelf || (!isViewingHistoryRef.current && (isNearBottom || isAtBottomRef.current))) {
+          isAtBottomRef.current = true
+          if (isSentBySelf) {
+            userJustSentRef.current = Date.now() + 5000
+          }
+          requestAnimationFrame(() => {
+            scrollToBottom(false)
+            api.ackMessage(channelId, newMsg.id).catch(() => {})
+          })
         }
       }
     })
 
     return unsubscribe
-  }, [currentChannel, subscribeToMessages, user?.id, isViewingHistory])
+  }, [currentChannel, subscribeToMessages, user?.id, scrollToBottom])
 
   // Live processing-completion updates: the media worker publishes
   // MESSAGE_UPDATE when an attachment flips terminal, so tiles render
@@ -1260,8 +1378,11 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
         return [...prev, sent]
       })
       setIsViewingHistory(false)
+      isViewingHistoryRef.current = false
       setHasNewer(false)
-      requestAnimationFrame(() => scrollToBottom(true))
+      isAtBottomRef.current = true
+      userJustSentRef.current = Date.now() + 5000
+      pinToBottom(true)
     } catch (err: any) {
       setError(err.message || 'Failed to send message')
     } finally {
@@ -1291,8 +1412,11 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
         return [...prev, sent]
       })
       setIsViewingHistory(false)
+      isViewingHistoryRef.current = false
       setHasNewer(false)
-      requestAnimationFrame(() => scrollToBottom(true))
+      isAtBottomRef.current = true
+      userJustSentRef.current = Date.now() + 5000
+      pinToBottom(true)
     } catch (err: any) {
       setError(err.message || 'Failed to send sticker')
     } finally {
@@ -1321,8 +1445,11 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
         return [...prev, sent]
       })
       setIsViewingHistory(false)
+      isViewingHistoryRef.current = false
       setHasNewer(false)
-      requestAnimationFrame(() => scrollToBottom(true))
+      isAtBottomRef.current = true
+      userJustSentRef.current = Date.now() + 5000
+      pinToBottom(true)
     } catch (err: any) {
       setError(err.message || 'Failed to send GIF')
     } finally {
@@ -1493,6 +1620,7 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
               </div>
             )}
 
+            <div ref={messagesInnerRef} className="messages-inner-stream">
             {/* Channel Welcome Banner (rendered only when user scrolled to true beginning) */}
             {!hasMore && (
               <div className="channel-welcome-banner">
@@ -1518,13 +1646,20 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
               )
 
               return (
-                <div
-                  id={`msg-${msg.id}`}
-                  key={msg.id}
-                  className={`message-card ${msg.pinned ? 'is-pinned' : ''} ${isHighlighted ? 'message-highlighted' : ''} ${isReply ? 'is-reply' : ''} ${isEditing ? 'is-editing' : ''} ${isMentioned ? 'message-mentioned' : ''}`}
-                  onMouseEnter={() => setHoveredMessageId(msg.id)}
-                  onMouseLeave={() => setHoveredMessageId((prev) => (prev === msg.id ? null : prev))}
-                >
+                <Fragment key={msg.id}>
+                  {firstUnreadMessageId === msg.id && (
+                    <div id="unread-divider" className="unread-divider" role="separator" aria-label="New Messages">
+                      <div className="unread-divider-line" />
+                      <span className="unread-divider-badge">NEW MESSAGES</span>
+                      <div className="unread-divider-line" />
+                    </div>
+                  )}
+                  <div
+                    id={`msg-${msg.id}`}
+                    className={`message-card ${msg.pinned ? 'is-pinned' : ''} ${isHighlighted ? 'message-highlighted' : ''} ${isReply ? 'is-reply' : ''} ${isEditing ? 'is-editing' : ''} ${isMentioned ? 'message-mentioned' : ''}`}
+                    onMouseEnter={() => setHoveredMessageId(msg.id)}
+                    onMouseLeave={() => setHoveredMessageId((prev) => (prev === msg.id ? null : prev))}
+                  >
                   {/* Floating Action Toolbar on hover */}
                   {!isEditing && (
                     <MessageToolbar
@@ -1688,7 +1823,16 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
                             {gifUrls.map((url, idx) => (
                               <div key={idx} className="chat-gif-embed">
                                 <a href={url} target="_blank" rel="noopener noreferrer">
-                                  <img src={url} alt="GIF" loading="lazy" />
+                                  <img
+                                    src={url}
+                                    alt="GIF"
+                                    loading="lazy"
+                                    onLoad={() => {
+                                      if (isAtBottomRef.current || Date.now() < userJustSentRef.current) {
+                                        scrollToBottom(false)
+                                      }
+                                    }}
+                                  />
                                 </a>
                               </div>
                             ))}
@@ -1706,8 +1850,9 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
                     </div>
                   </div>
                 </div>
-              )
-            })}
+              </Fragment>
+            )
+          })}
 
             {/* Bottom Loading Indicator when scrolling down to fetch newer messages */}
             {loadingNewer && (
@@ -1729,6 +1874,7 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
             )}
 
             <div ref={messagesEndRef} />
+            </div>
           </div>
 
           {/* Viewing History Banner with Jump to Present button */}

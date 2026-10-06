@@ -697,6 +697,44 @@ body {
   gap: 16px;
 }
 
+.messages-inner-stream {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+}
+
+/* ── Unread Message Divider (Discord-style) ────────────────── */
+.unread-divider {
+  display: flex;
+  align-items: center;
+  margin: 14px 0 6px;
+  position: relative;
+  z-index: 2;
+  user-select: none;
+}
+
+.unread-divider-line {
+  flex: 1;
+  height: 1px;
+  background-color: var(--danger, #da373c);
+  opacity: 0.9;
+}
+
+.unread-divider-badge {
+  background-color: var(--danger, #da373c);
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  margin: 0 10px;
+  flex-shrink: 0;
+  box-shadow: 0 2px 8px rgba(218, 55, 60, 0.4);
+}
+
 .message-card {
   display: flex;
   flex-direction: column;

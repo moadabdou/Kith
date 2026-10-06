@@ -48,6 +48,7 @@
 | `11-roadmap.md` | **The phased 3–6 month timeline (start here)** | all |
 | `12-references.md` | Discord engineering posts, RFCs, papers mapped to phases | all |
 | `13-message-features.md` | Rich messaging, reactions, replies, markdown, pins | 9 |
+| `14-ui-ux-refinement.md` | UI/UX redesign, tokens, navigation, user settings, voice PiP | 10 |
 
 ## Ground rules
 

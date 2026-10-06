@@ -190,8 +190,20 @@ spoilers (`||spoiler||`), and auto-linking.
 to a single message under 10% packet drop; prove tallies match individual rows with zero race drifts).
 
 **Gate:** see `13-message-features.md` §7.
+- [x] Phase 9 completed and signed off (see [postmortems/phase-9.md](../postmortems/phase-9.md))
 
-## Phase 10 — Real deployment (wk ~27–28, graduation)
+## Phase 10 — UI/UX Refinement & Complete User Experience (wk 27–28)
+
+**Build:** `14-ui-ux-refinement.md` (GitHub Milestone 11):
+(a) Design system foundation: centralized CSS variables token engine, elevation, scrollbars, focus rings, tooltip system.
+(b) Navigation chrome: server rail hover morphs/pills, collapsible channel category headers (Text/Voice), redesigned user deck with presence dot, mic/deafen tooltips, settings gear.
+(c) Chat stream & composer: cozy spacing, hover toolbar blur/shadow, empty channel welcome heroes, Up-arrow edit on last message, code copy buttons.
+(d) User settings center & presence switcher: Online/Idle/DND/Invisible via Gateway Op 3, user settings modal (Account, Voice & Video devices, Keybinds), Quick Switcher (`Ctrl+K`/`Cmd+K`), unified modal system.
+(e) Voice stage & multitasking: video grid layout polish, active speaker glow/pulse, floating picture-in-picture (PiP) mini-stage when viewing text channels during calls.
+
+**Gate:** see `14-ui-ux-refinement.md` §3 (all 5 issues #124–#128 green, zero test regressions across 270+ tests).
+
+## Phase 11 — Real deployment (wk ~29–30, graduation)
 
 **Build:** `10-deployment.md`: Oracle VMs, TLS, the networking gauntlet
 (security lists, double firewall, UDP range), runbook, backups + restore

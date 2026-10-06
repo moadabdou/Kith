@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo, type FormEvent, type RefObject } from 'react'
-import { AlertCircle, FileText, Loader2, Plus, Send, Smile, X } from 'lucide-react'
+import { AlertCircle, AtSign, FileText, Loader2, Plus, Send, Smile, X } from 'lucide-react'
 import type { GuildEmoji, GuildSticker, Message } from '../../types'
 import type { PendingUpload } from '../../lib/uploads'
 import { formatBytes } from '../../lib/uploads'
@@ -643,9 +643,61 @@ export function MessageInput({
                   : undefined
               }
             >
+              <div className="mention-suggest-header">Members & Roles</div>
               {mentionSuggestions.map((s, i) => {
                 const key = `${s.kind}:${s.id}`
                 const activeCls = i === Math.min(mentionIndex, mentionSuggestions.length - 1) ? 'active' : ''
+
+                if (s.kind === 'user') {
+                  const m = mentionMembers?.find((mm) => mm.id === s.id)
+                  const displayName = m?.nick || m?.username || s.label.replace(/^@/, '')
+                  const username = m?.username || ('sub' in s && s.sub) || displayName
+                  const initials = (displayName[0] || m?.username?.[0] || '?').toUpperCase()
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      role="option"
+                      aria-selected={i === mentionIndex}
+                      className={`mention-suggest-item ${activeCls}`}
+                      onMouseDown={(e) => {
+                        e.preventDefault()
+                        acceptMention(s)
+                      }}
+                    >
+                      <div className="mention-suggest-avatar">{initials}</div>
+                      <div className="mention-suggest-info">
+                        <span className="mention-suggest-name">{displayName}</span>
+                        <span className="mention-suggest-handle">@{username}</span>
+                      </div>
+                    </button>
+                  )
+                }
+
+                if (s.kind === 'role') {
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      role="option"
+                      aria-selected={i === mentionIndex}
+                      className={`mention-suggest-item ${activeCls}`}
+                      onMouseDown={(e) => {
+                        e.preventDefault()
+                        acceptMention(s)
+                      }}
+                    >
+                      <div className="mention-suggest-icon role">
+                        <AtSign size={13} />
+                      </div>
+                      <div className="mention-suggest-info">
+                        <span className="mention-suggest-name">{s.label}</span>
+                      </div>
+                      <span className="mention-suggest-tag">Role</span>
+                    </button>
+                  )
+                }
+
                 return (
                   <button
                     key={key}
@@ -653,15 +705,18 @@ export function MessageInput({
                     role="option"
                     aria-selected={i === mentionIndex}
                     className={`mention-suggest-item ${activeCls}`}
-                    // mousedown fires before blur so the caret is still valid.
                     onMouseDown={(e) => {
                       e.preventDefault()
                       acceptMention(s)
                     }}
                   >
-                    <span className={`mention-suggest-kind kind-${s.kind}`}>{s.kind}</span>
-                    <span className="mention-suggest-label">{s.label}</span>
-                    {'sub' in s && s.sub && <span className="mention-suggest-sub">{s.sub}</span>}
+                    <div className="mention-suggest-icon broadcast">
+                      <AtSign size={13} />
+                    </div>
+                    <div className="mention-suggest-info">
+                      <span className="mention-suggest-name">{s.label}</span>
+                      <span className="mention-suggest-handle">Notify everyone</span>
+                    </div>
                   </button>
                 )
               })}

@@ -1,6 +1,6 @@
 import { useMemo, useRef, useEffect } from 'react'
 import { ArrowRight, ChevronLeft, ChevronRight, Hash, Loader2, Search, User, X } from 'lucide-react'
-import { highlightMatches } from '../../lib/search'
+import { highlightMatches, parseSearchQuery } from '../../lib/search'
 import { MarkdownView } from '../../lib/markdown'
 import { memberNameColor } from '../../lib/members'
 import type { Channel, Member, Message, Role } from '../../types'
@@ -160,6 +160,11 @@ export function SearchResults({
     return map
   }, [channels])
 
+  const parsed = useMemo(() => parseSearchQuery(query), [query])
+  const hasActiveSearch = Boolean(
+    parsed.text || parsed.from || parsed.in || selectedChannelId || selectedAuthorId
+  )
+
   // Scroll to top when page changes
   useEffect(() => {
     if (contentRef.current) {
@@ -305,7 +310,7 @@ export function SearchResults({
             <Loader2 size={24} className="spin" style={{ color: 'var(--brand)' }} />
             <p style={{ marginTop: 12, color: 'var(--text-muted)' }}>Searching messages...</p>
           </div>
-        ) : !query && !selectedChannelId && !selectedAuthorId ? (
+        ) : !hasActiveSearch ? (
           <div className="search-state-view">
             <Search size={40} style={{ color: 'var(--text-muted)', opacity: 0.5 }} />
             <p className="search-state-title">Search for messages</p>
@@ -323,8 +328,10 @@ export function SearchResults({
             <Search size={40} style={{ color: 'var(--text-muted)', opacity: 0.5 }} />
             <p className="search-state-title">No Results Found</p>
             <p className="search-state-subtitle">
-              {query ? (
-                <>We searched all indexed messages for <strong>"{query}"</strong>, but found no matches.</>
+              {parsed.text ? (
+                <>We searched all indexed messages for <strong>"{parsed.text}"</strong>, but found no matches.</>
+              ) : parsed.from ? (
+                <>No messages found from <strong>@{parsed.from}</strong> matching your criteria.</>
               ) : (
                 <>No messages found matching the selected filters.</>
               )}

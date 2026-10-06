@@ -126,7 +126,6 @@ export function SearchBar({
   const selectOption = (opt: (typeof defaultOptions)[0]) => {
     const newQuery = query.trim() ? `${query.trim()} ${opt.prefix}` : opt.prefix
     onChange(newQuery)
-    onOpenDrawer()
     inputRef.current?.focus()
   }
 
@@ -152,13 +151,24 @@ export function SearchBar({
         setSelectedIndex((prev) => (prev - 1 + currentCount) % currentCount)
         return
       }
-      if (e.key === 'Enter' || e.key === 'Tab') {
+      if (e.key === 'Tab') {
         if (suggestionMode === 'users' || suggestionMode === 'channels') {
           e.preventDefault()
           acceptCurrent()
           return
         }
       }
+    }
+
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      if (isFocused && (suggestionMode === 'users' || suggestionMode === 'channels') && currentCount > 0) {
+        acceptCurrent()
+        return
+      }
+      setIsFocused(false)
+      onOpenDrawer()
+      return
     }
 
     if (e.key === 'Escape') {
@@ -188,7 +198,6 @@ export function SearchBar({
         }}
         onFocus={() => {
           setIsFocused(true)
-          onOpenDrawer()
         }}
         onKeyDown={handleInputKeyDown}
       />

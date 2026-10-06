@@ -1819,7 +1819,7 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
                         const gifUrls = extractGifUrls(msg.content)
                         if (gifUrls.length === 0) return null
                         return (
-                          <div className="message-gif-embeds" style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '4px' }}>
+                          <div className="message-gif-embeds">
                             {gifUrls.map((url, idx) => (
                               <div key={idx} className="chat-gif-embed">
                                 <a href={url} target="_blank" rel="noopener noreferrer">

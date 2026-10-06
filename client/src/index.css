@@ -1780,23 +1780,45 @@ body {
 }
 
 /* Inline Chat GIF Embeds */
+.message-gif-embeds {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 4px;
+}
+
 .chat-gif-embed {
-  margin-top: 6px;
-  max-width: 400px;
+  margin-top: 4px;
+  width: fit-content;
+  max-width: fit-content;
+  align-self: flex-start;
   border-radius: 8px;
   overflow: hidden;
-  background: var(--bg-secondary, #2f3136);
-  display: inline-block;
+  background: transparent;
+  display: inline-flex;
   cursor: pointer;
   position: relative;
 }
 
+.chat-gif-embed a {
+  display: inline-flex;
+  width: fit-content;
+  border-radius: 8px;
+  overflow: hidden;
+  background: transparent;
+  text-decoration: none;
+}
+
 .chat-gif-embed img {
   display: block;
-  max-width: 100%;
+  max-width: 400px;
   max-height: 320px;
+  width: auto;
+  height: auto;
   object-fit: contain;
   border-radius: 8px;
+  background: transparent;
 }
 
 @media (prefers-reduced-motion: reduce) {

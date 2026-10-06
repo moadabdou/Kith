@@ -5159,3 +5159,88 @@ div:hover > .overview-upload-overlay {
   opacity: 1 !important;
 }
 
+/* App Loading Screen */
+.app-loading-screen {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--bg-chat, #313338);
+  gap: 20px;
+  user-select: none;
+}
+
+.app-loading-logo-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.app-loading-logo {
+  width: 72px;
+  height: 72px;
+  object-fit: contain;
+  animation: app-logo-pulse 2.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+.app-loading-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.app-loading-title {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text-header, #f2f3f5);
+  letter-spacing: 0.02em;
+}
+
+.app-loading-bar {
+  width: 180px;
+  height: 3px;
+  background-color: rgba(255, 255, 255, 0.08);
+  border-radius: 2px;
+  overflow: hidden;
+  position: relative;
+}
+
+.app-loading-bar-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 45%;
+  height: 100%;
+  background-color: #ffffff;
+  border-radius: 2px;
+  animation: app-loading-progress 1.5s ease-in-out infinite;
+}
+
+@keyframes app-logo-pulse {
+  0%, 100% {
+    transform: scale(1) translateY(0);
+    filter: drop-shadow(0 4px 14px rgba(0, 0, 0, 0.6)) drop-shadow(0 0 10px rgba(255, 255, 255, 0.2));
+  }
+  50% {
+    transform: scale(1.06) translateY(-3px);
+    filter: drop-shadow(0 8px 24px rgba(0, 0, 0, 0.75)) drop-shadow(0 0 22px rgba(255, 255, 255, 0.45));
+  }
+}
+
+@keyframes app-loading-progress {
+  0% {
+    left: -45%;
+  }
+  50% {
+    left: 45%;
+  }
+  100% {
+    left: 100%;
+  }
+}
+
+

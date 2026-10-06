@@ -354,20 +354,16 @@ function Dashboard() {
 
   if (loading) {
     return (
-      <div
-        style={{
-          width: '100vw',
-          height: '100vh',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          backgroundColor: 'var(--bg-chat)',
-          color: 'var(--text-muted)',
-          fontSize: 18,
-          fontWeight: 600,
-        }}
-      >
-        Loading Kith…
+      <div className="app-loading-screen">
+        <div className="app-loading-logo-wrap">
+          <img src="/assets/logo.png" alt="Kith" className="app-loading-logo" />
+        </div>
+        <div className="app-loading-content">
+          <div className="app-loading-title">Loading Kith…</div>
+          <div className="app-loading-bar">
+            <div className="app-loading-bar-fill" />
+          </div>
+        </div>
       </div>
     )
   }

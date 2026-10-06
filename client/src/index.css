@@ -1203,7 +1203,8 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 2px 8px;
+  padding: 3px 9px;
+  min-height: 28px;
   border-radius: 8px;
   font-size: 13px;
   font-weight: 500;
@@ -1232,17 +1233,18 @@ body {
 }
 
 .reaction-pill-emoji {
-  font-size: 14px;
-  line-height: 1;
+  font-size: 17px;
+  line-height: 1.1;
 }
 
 .reaction-pill-count {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
 }
 
 .reaction-pill-add {
-  padding: 4px 8px;
+  padding: 4px 9px;
+  min-height: 28px;
   color: var(--text-muted, #949ba4);
 }
 
@@ -1754,17 +1756,24 @@ body {
 }
 
 .chat-custom-emoji {
-  width: 22px;
-  height: 22px;
+  width: 28px;
+  height: 28px;
   object-fit: contain;
-  vertical-align: -4px;
+  vertical-align: -6px;
   display: inline-block;
-  margin: 0 1px;
+  margin: 0 2px;
+}
+
+.chat-custom-emoji.jumbo {
+  width: 48px;
+  height: 48px;
+  vertical-align: middle;
+  margin: 2px 4px;
 }
 
 .reaction-pill-custom-emoji {
-  width: 16px;
-  height: 16px;
+  width: 22px;
+  height: 22px;
   object-fit: contain;
   vertical-align: middle;
 }
@@ -2005,10 +2014,10 @@ body {
 }
 
 .chat-input-inline-emoji {
-  width: 22px;
-  height: 22px;
+  width: 28px;
+  height: 28px;
   object-fit: contain;
-  vertical-align: -4px;
+  vertical-align: -6px;
   display: inline-block;
   margin: 0 2px;
   user-select: none;

@@ -59,7 +59,7 @@ export function ReactionPills({
           title="Add Reaction"
           aria-label="Add Reaction"
         >
-          <SmilePlus size={14} />
+          <SmilePlus size={16} />
         </button>
       )}
     </div>

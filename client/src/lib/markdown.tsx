@@ -23,6 +23,7 @@ export interface MarkdownOptions {
   roles?: Role[]
   resolveUser?: (userId: string) => { username?: string; nick?: string } | undefined
   resolveRole?: (roleId: string) => { name?: string; color?: number | string } | undefined
+  isJumbo?: boolean
 }
 
 // ── Interactive Spoiler Component ─────────────────────────────
@@ -483,13 +484,14 @@ export function renderASTNode(
 
     case 'custom_emoji': {
       const ext = node.animated ? 'gif' : 'png'
+      const emojiClass = options.isJumbo ? 'chat-custom-emoji jumbo' : 'chat-custom-emoji'
       return (
         <img
           key={key}
           src={`/emojis/${node.id}.${ext}`}
           alt={`:${node.name}:`}
           title={`:${node.name}:`}
-          className="chat-custom-emoji"
+          className={emojiClass}
           loading="lazy"
         />
       )
@@ -514,7 +516,17 @@ export const MarkdownView: React.FC<{
   resolveRole?: (roleId: string) => { name?: string; color?: number | string } | undefined
 }> = ({ content, members, roles, resolveUser, resolveRole }) => {
   const ast = parseMarkdown(content)
-  const options: MarkdownOptions = { members, roles, resolveUser, resolveRole }
+  const isJumbo =
+    ast.length > 0 &&
+    ast.length <= 10 &&
+    ast.some((n) => n.type === 'custom_emoji') &&
+    ast.every(
+      (n) =>
+        n.type === 'custom_emoji' ||
+        (n.type === 'text' && n.content.trim() === '') ||
+        n.type === 'newline'
+    )
+  const options: MarkdownOptions = { members, roles, resolveUser, resolveRole, isJumbo }
 
   return (
     <span className="markdown-content">

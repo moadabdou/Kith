@@ -132,10 +132,10 @@ export function MemberRoleModal({
                       justifyContent: 'space-between',
                       padding: '8px 12px',
                       borderRadius: 6,
-                      backgroundColor: hasRole ? 'rgba(88, 101, 242, 0.12)' : 'var(--bg-hover)',
+                      backgroundColor: hasRole ? 'rgba(255, 255, 255, 0.15)' : 'var(--bg-hover)',
                       cursor: disabled ? 'not-allowed' : 'pointer',
                       opacity: disabled && !hasRole ? 0.45 : 1,
-                      border: hasRole ? '1px solid rgba(88, 101, 242, 0.4)' : '1px solid transparent',
+                      border: hasRole ? '1px solid rgba(255, 255, 255, 0.4)' : '1px solid transparent',
                       transition: 'all 0.15s ease',
                     }}
                     title={

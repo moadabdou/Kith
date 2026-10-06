@@ -351,6 +351,8 @@ services:
       VITE_IDLE_THRESHOLD_MS: ${PRESENCE_IDLE_THRESHOLD_MS:-120000}
     volumes:
       - ./client/src:/app/src
+      - ./client/public:/app/public
+      - ./client/index.html:/app/index.html
     ports:
       - "127.0.0.1:5173:5173"
     healthcheck:

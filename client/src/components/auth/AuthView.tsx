@@ -53,8 +53,8 @@ export function AuthView() {
         {pendingInvite && (
           <div
             style={{
-              backgroundColor: 'rgba(88, 101, 242, 0.2)',
-              border: '1px solid var(--brand)',
+              backgroundColor: 'rgba(255, 255, 255, 0.08)',
+              border: '1px solid rgba(255, 255, 255, 0.2)',
               borderRadius: 6,
               padding: '10px 14px',
               color: 'var(--text-header)',

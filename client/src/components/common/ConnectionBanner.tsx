@@ -23,7 +23,7 @@ export function ConnectionBanner() {
       : `Connection lost. Reconnecting now (attempt ${reconnectAttempt})...`
     showRetry = true
   } else if (status === 'resuming') {
-    bgColor = '#5865f2'
+    bgColor = '#2b2d31'
     textColor = '#ffffff'
     message = 'Reconnected! Resuming session and replaying missed events...'
   } else if (status === 'connecting') {

@@ -1075,7 +1075,7 @@ export function ServerSettingsModal({
                                 <input
                                   type="color"
                                   disabled={isRoleReadOnly}
-                                  value={selectedColorHex || '#5865f2'}
+                                  value={selectedColorHex || '#ffffff'}
                                   onChange={(e) => setDraftColor(hexToRoleColor(e.target.value))}
                                   style={{
                                     width: 32,

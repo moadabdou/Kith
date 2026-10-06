@@ -230,6 +230,10 @@ export function MemberSidebar({ guildId, guild }: MemberSidebarProps) {
           if (m.user.id !== targetUid) return m
           return {
             ...m,
+            user: {
+              ...m.user,
+              ...payload.user,
+            },
             roles: payload.roles ?? m.roles,
             nick: payload.nick !== undefined ? payload.nick : m.nick,
           }
@@ -347,7 +351,13 @@ export function MemberSidebar({ guildId, guild }: MemberSidebarProps) {
                       }}
                     >
                       <div className="member-avatar-wrap">
-                        <div className="member-avatar">{initialsOf(name)}</div>
+                        <div className="member-avatar">
+                          {member.user.avatar ? (
+                            <img src={member.user.avatar} alt={name} className="member-avatar-img" />
+                          ) : (
+                            initialsOf(name)
+                          )}
+                        </div>
                         <span className="presence-dot" style={{ backgroundColor: DOT_COLORS[status] }} />
                       </div>
                       <span

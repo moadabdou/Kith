@@ -584,11 +584,18 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
       if (p.guild_id === currentGuild.id) reloadRoles()
     })
     const uMemberUpdate = subscribeToMemberUpdates((p) => {
-      if (p.guild_id === currentGuild.id) {
+      if (p.guild_id === currentGuild.id && p.user?.id) {
         setGuildMembers((prev) =>
           prev.map((m) =>
-            m.user.id === p.user?.id
-              ? { ...m, roles: p.roles ?? m.roles, nick: p.nick !== undefined ? p.nick : m.nick }
+            m.user.id === p.user.id
+              ? { ...m, user: { ...m.user, ...p.user }, roles: p.roles ?? m.roles, nick: p.nick !== undefined ? p.nick : m.nick }
+              : m
+          )
+        )
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.author?.id === p.user.id
+              ? { ...m, author: { ...m.author, ...p.user } }
               : m
           )
         )
@@ -1725,7 +1732,11 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
                       </div>
                     ) : (
                       <div className="message-avatar" title={authorName}>
-                        {msg.author?.username?.substring(0, 2).toUpperCase() ?? 'U'}
+                        {msg.author?.avatar ? (
+                          <img src={msg.author.avatar} alt={authorName} className="message-avatar-img" />
+                        ) : (
+                          msg.author?.username?.substring(0, 2).toUpperCase() ?? 'U'
+                        )}
                       </div>
                     )}
                     <div className="message-content-wrap">

@@ -72,9 +72,10 @@ type MessageReference struct {
 }
 
 type AuthorRef struct {
-	ID            string `json:"id"`
-	Username      string `json:"username"`
-	Discriminator string `json:"discriminator"`
+	ID            string  `json:"id"`
+	Username      string  `json:"username"`
+	Discriminator string  `json:"discriminator"`
+	Avatar        *string `json:"avatar,omitempty"`
 }
 
 const (

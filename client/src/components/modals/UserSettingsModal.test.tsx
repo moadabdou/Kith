@@ -61,4 +61,56 @@ describe('UserSettingsModal', () => {
     expect(html).toContain('testpilot')
     expect(html).toContain('var(--presence-dnd')
   })
+
+  it('renders Profiles tab navigation button and edit profile button', () => {
+    const html = renderToStaticMarkup(<UserSettingsModal {...defaultProps} />)
+    expect(html).toContain('Profiles')
+    expect(html).toContain('Edit User Profile')
+  })
+
+  it('renders custom avatar, banner, and bio in My Account tab when user has profile set', () => {
+    const userWithProfile: User = {
+      ...mockUser,
+      avatar: 'https://example.com/avatar.png',
+      banner: '#5865F2',
+      bio: 'Staff Engineer & Space Explorer',
+    }
+    const html = renderToStaticMarkup(
+      <UserSettingsModal {...defaultProps} user={userWithProfile} />
+    )
+    expect(html).toContain('https://example.com/avatar.png')
+    expect(html).toContain('#5865F2')
+    expect(html).toContain('Staff Engineer &amp; Space Explorer')
+  })
+
+  it('renders Voice & Video hardware settings when voice tab is active', () => {
+    const html = renderToStaticMarkup(
+      <UserSettingsModal {...defaultProps} initialTab="voice" />
+    )
+    // Section header
+    expect(html).toContain('Voice &amp; Video Settings')
+
+    // Input device & volume
+    expect(html).toContain('Input Device')
+    expect(html).toContain('Input Volume')
+    expect(html).toContain('Default Microphone')
+
+    // Output device & volume
+    expect(html).toContain('Output Device')
+    expect(html).toContain('Output Volume')
+    expect(html).toContain('Default Output')
+
+    // Mic test sensitivity meter
+    expect(html).toContain('Mic Test')
+    expect(html).toContain('Let&#x27;s Check')
+    expect(html).toContain('mic-meter-fill')
+
+    // Camera settings & video preview
+    expect(html).toContain('Camera Settings')
+    expect(html).toContain('Camera Device')
+    expect(html).toContain('Default Camera')
+    expect(html).toContain('camera-preview-container')
+    expect(html).toContain('Test Video')
+  })
 })
+

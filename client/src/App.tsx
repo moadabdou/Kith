@@ -45,7 +45,7 @@ if (initialInvite && typeof window !== 'undefined') {
 }
 
 function Dashboard() {
-  const { user, loading, logout } = useAuth()
+  const { user, loading, logout, updateUser } = useAuth()
   const {
     onSessionReset,
     subscribeToGuildUpdates,
@@ -506,6 +506,7 @@ function Dashboard() {
         presenceStatus={userPresence}
         onStatusChange={handlePresenceChange}
         onLogout={logout}
+        onUserUpdated={updateUser}
       />
       </div>
     </div>

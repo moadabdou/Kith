@@ -6,15 +6,19 @@ class ApiClient {
   private token: string | null = null
 
   constructor() {
-    this.token = localStorage.getItem('kith_token')
+    if (typeof localStorage !== 'undefined') {
+      this.token = localStorage.getItem('kith_token')
+    }
   }
 
   setToken(token: string | null) {
     this.token = token
-    if (token) {
-      localStorage.setItem('kith_token', token)
-    } else {
-      localStorage.removeItem('kith_token')
+    if (typeof localStorage !== 'undefined') {
+      if (token) {
+        localStorage.setItem('kith_token', token)
+      } else {
+        localStorage.removeItem('kith_token')
+      }
     }
   }
 
@@ -102,6 +106,18 @@ class ApiClient {
 
   async getMe(): Promise<User> {
     return this.request<User>('/users/@me')
+  }
+
+  async updateMe(data: {
+    username?: string
+    avatar?: string | null
+    banner?: string | null
+    bio?: string | null
+  }): Promise<User> {
+    return this.request<User>('/users/@me', {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    })
   }
 
   // ── Guilds ─────────────────────────────────────────

@@ -61,10 +61,17 @@ func (h *PostgresAuthorHydrator) HydrateAuthor(ctx context.Context, msg *Message
 	if err != nil {
 		return err
 	}
-	return h.db.QueryRowContext(ctx, `
-		SELECT username, to_char(discriminator, 'FM0000')
+	var avatar sql.NullString
+	if err := h.db.QueryRowContext(ctx, `
+		SELECT username, to_char(discriminator, 'FM0000'), avatar
 		FROM users WHERE id = $1`, authorID,
-	).Scan(&msg.Author.Username, &msg.Author.Discriminator)
+	).Scan(&msg.Author.Username, &msg.Author.Discriminator, &avatar); err != nil {
+		return err
+	}
+	if avatar.Valid {
+		msg.Author.Avatar = &avatar.String
+	}
+	return nil
 }
 
 // HydrateBatch hydrates author details for a slice of messages in a single PostgreSQL query.
@@ -87,7 +94,7 @@ func (h *PostgresAuthorHydrator) HydrateBatch(ctx context.Context, msgs []Messag
 	}
 
 	rows, err := h.db.QueryContext(ctx, `
-		SELECT id, username, to_char(discriminator, 'FM0000')
+		SELECT id, username, to_char(discriminator, 'FM0000'), avatar
 		FROM users WHERE id = ANY($1)`, ids)
 	if err != nil {
 		return err
@@ -98,10 +105,14 @@ func (h *PostgresAuthorHydrator) HydrateBatch(ctx context.Context, msgs []Messag
 	for rows.Next() {
 		var uid int64
 		var ref AuthorRef
-		if err := rows.Scan(&uid, &ref.Username, &ref.Discriminator); err != nil {
+		var avatar sql.NullString
+		if err := rows.Scan(&uid, &ref.Username, &ref.Discriminator, &avatar); err != nil {
 			return err
 		}
 		ref.ID = strconv.FormatInt(uid, 10)
+		if avatar.Valid {
+			ref.Avatar = &avatar.String
+		}
 		userMap[ref.ID] = ref
 	}
 	if err := rows.Err(); err != nil {
@@ -112,6 +123,7 @@ func (h *PostgresAuthorHydrator) HydrateBatch(ctx context.Context, msgs []Messag
 		if ref, ok := userMap[msgs[i].Author.ID]; ok {
 			msgs[i].Author.Username = ref.Username
 			msgs[i].Author.Discriminator = ref.Discriminator
+			msgs[i].Author.Avatar = ref.Avatar
 		}
 	}
 	return nil

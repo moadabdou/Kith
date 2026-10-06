@@ -135,7 +135,7 @@ func main() {
 	jwt := auth.NewJWTManager([]byte(jwtSecret), accessTokenTTL)
 	authSvc := auth.NewService(db, node, jwt, refreshTokenTTL)
 	authHandler := &auth.Handler{Svc: authSvc}
-	usersHandler := &users.Handler{DB: db}
+
 	// Phase 7b: NATS JetStream is the only events bus (EVENTS_BUS=nats|noop).
 	// Redis remains in the stack solely as the rate-limit store (Issue #85).
 	eventsBus := envOr("EVENTS_BUS", "nats")
@@ -161,6 +161,7 @@ func main() {
 		os.Exit(1)
 	}
 	guildsHandler := &guilds.Handler{Svc: guilds.NewService(db, node, publisher)}
+	usersHandler := &users.Handler{DB: db, Pub: publisher}
 
 	initScylla := func() (*messages.ScyllaStore, *gocql.Session) {
 		scyllaHosts := strings.Split(envOr("SCYLLA_HOSTS", "scylla:9042"), ",")
@@ -391,6 +392,7 @@ func main() {
 	mux.HandleFunc("POST /api/auth/login", authHandler.Login)
 	mux.HandleFunc("POST /api/auth/refresh", authHandler.Refresh)
 	mux.Handle("GET /api/users/@me", auth.RequireAuth(jwt, http.HandlerFunc(usersHandler.Me)))
+	mux.Handle("PATCH /api/users/@me", auth.RequireAuth(jwt, http.HandlerFunc(usersHandler.Update)))
 	mux.Handle("GET /api/users/@me/guilds", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.MyGuilds)))
 
 	// guilds

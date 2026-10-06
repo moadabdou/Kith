@@ -129,9 +129,12 @@ type Channel struct {
 }
 
 type UserRef struct {
-	ID            string `json:"id"`
-	Username      string `json:"username"`
-	Discriminator string `json:"discriminator"`
+	ID            string  `json:"id"`
+	Username      string  `json:"username"`
+	Discriminator string  `json:"discriminator"`
+	Avatar        *string `json:"avatar,omitempty"`
+	Banner        *string `json:"banner,omitempty"`
+	Bio           *string `json:"bio,omitempty"`
 }
 
 type Member struct {
@@ -555,7 +558,7 @@ func (s *Service) ListMembers(ctx context.Context, userID, guildID int64) ([]Mem
 		return nil, err
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT u.id::text, u.username, to_char(u.discriminator, 'FM0000'),
+		SELECT u.id::text, u.username, to_char(u.discriminator, 'FM0000'), u.avatar, u.banner, u.bio,
 		       m.nickname, m.joined_at
 		FROM members m
 		JOIN users u ON u.id = m.user_id
@@ -570,8 +573,18 @@ func (s *Service) ListMembers(ctx context.Context, userID, guildID int64) ([]Mem
 	for rows.Next() {
 		var m Member
 		var nick sql.NullString
-		if err := rows.Scan(&m.User.ID, &m.User.Username, &m.User.Discriminator, &nick, &m.JoinedAt); err != nil {
+		var avatar, banner, bio sql.NullString
+		if err := rows.Scan(&m.User.ID, &m.User.Username, &m.User.Discriminator, &avatar, &banner, &bio, &nick, &m.JoinedAt); err != nil {
 			return nil, err
+		}
+		if avatar.Valid {
+			m.User.Avatar = &avatar.String
+		}
+		if banner.Valid {
+			m.User.Banner = &banner.String
+		}
+		if bio.Valid {
+			m.User.Bio = &bio.String
 		}
 		if nick.Valid {
 			m.Nick = &nick.String
@@ -640,17 +653,27 @@ func (s *Service) AddMember(ctx context.Context, actorID, guildID, targetID int6
 func (s *Service) publishMemberAdd(ctx context.Context, guildID, userID int64) {
 	var p memberAddPayload
 	p.GuildID = strconv.FormatInt(guildID, 10)
+	var avatar, banner, bio sql.NullString
 	err := s.db.QueryRowContext(ctx, `
-		SELECT u.id::text, u.username, to_char(u.discriminator, 'FM0000'),
+		SELECT u.id::text, u.username, to_char(u.discriminator, 'FM0000'), u.avatar, u.banner, u.bio,
 		       m.nickname, m.joined_at
 		FROM members m
 		JOIN users u ON u.id = m.user_id
 		WHERE m.guild_id = $1 AND m.user_id = $2`, guildID, userID,
-	).Scan(&p.User.ID, &p.User.Username, &p.User.Discriminator, &p.Nick, &p.JoinedAt)
+	).Scan(&p.User.ID, &p.User.Username, &p.User.Discriminator, &avatar, &banner, &bio, &p.Nick, &p.JoinedAt)
 	if err != nil {
 		slog.ErrorContext(ctx, "failed to build member_add payload",
 			"guild_id", guildID, "user_id", userID, "error", err)
 		return
+	}
+	if avatar.Valid {
+		p.User.Avatar = &avatar.String
+	}
+	if banner.Valid {
+		p.User.Banner = &banner.String
+	}
+	if bio.Valid {
+		p.User.Bio = &bio.String
 	}
 	p.Roles = []string{}
 	if err := s.pub.Publish(ctx, events.Event{
@@ -1735,14 +1758,24 @@ func (s *Service) publishMemberUpdate(ctx context.Context, guildID, userID int64
 	gidStr := strconv.FormatInt(guildID, 10)
 	var user UserRef
 	var nick sql.NullString
+	var avatar, banner, bio sql.NullString
 	err := s.db.QueryRowContext(ctx, `
-		SELECT u.id::text, u.username, LPAD(u.discriminator::text, 4, '0'), m.nickname
+		SELECT u.id::text, u.username, LPAD(u.discriminator::text, 4, '0'), u.avatar, u.banner, u.bio, m.nickname
 		FROM members m
 		JOIN users u ON m.user_id = u.id
 		WHERE m.guild_id = $1 AND m.user_id = $2`,
-		guildID, userID).Scan(&user.ID, &user.Username, &user.Discriminator, &nick)
+		guildID, userID).Scan(&user.ID, &user.Username, &user.Discriminator, &avatar, &banner, &bio, &nick)
 	if err != nil {
 		return
+	}
+	if avatar.Valid {
+		user.Avatar = &avatar.String
+	}
+	if banner.Valid {
+		user.Banner = &banner.String
+	}
+	if bio.Valid {
+		user.Bio = &bio.String
 	}
 
 	rows, err := s.db.QueryContext(ctx, `

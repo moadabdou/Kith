@@ -867,7 +867,11 @@ export function ChannelSidebar({
         >
           <div className="user-avatar-wrap">
             <div className="user-avatar">
-              {user?.username?.substring(0, 2).toUpperCase() ?? 'U'}
+              {user?.avatar ? (
+                <img src={user.avatar} alt={user.username} className="user-avatar-img" />
+              ) : (
+                user?.username?.substring(0, 2).toUpperCase() ?? 'U'
+              )}
             </div>
             <span
               className="user-presence-dot"

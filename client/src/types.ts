@@ -3,6 +3,9 @@ export interface User {
   username: string
   discriminator: string
   email: string
+  avatar?: string | null
+  banner?: string | null
+  bio?: string | null
   created_at: string
 }
 
@@ -46,6 +49,9 @@ export interface AuthorRef {
   id: string
   username: string
   discriminator: string
+  avatar?: string | null
+  banner?: string | null
+  bio?: string | null
 }
 
 export interface ReactionTally {

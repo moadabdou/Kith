@@ -71,6 +71,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const clearError = () => setError(null)
 
+  const updateUser = useCallback((updated: User) => {
+    setUser(updated)
+    localStorage.setItem('kith_user', JSON.stringify(updated))
+  }, [])
+
   return (
     <AuthContext.Provider
       value={{
@@ -82,6 +87,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         register,
         logout,
         clearError,
+        updateUser,
       }}
     >
       {children}

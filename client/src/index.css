@@ -1095,7 +1095,14 @@ body {
   margin-top: 2px;
   cursor: pointer;
   user-select: none;
+  overflow: hidden;
   transition: transform 0.15s ease, filter 0.15s ease;
+}
+
+.message-avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .message-avatar:hover {
@@ -1153,11 +1160,17 @@ body {
   left: 12px;
   width: 18px;
   height: calc(100% + 4px);
-  border-left: 2px solid var(--border-subtle, #4e5058);
-  border-top: 2px solid var(--border-subtle, #4e5058);
+  border-left: 2px solid rgba(255, 255, 255, 0.42);
+  border-top: 2px solid rgba(255, 255, 255, 0.42);
   border-top-left-radius: 6px;
   box-sizing: border-box;
   pointer-events: none;
+  transition: border-color 0.15s ease;
+}
+
+.parent-quote:hover .reply-spine {
+  border-left-color: rgba(255, 255, 255, 0.72);
+  border-top-color: rgba(255, 255, 255, 0.72);
 }
 
 .reply-quote-body {
@@ -2995,6 +3008,13 @@ a.attachment-name:hover {
   color: #000000;
   font-weight: 700;
   font-size: 12px;
+  overflow: hidden;
+}
+
+.member-avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .presence-dot {
@@ -5395,6 +5415,109 @@ div:hover > .overview-upload-overlay {
   100% {
     left: 100%;
   }
+}
+
+/* Voice & Video Hardware Settings Styles */
+.voice-settings-select {
+  width: 100%;
+  padding: 10px 14px;
+  background-color: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  color: var(--text-header);
+  font-size: 14px;
+  font-weight: 500;
+  outline: none;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+  appearance: auto;
+}
+
+.voice-settings-select:hover {
+  background-color: rgba(0, 0, 0, 0.45);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.voice-settings-select:focus {
+  border-color: #5865f2;
+}
+
+.voice-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 8px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.12);
+  outline: none;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.voice-slider:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.voice-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #5865f2;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+  transition: transform 0.1s ease, background 0.1s ease;
+}
+
+.voice-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+  background: #4752c4;
+}
+
+.voice-slider::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #5865f2;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+  border: none;
+}
+
+.mic-meter-track {
+  flex: 1;
+  height: 24px;
+  border-radius: 6px;
+  background-color: rgba(0, 0, 0, 0.4);
+  border: 1px solid var(--border-subtle);
+  overflow: hidden;
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.mic-meter-fill {
+  height: 100%;
+  border-radius: 5px;
+  background: linear-gradient(90deg, #23a55a 0%, #3ba55d 70%, #f0b232 90%, #f23f43 100%);
+  transition: width 0.06s ease-out;
+  box-shadow: 0 0 12px rgba(35, 165, 90, 0.4);
+}
+
+.camera-preview-container {
+  width: 100%;
+  max-width: 480px;
+  aspect-ratio: 16 / 9;
+  border-radius: 8px;
+  background-color: #111214;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
 }
 
 

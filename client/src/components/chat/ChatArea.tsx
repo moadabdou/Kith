@@ -32,6 +32,7 @@ import { PinnedMessagesDrawer } from './PinnedMessagesDrawer'
 import { ReactionPicker, type ServerEmojiGroup, type ServerStickerGroup } from './ReactionPicker'
 import { ReactionPills } from './ReactionPills'
 import { WelcomeHero } from './WelcomeHero'
+import { ChatEmptyState } from './ChatEmptyState'
 
 interface ChatAreaProps {
   currentGuild: Guild | null
@@ -39,6 +40,8 @@ interface ChatAreaProps {
   channels?: Channel[]
   guilds?: Guild[]
   onSelectChannel?: (id: string) => void
+  onSelectGuild?: (id: string) => void
+  onOpenCreateGuildModal?: () => void
   // Pending jump-to-mention request from a sidebar badge click (Issue #122).
   // Consumed (via onMentionJumpConsumed) once handed to the channel-switch
   // loader, which jumps after history arrives.
@@ -52,7 +55,17 @@ interface ActiveTyper {
   expiresAt: number
 }
 
-export function ChatArea({ currentGuild, currentChannel, channels = [], guilds = [], onSelectChannel, mentionJump, onMentionJumpConsumed }: ChatAreaProps) {
+export function ChatArea({
+  currentGuild,
+  currentChannel,
+  channels = [],
+  guilds = [],
+  onSelectChannel,
+  onSelectGuild,
+  onOpenCreateGuildModal,
+  mentionJump,
+  onMentionJumpConsumed,
+}: ChatAreaProps) {
   const { user } = useAuth()
   const {
     subscribeToMessages,
@@ -1558,9 +1571,14 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
 
   if (!currentGuild || !currentChannel) {
     return (
-      <div className="chat-area" style={{ alignItems: 'center', justifyContent: 'center' }}>
-        <p style={{ color: 'var(--text-muted)' }}>Select a server and channel to start chatting</p>
-      </div>
+      <ChatEmptyState
+        currentGuild={currentGuild}
+        channels={channels}
+        guilds={guilds}
+        onSelectChannel={onSelectChannel}
+        onSelectGuild={onSelectGuild}
+        onOpenCreateGuildModal={onOpenCreateGuildModal}
+      />
     )
   }
 

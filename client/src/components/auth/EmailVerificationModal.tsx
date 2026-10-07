@@ -182,12 +182,12 @@ export function EmailVerificationModal({
         onClick={(e) => e.stopPropagation()}
         style={{
           maxWidth: 480,
-          background: 'var(--bg-floating, #2b2d31)',
-          borderRadius: 14,
+          background: '#121318',
+          borderRadius: 16,
           padding: 0,
-          boxShadow: '0 8px 32px rgba(0, 0, 0, 0.45)',
+          boxShadow: '0 24px 64px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(255, 255, 255, 0.08)',
           overflow: 'hidden',
-          border: '1px solid rgba(255, 255, 255, 0.08)',
+          border: '1px solid rgba(255, 255, 255, 0.12)',
         }}
       >
         {/* Close Button */}
@@ -221,23 +221,23 @@ export function EmailVerificationModal({
           {/* Icon Header */}
           <div
             style={{
-              width: 64,
-              height: 64,
+              width: 68,
+              height: 68,
               borderRadius: '50%',
               background: success
                 ? 'rgba(35, 165, 90, 0.15)'
-                : 'linear-gradient(135deg, rgba(88, 101, 242, 0.25), rgba(88, 101, 242, 0.08))',
+                : 'linear-gradient(135deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.03))',
               border: success
                 ? '1px solid rgba(35, 165, 90, 0.35)'
-                : '1px solid rgba(88, 101, 242, 0.35)',
+                : '1px solid rgba(255, 255, 255, 0.15)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               margin: '0 auto 20px',
-              color: success ? '#23a55a' : 'var(--brand, #5865f2)',
+              color: success ? '#23a55a' : '#ffffff',
               boxShadow: success
-                ? '0 0 24px rgba(35, 165, 90, 0.2)'
-                : '0 0 24px rgba(88, 101, 242, 0.2)',
+                ? '0 0 24px rgba(35, 165, 90, 0.25)'
+                : '0 8px 24px rgba(0, 0, 0, 0.5), 0 0 20px rgba(255, 255, 255, 0.08)',
             }}
           >
             {success ? <CheckCircle size={32} /> : <Mail size={30} />}
@@ -348,29 +348,33 @@ export function EmailVerificationModal({
                   aria-label={`Digit ${idx + 1}`}
                   data-testid={`otp-input-${idx}`}
                   style={{
-                    width: 48,
-                    height: 56,
+                    width: 50,
+                    height: 58,
                     fontSize: 24,
                     fontWeight: 700,
                     textAlign: 'center',
-                    background: 'var(--bg-tertiary, #1e1f22)',
+                    background: 'rgba(255, 255, 255, 0.04)',
                     border: digit
-                      ? '2px solid var(--brand, #5865f2)'
-                      : '2px solid rgba(255, 255, 255, 0.08)',
-                    borderRadius: 10,
-                    color: 'var(--text-header, #f2f3f5)',
+                      ? '2px solid #ffffff'
+                      : '2px solid rgba(255, 255, 255, 0.1)',
+                    borderRadius: 12,
+                    color: '#ffffff',
                     outline: 'none',
-                    transition: 'all 0.15s ease',
-                    boxShadow: digit ? '0 0 12px rgba(88, 101, 242, 0.25)' : 'none',
+                    transition: 'all 0.18s cubic-bezier(0.4, 0, 0.2, 1)',
+                    boxShadow: digit
+                      ? '0 0 16px rgba(255, 255, 255, 0.2), 0 4px 12px rgba(0, 0, 0, 0.4)'
+                      : 'none',
                   }}
                   onFocus={(e) => {
-                    e.currentTarget.style.borderColor = 'var(--brand, #5865f2)'
-                    e.currentTarget.style.boxShadow = '0 0 12px rgba(88, 101, 242, 0.3)'
+                    e.currentTarget.style.borderColor = '#ffffff'
+                    e.currentTarget.style.boxShadow = '0 0 20px rgba(255, 255, 255, 0.3)'
+                    e.currentTarget.style.background = 'rgba(255, 255, 255, 0.07)'
                   }}
                   onBlur={(e) => {
                     if (!digit) {
-                      e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.08)'
+                      e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.1)'
                       e.currentTarget.style.boxShadow = 'none'
+                      e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)'
                     }
                   }}
                 />
@@ -382,26 +386,37 @@ export function EmailVerificationModal({
           {!success && (
             <button
               type="button"
-              className="btn-primary"
               onClick={() => handleVerify()}
               disabled={submitting || !isComplete}
               data-testid="verify-submit-button"
               style={{
                 width: '100%',
-                height: 44,
-                borderRadius: 8,
+                height: 48,
+                borderRadius: 10,
                 fontSize: 15,
-                fontWeight: 600,
+                fontWeight: 700,
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 gap: 8,
                 cursor: submitting || !isComplete ? 'not-allowed' : 'pointer',
-                opacity: submitting || !isComplete ? 0.6 : 1,
-                background: 'var(--brand, #5865f2)',
-                border: 'none',
-                color: '#fff',
-                transition: 'opacity 0.15s, transform 0.1s',
+                background: isComplete && !submitting ? '#ffffff' : 'rgba(255, 255, 255, 0.08)',
+                border: isComplete && !submitting ? 'none' : '1px solid rgba(255, 255, 255, 0.1)',
+                color: isComplete && !submitting ? '#090a0d' : 'rgba(255, 255, 255, 0.35)',
+                boxShadow: isComplete && !submitting ? '0 4px 20px rgba(255, 255, 255, 0.25)' : 'none',
+                transition: 'all 0.18s cubic-bezier(0.4, 0, 0.2, 1)',
+              }}
+              onMouseEnter={(e) => {
+                if (isComplete && !submitting) {
+                  e.currentTarget.style.backgroundColor = '#eaeaea'
+                  e.currentTarget.style.transform = 'translateY(-1px)'
+                }
+              }}
+              onMouseLeave={(e) => {
+                if (isComplete && !submitting) {
+                  e.currentTarget.style.backgroundColor = '#ffffff'
+                  e.currentTarget.style.transform = 'translateY(0)'
+                }
               }}
             >
               {submitting ? (
@@ -412,7 +427,7 @@ export function EmailVerificationModal({
               ) : (
                 <>
                   <span>Verify Email</span>
-                  <ArrowRight size={16} />
+                  <ArrowRight size={16} strokeWidth={2.5} />
                 </>
               )}
             </button>
@@ -422,13 +437,13 @@ export function EmailVerificationModal({
           {!success && (
             <div
               style={{
-                marginTop: 20,
+                marginTop: 22,
                 fontSize: 13,
                 color: 'var(--text-muted, #949ba4)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                gap: 6,
+                gap: 8,
               }}
             >
               <span>Didn't receive the email?</span>
@@ -438,20 +453,22 @@ export function EmailVerificationModal({
                 disabled={resending || cooldown > 0 || !targetEmail}
                 data-testid="resend-verification-button"
                 style={{
-                  background: 'none',
-                  border: 'none',
-                  padding: 0,
+                  background: cooldown > 0 ? 'rgba(255, 255, 255, 0.05)' : 'none',
+                  border: cooldown > 0 ? '1px solid rgba(255, 255, 255, 0.1)' : 'none',
+                  borderRadius: cooldown > 0 ? 6 : 0,
+                  padding: cooldown > 0 ? '3px 8px' : 0,
                   fontSize: 13,
                   fontWeight: 600,
                   color:
                     cooldown > 0
                       ? 'var(--text-muted, #949ba4)'
-                      : 'var(--brand, #5865f2)',
+                      : '#ffffff',
                   cursor: cooldown > 0 || resending ? 'default' : 'pointer',
                   textDecoration: cooldown > 0 ? 'none' : 'underline',
                   display: 'inline-flex',
                   alignItems: 'center',
                   gap: 4,
+                  transition: 'all 0.15s ease',
                 }}
               >
                 {resending ? (

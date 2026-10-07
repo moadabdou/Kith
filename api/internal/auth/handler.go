@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/mail"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/moadabdou/Kith/api/internal/httpx"
@@ -77,6 +78,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		errs.Write(w, errs.InvalidJSON())
 		return
 	}
+	req.Login = strings.TrimSpace(req.Login)
 	v := errs.NewValidator()
 	v.Check("login", req.Login != "", errs.CodeRequired, "This field is required")
 	v.Check("password", req.Password != "", errs.CodeRequired, "This field is required")
@@ -86,7 +88,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 	u, refresh, err := h.Svc.Login(r.Context(), req.Login, req.Password)
 	if err == ErrInvalidCredentials {
-		errs.Write(w, errs.Unauthorized())
+		errs.Write(w, &errs.Error{Status: http.StatusUnauthorized, Code: 0, Message: "Invalid email/username or password"})
 		return
 	}
 	if err != nil {

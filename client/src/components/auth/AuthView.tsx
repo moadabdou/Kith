@@ -16,9 +16,9 @@ export function AuthView() {
     setSubmitting(true)
     try {
       if (isRegister) {
-        await register(username, email, password)
+        await register(username.trim(), email.trim(), password)
       } else {
-        await login(loginField, password)
+        await login(loginField.trim(), password)
       }
     } catch {
       // Error is set in AuthContext

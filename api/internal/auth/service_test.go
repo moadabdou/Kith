@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -70,6 +71,23 @@ func TestRegisterLoginRefreshFlow(t *testing.T) {
 	}
 	if got.ID != u.ID {
 		t.Errorf("login by email returned id %d, want %d", got.ID, u.ID)
+	}
+
+	// Test case insensitivity and whitespace trimming in Login
+	gotUpper, _, err := svc.Login(ctx, "  "+strings.ToUpper(email)+"  ", password)
+	if err != nil {
+		t.Fatalf("Login uppercase trimmed email: %v", err)
+	}
+	if gotUpper.ID != u.ID {
+		t.Errorf("login by uppercase email returned id %d, want %d", gotUpper.ID, u.ID)
+	}
+
+	gotUpperUser, _, err := svc.Login(ctx, "  "+strings.ToUpper(username)+"  ", password)
+	if err != nil {
+		t.Fatalf("Login uppercase trimmed username: %v", err)
+	}
+	if gotUpperUser.ID != u.ID {
+		t.Errorf("login by uppercase username returned id %d, want %d", gotUpperUser.ID, u.ID)
 	}
 
 	uid, refresh2, err := svc.Refresh(ctx, refresh)

@@ -157,8 +157,8 @@ func (s *Service) VerifyEmail(ctx context.Context, codeOrToken, email string) (*
 			       u.username, u.discriminator, u.email, u.email_verified, u.created_at
 			FROM email_verifications v
 			JOIN users u ON v.user_id = u.id
-			WHERE u.email = $1`,
-			email,
+			WHERE LOWER(u.email) = LOWER($1)`,
+			strings.TrimSpace(email),
 		).Scan(&verID, &userID, &codeHash, &attempts, &expiresAt, &u.Username, &u.Discriminator, &u.Email, &u.EmailVerified, &u.CreatedAt)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, "", ErrInvalidVerification
@@ -226,7 +226,7 @@ func (s *Service) ResendVerification(ctx context.Context, email string) (int, er
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, username, discriminator, email, email_verified, created_at
 		FROM users
-		WHERE email = $1`,
+		WHERE LOWER(email) = LOWER($1)`,
 		email,
 	).Scan(&u.ID, &u.Username, &u.Discriminator, &u.Email, &u.EmailVerified, &u.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -264,12 +264,13 @@ func (s *Service) ResendVerification(ctx context.Context, email string) (int, er
 
 // Login verifies credentials and opens a session (creating a refresh token).
 func (s *Service) Login(ctx context.Context, login, password string) (*User, string, error) {
+	login = strings.TrimSpace(login)
 	u := &User{}
 	var hash string
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, username, discriminator, email, password_hash, email_verified, created_at
 		FROM users
-		WHERE username = $1 OR email = $1`,
+		WHERE LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($1)`,
 		login,
 	).Scan(&u.ID, &u.Username, &u.Discriminator, &u.Email, &hash, &u.EmailVerified, &u.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {

@@ -521,6 +521,8 @@ function Dashboard() {
           channels={channels}
           guilds={guilds}
           onSelectChannel={(id) => setSelectedChannelId(id)}
+          onSelectGuild={(id) => setSelectedGuildId(id)}
+          onOpenCreateGuildModal={() => setIsGuildModalOpen(true)}
           mentionJump={mentionJump}
           onMentionJumpConsumed={handleMentionJumpConsumed}
         />

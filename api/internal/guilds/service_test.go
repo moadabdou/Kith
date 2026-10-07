@@ -7,8 +7,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -1270,4 +1273,107 @@ func TestListChannels_ViewChannelFiltering(t *testing.T) {
 		t.Errorf("member channel id = %s, want %s (public-channel)", memberChannels[0].ID, ch1.ID)
 	}
 }
+
+func TestGuildAndChannelLimits(t *testing.T) {
+	svc, db, node, prefix := newTestService(t)
+	ctx := context.Background()
+	user := createTestUser(t, db, node, prefix, "limit_user")
+
+	// 1. Fill user's guilds up to MaxGuildsPerUser by inserting dummy guilds and members
+	for i := 0; i < MaxGuildsPerUser; i++ {
+		gid, err := node.Generate()
+		if err != nil {
+			t.Fatalf("snowflake: %v", err)
+		}
+		_, err = db.Exec(`INSERT INTO guilds (id, name, owner_id) VALUES ($1, $2, $3)`, gid, fmt.Sprintf("%s_g_%d", prefix, i), user)
+		if err != nil {
+			t.Fatalf("insert guild %d: %v", i, err)
+		}
+		_, err = db.Exec(`INSERT INTO members (guild_id, user_id) VALUES ($1, $2)`, gid, user)
+		if err != nil {
+			t.Fatalf("insert member %d: %v", i, err)
+		}
+	}
+
+	// 2. CreateGuild should now fail with ErrMaxGuildsReached
+	_, err := svc.CreateGuild(ctx, user, prefix+"_overflow")
+	if !errors.Is(err, ErrMaxGuildsReached) {
+		t.Fatalf("CreateGuild at limit: expected ErrMaxGuildsReached, got %v", err)
+	}
+
+	// 3. JoinInvite should also fail with ErrMaxGuildsReached
+	otherUser := createTestUser(t, db, node, prefix, "other_owner")
+	otherGid, _ := node.Generate()
+	_, err = db.Exec(`INSERT INTO guilds (id, name, owner_id) VALUES ($1, $2, $3)`, otherGid, prefix+"_other_guild", otherUser)
+	if err != nil {
+		t.Fatalf("insert other guild: %v", err)
+	}
+	_, err = db.Exec(`INSERT INTO members (guild_id, user_id) VALUES ($1, $2)`, otherGid, otherUser)
+	if err != nil {
+		t.Fatalf("insert other member: %v", err)
+	}
+	otherChan, err := svc.CreateChannel(ctx, otherUser, otherGid, 0, "general", 0, nil)
+	if err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	otherChanID, _ := snowflake.Parse(otherChan.ID)
+	inv, err := svc.CreateInvite(ctx, otherUser, otherChanID, time.Hour, 10)
+	if err != nil {
+		t.Fatalf("create invite: %v", err)
+	}
+
+	_, err = svc.JoinInvite(ctx, user, inv.Code)
+	if !errors.Is(err, ErrMaxGuildsReached) {
+		t.Fatalf("JoinInvite at limit: expected ErrMaxGuildsReached, got %v", err)
+	}
+
+	// 4. Test Channel Limit: create guild and insert up to MaxChannelsPerGuild channels
+	testGid, _ := node.Generate()
+	_, err = db.Exec(`INSERT INTO guilds (id, name, owner_id) VALUES ($1, $2, $3)`, testGid, prefix+"_channel_guild", otherUser)
+	if err != nil {
+		t.Fatalf("insert channel test guild: %v", err)
+	}
+	_, err = db.Exec(`INSERT INTO members (guild_id, user_id) VALUES ($1, $2)`, testGid, otherUser)
+	if err != nil {
+		t.Fatalf("insert member: %v", err)
+	}
+
+	for i := 0; i < MaxChannelsPerGuild; i++ {
+		cid, _ := node.Generate()
+		_, err = db.Exec(`INSERT INTO channels (id, guild_id, type, name, position) VALUES ($1, $2, 0, $3, $4)`,
+			cid, testGid, fmt.Sprintf("chan-%d", i), i)
+		if err != nil {
+			t.Fatalf("insert channel %d: %v", i, err)
+		}
+	}
+
+	// CreateChannel should fail with ErrMaxChannelsReached
+	_, err = svc.CreateChannel(ctx, otherUser, testGid, 0, "overflow-chan", 999, nil)
+	if !errors.Is(err, ErrMaxChannelsReached) {
+		t.Fatalf("CreateChannel at limit: expected ErrMaxChannelsReached, got %v", err)
+	}
+}
+
+func TestHandler_LimitErrors(t *testing.T) {
+	h := &Handler{}
+	rec := httptest.NewRecorder()
+	h.writeErr(rec, ErrMaxGuildsReached)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 for max guilds, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"code":30001`) {
+		t.Fatalf("expected code 30001 in body, got %s", rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	h.writeErr(rec, ErrMaxChannelsReached)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 for max channels, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"code":30013`) {
+		t.Fatalf("expected code 30013 in body, got %s", rec.Body.String())
+	}
+}
+
+
 

@@ -44,6 +44,10 @@ func (h *Handler) writeErr(w http.ResponseWriter, err error) {
 		errs.Write(w, errs.MissingAccess())
 	case errors.Is(err, ErrMissingPermissions):
 		errs.Write(w, errs.MissingPermissions())
+	case errors.Is(err, ErrMaxGuildsReached):
+		errs.Write(w, errs.MaxGuildsReached())
+	case errors.Is(err, ErrMaxChannelsReached):
+		errs.Write(w, errs.MaxChannelsReached())
 	default:
 		errs.Write(w, errs.Internal())
 	}

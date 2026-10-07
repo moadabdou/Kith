@@ -22,6 +22,11 @@ import (
 	"github.com/moadabdou/Kith/api/pkg/snowflake"
 )
 
+const (
+	MaxGuildsPerUser    = 100
+	MaxChannelsPerGuild = 500
+)
+
 // Entity errors — mapped to Discord error codes in the handler.
 // The numeric registry moves to pkg/errs in #8.
 var (
@@ -33,6 +38,8 @@ var (
 	ErrUnknownUser        = errors.New("guilds: unknown user")
 	ErrMissingAccess      = errors.New("guilds: missing access")
 	ErrMissingPermissions = errors.New("guilds: missing permissions")
+	ErrMaxGuildsReached   = errors.New("guilds: maximum number of guilds reached (100)")
+	ErrMaxChannelsReached = errors.New("guilds: maximum number of channels reached (500)")
 )
 
 // Service owns all guild-domain persistence.
@@ -232,6 +239,14 @@ func (s *Service) CreateGuild(ctx context.Context, ownerID int64, name string) (
 		return nil, err
 	}
 	defer tx.Rollback()
+
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM members WHERE user_id = $1`, ownerID).Scan(&count); err != nil {
+		return nil, err
+	}
+	if count >= MaxGuildsPerUser {
+		return nil, ErrMaxGuildsReached
+	}
 
 	var g Guild
 	err = tx.QueryRowContext(ctx, `
@@ -451,6 +466,15 @@ func (s *Service) CreateChannel(ctx context.Context, userID, guildID int64, chTy
 	if !state.IsOwner && !permissions.Has(state.Permissions, permissions.ADMINISTRATOR) && !permissions.Has(state.Permissions, permissions.MANAGE_CHANNELS) {
 		return nil, ErrMissingPermissions
 	}
+
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM channels WHERE guild_id = $1`, guildID).Scan(&count); err != nil {
+		return nil, err
+	}
+	if count >= MaxChannelsPerGuild {
+		return nil, ErrMaxChannelsReached
+	}
+
 	id, err := s.sf.Generate()
 	if err != nil {
 		return nil, err
@@ -824,6 +848,14 @@ func (s *Service) JoinInvite(ctx context.Context, userID int64, code string) (*G
 		return s.guildByID(ctx, guildID)
 	} else if !errors.Is(err, ErrMissingAccess) {
 		return nil, err
+	}
+
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM members WHERE user_id = $1`, userID).Scan(&count); err != nil {
+		return nil, err
+	}
+	if count >= MaxGuildsPerUser {
+		return nil, ErrMaxGuildsReached
 	}
 
 	err = s.db.QueryRowContext(ctx, `

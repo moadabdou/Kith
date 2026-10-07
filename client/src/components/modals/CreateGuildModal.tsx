@@ -5,14 +5,17 @@ interface CreateGuildModalProps {
   onClose: () => void
   onCreate: (name: string) => Promise<void>
   onJoin: (code: string) => Promise<void>
+  currentGuildCount?: number
 }
 
-export function CreateGuildModal({ isOpen, onClose, onCreate, onJoin }: CreateGuildModalProps) {
+export function CreateGuildModal({ isOpen, onClose, onCreate, onJoin, currentGuildCount }: CreateGuildModalProps) {
   const [tab, setTab] = useState<'create' | 'join'>('create')
   const [name, setName] = useState('')
   const [inviteCode, setInviteCode] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  const isAtGuildLimit = currentGuildCount !== undefined && currentGuildCount >= 100
 
   if (!isOpen) return null
 
@@ -114,6 +117,20 @@ export function CreateGuildModal({ isOpen, onClose, onCreate, onJoin }: CreateGu
 
             <form onSubmit={handleCreateSubmit}>
               <div className="modal-body">
+                {isAtGuildLimit && (
+                  <div style={{
+                    backgroundColor: 'rgba(240, 178, 50, 0.12)',
+                    border: '1px solid rgba(240, 178, 50, 0.35)',
+                    color: '#f0b232',
+                    padding: '10px 14px',
+                    borderRadius: 8,
+                    fontSize: 13,
+                    marginBottom: 16,
+                    lineHeight: 1.4,
+                  }}>
+                    You have reached the maximum limit of 100 servers. You must leave a server before creating or joining another.
+                  </div>
+                )}
                 {error && <div className="error-banner">{error}</div>}
                 <div className="form-group">
                   <label className="form-label">Server Name</label>
@@ -125,6 +142,7 @@ export function CreateGuildModal({ isOpen, onClose, onCreate, onJoin }: CreateGu
                     placeholder="My Awesome Server"
                     required
                     autoFocus
+                    disabled={isAtGuildLimit}
                   />
                 </div>
               </div>
@@ -136,7 +154,7 @@ export function CreateGuildModal({ isOpen, onClose, onCreate, onJoin }: CreateGu
                 <button
                   type="submit"
                   className="btn-primary"
-                  disabled={submitting || !name.trim()}
+                  disabled={submitting || !name.trim() || isAtGuildLimit}
                 >
                   {submitting ? 'Creating…' : 'Create'}
                 </button>
@@ -154,6 +172,20 @@ export function CreateGuildModal({ isOpen, onClose, onCreate, onJoin }: CreateGu
 
             <form onSubmit={handleJoinSubmit}>
               <div className="modal-body">
+                {isAtGuildLimit && (
+                  <div style={{
+                    backgroundColor: 'rgba(240, 178, 50, 0.12)',
+                    border: '1px solid rgba(240, 178, 50, 0.35)',
+                    color: '#f0b232',
+                    padding: '10px 14px',
+                    borderRadius: 8,
+                    fontSize: 13,
+                    marginBottom: 16,
+                    lineHeight: 1.4,
+                  }}>
+                    You have reached the maximum limit of 100 servers. You must leave a server before creating or joining another.
+                  </div>
+                )}
                 {error && <div className="error-banner">{error}</div>}
                 <div className="form-group">
                   <label className="form-label">Invite Code or Link</label>
@@ -165,6 +197,7 @@ export function CreateGuildModal({ isOpen, onClose, onCreate, onJoin }: CreateGu
                     placeholder="e.g. h8aB2k9 or http://localhost/join/h8aB2k9"
                     required
                     autoFocus
+                    disabled={isAtGuildLimit}
                   />
                   <span style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
                     INVITES SHOULD LOOK LIKE <code>h8aB2k9</code> OR <code>http://localhost/join/h8aB2k9</code>
@@ -179,7 +212,7 @@ export function CreateGuildModal({ isOpen, onClose, onCreate, onJoin }: CreateGu
                 <button
                   type="submit"
                   className="btn-primary"
-                  disabled={submitting || !inviteCode.trim()}
+                  disabled={submitting || !inviteCode.trim() || isAtGuildLimit}
                 >
                   {submitting ? 'Joining…' : 'Join Server'}
                 </button>

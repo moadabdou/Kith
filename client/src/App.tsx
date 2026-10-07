@@ -547,6 +547,7 @@ function Dashboard() {
         onClose={() => setIsGuildModalOpen(false)}
         onCreate={handleCreateGuild}
         onJoin={handleJoinGuild}
+        currentGuildCount={guilds.length}
       />
 
       <CreateChannelModal

@@ -30,11 +30,13 @@ const (
 	CodeUnknownMessage  = 10008
 	CodeUnknownRole     = 10011
 	CodeUnknownUser     = 10013
-	CodeCannotEditOther = 50005 // Cannot edit a message authored by another user
-	CodeMissingAccess   = 50001
-	CodeMissingPerms    = 50013
-	CodeInvalidFormBody = 50035
-	CodeRateLimited     = 29001
+	CodeCannotEditOther    = 50005 // Cannot edit a message authored by another user
+	CodeMissingAccess      = 50001
+	CodeMissingPerms       = 50013
+	CodeInvalidFormBody    = 50035
+	CodeRateLimited        = 29001
+	CodeMaxGuildsReached   = 30001
+	CodeMaxChannelsReached = 30013
 )
 
 // Error is an API error: Discord code + HTTP status + message, with
@@ -125,6 +127,12 @@ func CannotEditOther() *Error {
 }
 func Unauthorized() *Error {
 	return &Error{Status: http.StatusUnauthorized, Code: 0, Message: "401: Unauthorized"}
+}
+func MaxGuildsReached() *Error {
+	return &Error{Status: http.StatusBadRequest, Code: CodeMaxGuildsReached, Message: "Maximum number of guilds reached (100)"}
+}
+func MaxChannelsReached() *Error {
+	return &Error{Status: http.StatusBadRequest, Code: CodeMaxChannelsReached, Message: "Maximum number of channels reached (500)"}
 }
 
 // Internal is the 500 that never leaks internals.

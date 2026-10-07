@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -128,7 +129,9 @@ func (s *Service) createVerification(ctx context.Context, userID int64, email, u
 		}
 		verifyURL := fmt.Sprintf("%s/verify?token=%s", clientURL, token)
 		go func() {
-			_ = s.mailer.SendVerification(context.Background(), email, username, code, verifyURL)
+			if err := s.mailer.SendVerification(context.Background(), email, username, code, verifyURL); err != nil {
+				slog.Error("failed to dispatch verification email", "email", email, "err", err)
+			}
 		}()
 	}
 

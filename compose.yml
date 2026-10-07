@@ -156,6 +156,13 @@ services:
       S3_PUBLIC_URL: ${S3_PUBLIC_URL:-http://localhost}
       S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-localhost:9000}
       MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-26214400}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      APP_URL: ${APP_URL:-http://localhost:5173}
     ports:
       - "127.0.0.1:8080:8080"
       - "127.0.0.1:6060:6060"
@@ -217,6 +224,13 @@ services:
       S3_PUBLIC_URL: ${S3_PUBLIC_URL:-http://localhost}
       S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-localhost:9000}
       MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-26214400}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      APP_URL: ${APP_URL:-http://localhost:5173}
     ports:
       - "127.0.0.1:${API2_PORT:-8081}:8080"
       - "127.0.0.1:${API2_PPROF_PORT:-6061}:6061"

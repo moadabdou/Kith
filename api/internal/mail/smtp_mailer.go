@@ -3,6 +3,8 @@ package mail
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"net/mail"
 	"net/smtp"
 	"strings"
 )
@@ -64,10 +66,24 @@ func (m *SMTPMailer) SendVerification(_ context.Context, toEmail, username, code
 		auth = smtp.PlainAuth("", m.cfg.Username, m.cfg.Password, m.cfg.Host)
 	}
 
+	envelopeFrom := m.cfg.Username
+	if parsed, err := mail.ParseAddress(m.cfg.From); err == nil && parsed.Address != "" {
+		if envelopeFrom == "" || !strings.Contains(strings.ToLower(m.cfg.Host), "gmail.com") {
+			envelopeFrom = parsed.Address
+		}
+	} else if envelopeFrom == "" {
+		envelopeFrom = m.cfg.From
+	}
+
+	fromHeader := m.cfg.From
+	if strings.Contains(strings.ToLower(m.cfg.Host), "gmail.com") && m.cfg.Username != "" {
+		fromHeader = fmt.Sprintf("Kith <%s>", m.cfg.Username)
+	}
+
 	htmlBody := BuildVerificationHTML(username, code, verifyURL)
 
 	msg := strings.Builder{}
-	msg.WriteString(fmt.Sprintf("From: %s\r\n", m.cfg.From))
+	msg.WriteString(fmt.Sprintf("From: %s\r\n", fromHeader))
 	msg.WriteString(fmt.Sprintf("To: %s\r\n", toEmail))
 	msg.WriteString(fmt.Sprintf("Subject: %s - Your Kith verification code\r\n", code))
 	msg.WriteString("MIME-Version: 1.0\r\n")
@@ -75,5 +91,12 @@ func (m *SMTPMailer) SendVerification(_ context.Context, toEmail, username, code
 	msg.WriteString("\r\n")
 	msg.WriteString(htmlBody)
 
-	return smtp.SendMail(addr, auth, m.cfg.From, []string{toEmail}, []byte(msg.String()))
+	slog.Info("dispatching verification email via SMTP", "host", m.cfg.Host, "port", m.cfg.Port, "to", toEmail, "from", envelopeFrom)
+	err := smtp.SendMail(addr, auth, envelopeFrom, []string{toEmail}, []byte(msg.String()))
+	if err != nil {
+		slog.Error("SMTP delivery error", "err", err, "host", m.cfg.Host, "to", toEmail)
+		return err
+	}
+	slog.Info("SMTP verification email successfully delivered", "to", toEmail)
+	return nil
 }

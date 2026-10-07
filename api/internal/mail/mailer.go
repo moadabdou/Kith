@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 )
 
 // Mailer provides methods to deliver transactional emails to users.
@@ -42,14 +43,30 @@ func NewMailerFromEnv() Mailer {
 		from = "Kith <noreply@kith.chat>"
 	}
 
+	user := os.Getenv("SMTP_USER")
+	if user == "" {
+		user = os.Getenv("SMTP_USERNAME")
+	}
+	user = strings.TrimSpace(user)
+
+	pass := os.Getenv("SMTP_PASS")
+	if pass == "" {
+		pass = os.Getenv("SMTP_PASSWORD")
+	}
+	pass = strings.TrimSpace(pass)
+	if strings.Contains(strings.ToLower(host), "gmail.com") {
+		// Google App Passwords are 16 alphanumeric chars shown with spaces in UI: "xxxx xxxx xxxx xxxx"
+		pass = strings.ReplaceAll(pass, " ", "")
+	}
+
 	cfg := Config{
 		Host:     host,
 		Port:     port,
-		Username: os.Getenv("SMTP_USER"),
-		Password: os.Getenv("SMTP_PASS"),
+		Username: user,
+		Password: pass,
 		From:     from,
 	}
 
-	slog.Info("mailer initialized with SMTP backend", "host", host, "port", port, "from", from)
+	slog.Info("mailer initialized with SMTP backend", "host", host, "port", port, "user", user, "from", from)
 	return NewSMTPMailer(cfg)
 }

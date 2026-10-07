@@ -219,20 +219,25 @@ class ApiClient {
         path.startsWith('/auth/logout') ||
         path.startsWith('/auth/verify')
 
-      if (response.status === 401 && !isAuthEndpoint && this.refreshToken && retryCount === 0) {
-        try {
-          const newToken = await this.refreshTokens()
-          const retryOptions: RequestInit = {
-            ...options,
-            headers: {
-              ...((options.headers as Record<string, string>) || {}),
-              Authorization: `Bearer ${newToken}`,
-            },
+      if (response.status === 401 && !isAuthEndpoint) {
+        if (this.refreshToken && retryCount === 0) {
+          try {
+            const newToken = await this.refreshTokens()
+            const retryOptions: RequestInit = {
+              ...options,
+              headers: {
+                ...((options.headers as Record<string, string>) || {}),
+                Authorization: `Bearer ${newToken}`,
+              },
+            }
+            return this.request<T>(path, retryOptions, retryCount + 1)
+          } catch {
+            // Refresh failed, fall through to clearSession and notifyUnauthorized
           }
-          return this.request<T>(path, retryOptions, retryCount + 1)
-        } catch {
-          // Refresh failed, continue to standard error processing
         }
+
+        this.clearSession()
+        this.notifyUnauthorized()
       }
 
       let errBody: any

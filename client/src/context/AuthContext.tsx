@@ -4,11 +4,18 @@ import type { User } from '../types'
 import { AuthContext } from './auth-context-def'
 
 export function AuthProvider({ children }: { children: ReactNode }) {
+  const [token, setToken] = useState<string | null>(() => api.getToken())
   const [user, setUser] = useState<User | null>(() => {
+    const activeToken = api.getToken()
+    if (!activeToken) {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.removeItem('kith_user')
+      }
+      return null
+    }
     const saved = localStorage.getItem('kith_user')
     return saved ? JSON.parse(saved) : null
   })
-  const [token, setToken] = useState<string | null>(() => api.getToken())
   const [loading, setLoading] = useState<boolean>(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -27,6 +34,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const unsubAuthChange = api.onAuthChange((newToken) => {
       setToken(newToken)
+      if (!newToken) {
+        localStorage.removeItem('kith_user')
+        setUser(null)
+      }
     })
     const unsubUnauthorized = api.onUnauthorized(() => {
       localStorage.removeItem('kith_user')
@@ -97,6 +108,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     async function verifyUser() {
       if (!token) {
+        setUser(null)
+        if (typeof localStorage !== 'undefined') {
+          localStorage.removeItem('kith_user')
+        }
         setLoading(false)
         return
       }
@@ -104,7 +119,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const me = await api.getMe()
         setUser(me)
         localStorage.setItem('kith_user', JSON.stringify(me))
-      } catch {
+      } catch (err) {
+        console.warn('[Auth] Session validation failed on mount:', err)
         logout()
       } finally {
         setLoading(false)

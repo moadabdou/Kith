@@ -184,7 +184,7 @@ function Dashboard() {
 
   // Fetch guilds when user is authenticated
   useEffect(() => {
-    if (!user) return
+    if (!user || loading) return
     let active = true
 
     api.getMyGuilds()
@@ -200,7 +200,7 @@ function Dashboard() {
     return () => {
       active = false
     }
-  }, [user])
+  }, [user, loading])
 
   // Fetch channels when selected guild changes
   useEffect(() => {

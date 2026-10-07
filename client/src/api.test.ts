@@ -221,6 +221,35 @@ describe('ApiClient session handling and token rotation', () => {
     unsub()
   })
 
+  it('triggers onUnauthorized and clears session immediately on 401 when no refresh token exists', async () => {
+    api.setSession({
+      token: 'expired-token-no-refresh',
+      refreshToken: null,
+      expiresIn: 300,
+    })
+
+    const onUnauthorizedMock = vi.fn()
+    const unsub = api.onUnauthorized(onUnauthorizedMock)
+
+    globalThis.fetch = vi.fn().mockImplementation(async (url: string) => {
+      if (url.toString().includes('/users/@me/guilds')) {
+        return {
+          ok: false,
+          status: 401,
+          json: async () => ({ message: '401: Unauthorized' }),
+        } as Response
+      }
+      return { ok: false, status: 404 } as Response
+    })
+
+    await expect(api.getMyGuilds()).rejects.toThrow()
+    expect(onUnauthorizedMock).toHaveBeenCalledTimes(1)
+    expect(api.getToken()).toBeNull()
+    expect(api.getRefreshToken()).toBeNull()
+
+    unsub()
+  })
+
   it('sends POST /auth/logout with refresh token on logout', async () => {
     api.setSession({
       token: 'jwt-123',

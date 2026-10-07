@@ -3,10 +3,22 @@ export interface User {
   username: string
   discriminator: string
   email: string
+  email_verified?: boolean
   avatar?: string | null
   banner?: string | null
   bio?: string | null
   created_at: string
+}
+
+export interface VerifyEmailPayload {
+  code?: string
+  token?: string
+  email?: string
+}
+
+export interface ResendVerificationResponse {
+  message: string
+  cooldown: number
 }
 
 export interface AuthResponse {

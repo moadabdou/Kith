@@ -247,4 +247,57 @@ describe('ApiClient session handling and token rotation', () => {
     expect(api.getRefreshToken()).toBeNull()
     expect(localStorage.getItem(STORAGE_KEY_TOKEN)).toBeNull()
   })
+
+  it('handles verifyEmail and stores new session upon successful verification', async () => {
+    let verifyPayload: any = null
+    globalThis.fetch = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.toString().includes('/auth/verify-email')) {
+        verifyPayload = JSON.parse(init?.body as string)
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            token: 'verified-jwt-token',
+            refresh_token: 'verified-refresh-token',
+            expires_in: 900,
+            user: {
+              id: 'u-1',
+              username: 'verifieduser',
+              email: 'test@example.com',
+              email_verified: true,
+            },
+          }),
+        } as Response
+      }
+      return { ok: false, status: 404 } as Response
+    })
+
+    const res = await api.verifyEmail({ code: '123456', email: 'test@example.com' })
+    expect(verifyPayload).toEqual({ code: '123456', email: 'test@example.com' })
+    expect(res.user?.email_verified).toBe(true)
+    expect(api.getToken()).toBe('verified-jwt-token')
+    expect(api.getRefreshToken()).toBe('verified-refresh-token')
+  })
+
+  it('handles resendVerification request', async () => {
+    let resendPayload: any = null
+    globalThis.fetch = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.toString().includes('/auth/verify/resend')) {
+        resendPayload = JSON.parse(init?.body as string)
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            message: 'Verification email dispatched',
+            cooldown: 60,
+          }),
+        } as Response
+      }
+      return { ok: false, status: 404 } as Response
+    })
+
+    const res = await api.resendVerification('test@example.com')
+    expect(resendPayload).toEqual({ email: 'test@example.com' })
+    expect(res.cooldown).toBe(60)
+  })
 })

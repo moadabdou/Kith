@@ -5,11 +5,13 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"os"
 	"testing"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/moadabdou/Kith/api/internal/mail"
 	"github.com/moadabdou/Kith/api/pkg/snowflake"
 )
 
@@ -107,5 +109,69 @@ func TestRegisterLoginRefreshFlow(t *testing.T) {
 	}
 	if _, _, err := svc.Refresh(ctx, refresh3); err != ErrInvalidRefresh {
 		t.Errorf("revoked refresh token: err = %v, want ErrInvalidRefresh", err)
+	}
+}
+
+func TestEmailVerificationFlow(t *testing.T) {
+	svc, db, username := newTestService(t)
+	logMailer := mail.NewLogMailer()
+	svc.SetMailer(logMailer, "http://localhost:5173")
+	ctx := context.Background()
+	password := "password123"
+	email := username + "_verify@example.com"
+
+	u, err := svc.Register(ctx, username, email, password)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if u.EmailVerified {
+		t.Error("newly registered user must not be email_verified")
+	}
+
+	// Verify that email was dispatched via LogMailer
+	time.Sleep(50 * time.Millisecond) // Allow background goroutine to execute
+	payload, ok := logMailer.GetLastSent(email)
+	if !ok {
+		t.Fatal("expected verification email to be dispatched")
+	}
+	if len(payload.Code) != 6 {
+		t.Fatalf("expected 6-digit OTP code, got %s", payload.Code)
+	}
+
+	// Test resend rate limit (cooldown)
+	cooldown, err := svc.ResendVerification(ctx, email)
+	if !errors.Is(err, ErrVerificationCooldown) {
+		t.Errorf("expected ErrVerificationCooldown on rapid resend, got %v (cooldown=%d)", err, cooldown)
+	}
+
+	// Test invalid code fails
+	_, _, err = svc.VerifyEmail(ctx, "000000", email)
+	if !errors.Is(err, ErrInvalidVerification) {
+		t.Errorf("expected ErrInvalidVerification for wrong code, got %v", err)
+	}
+
+	// Test valid code succeeds
+	verifiedUser, refresh, err := svc.VerifyEmail(ctx, payload.Code, email)
+	if err != nil {
+		t.Fatalf("VerifyEmail with correct code failed: %v", err)
+	}
+	if !verifiedUser.EmailVerified {
+		t.Error("user should be marked as email_verified")
+	}
+	if refresh == "" {
+		t.Error("expected valid refresh token session on successful verification")
+	}
+
+	// Verify user in database is now email_verified
+	var dbVerified bool
+	err = db.QueryRowContext(ctx, "SELECT email_verified FROM users WHERE id = $1", u.ID).Scan(&dbVerified)
+	if err != nil || !dbVerified {
+		t.Errorf("database email_verified = %v, want true", dbVerified)
+	}
+
+	// Test reusing same code fails
+	_, _, err = svc.VerifyEmail(ctx, payload.Code, email)
+	if !errors.Is(err, ErrInvalidVerification) {
+		t.Errorf("expected ErrInvalidVerification on reused code, got %v", err)
 	}
 }

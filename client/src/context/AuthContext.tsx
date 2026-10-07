@@ -144,6 +144,37 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  const verifyEmail = async (payload: { code?: string; token?: string; email?: string }) => {
+    setError(null)
+    try {
+      const res = await api.verifyEmail(payload)
+      if (res.token) {
+        setToken(res.token)
+      }
+      if (res.user) {
+        setUser(res.user)
+        localStorage.setItem('kith_user', JSON.stringify(res.user))
+      } else {
+        const me = await api.getMe()
+        setUser(me)
+        localStorage.setItem('kith_user', JSON.stringify(me))
+      }
+    } catch (err: any) {
+      setError(err.message || 'Verification failed')
+      throw err
+    }
+  }
+
+  const resendVerification = async (emailStr: string) => {
+    setError(null)
+    try {
+      return await api.resendVerification(emailStr)
+    } catch (err: any) {
+      setError(err.message || 'Failed to resend verification email')
+      throw err
+    }
+  }
+
   const clearError = () => setError(null)
 
   const updateUser = useCallback((updated: User) => {
@@ -160,6 +191,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         error,
         login,
         register,
+        verifyEmail,
+        resendVerification,
         logout,
         clearError,
         updateUser,

@@ -45,6 +45,7 @@ interface UserSettingsModalProps {
   onLogout: () => void
   onUserUpdated?: (user: UserType) => void
   initialTab?: 'account' | 'profiles' | 'status' | 'voice'
+  onOpenVerifyModal?: () => void
 }
 
 const PRESENCE_CONFIG = [
@@ -130,6 +131,7 @@ export function UserSettingsModal({
   onLogout,
   onUserUpdated,
   initialTab = 'account',
+  onOpenVerifyModal,
 }: UserSettingsModalProps) {
   const [activeTab, setActiveTab] = useState<'account' | 'profiles' | 'status' | 'voice'>(initialTab)
   const [copiedId, setCopiedId] = useState(false)
@@ -831,10 +833,65 @@ export function UserSettingsModal({
                           <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)' }}>
                             Email Address
                           </div>
-                          <div style={{ fontSize: 14, color: 'var(--text-normal)', marginTop: 2 }}>
-                            {user.email || 'None provided'}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 }}>
+                            <span style={{ fontSize: 14, color: 'var(--text-normal)' }}>
+                              {user.email || 'None provided'}
+                            </span>
+                            {user.email_verified ? (
+                              <span
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: 4,
+                                  fontSize: 11,
+                                  fontWeight: 600,
+                                  color: '#23a55a',
+                                  background: 'rgba(35, 165, 90, 0.12)',
+                                  padding: '2px 8px',
+                                  borderRadius: 12,
+                                  border: '1px solid rgba(35, 165, 90, 0.3)',
+                                }}
+                              >
+                                <Check size={11} /> Verified
+                              </span>
+                            ) : (
+                              <span
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: 4,
+                                  fontSize: 11,
+                                  fontWeight: 600,
+                                  color: '#f0b232',
+                                  background: 'rgba(240, 178, 50, 0.12)',
+                                  padding: '2px 8px',
+                                  borderRadius: 12,
+                                  border: '1px solid rgba(240, 178, 50, 0.3)',
+                                }}
+                              >
+                                <AlertCircle size={11} /> Unverified
+                              </span>
+                            )}
                           </div>
                         </div>
+                        {!user.email_verified && onOpenVerifyModal && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onClose()
+                              onOpenVerifyModal()
+                            }}
+                            className="btn-secondary"
+                            style={{
+                              fontSize: 12,
+                              padding: '6px 12px',
+                              height: 'auto',
+                              borderRadius: 4,
+                            }}
+                          >
+                            Verify Email
+                          </button>
+                        )}
                       </div>
 
                       {user.bio && (

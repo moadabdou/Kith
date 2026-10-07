@@ -22,6 +22,7 @@ import (
 	"github.com/moadabdou/Kith/api/internal/gifs"
 	"github.com/moadabdou/Kith/api/internal/guilds"
 	"github.com/moadabdou/Kith/api/internal/httpx"
+	"github.com/moadabdou/Kith/api/internal/mail"
 	"github.com/moadabdou/Kith/api/internal/media"
 	"github.com/moadabdou/Kith/api/internal/messages"
 	"github.com/moadabdou/Kith/api/internal/readstates"
@@ -134,6 +135,9 @@ func main() {
 
 	jwt := auth.NewJWTManager([]byte(jwtSecret), accessTokenTTL)
 	authSvc := auth.NewService(db, node, jwt, refreshTokenTTL)
+	mailer := mail.NewMailerFromEnv()
+	clientURL := envOr("CLIENT_URL", envOr("APP_URL", "http://localhost:5173"))
+	authSvc.SetMailer(mailer, clientURL)
 	authHandler := &auth.Handler{Svc: authSvc}
 
 	// Phase 7b: NATS JetStream is the only events bus (EVENTS_BUS=nats|noop).
@@ -392,6 +396,8 @@ func main() {
 	mux.HandleFunc("POST /api/auth/login", authHandler.Login)
 	mux.HandleFunc("POST /api/auth/refresh", authHandler.Refresh)
 	mux.HandleFunc("POST /api/auth/logout", authHandler.Logout)
+	mux.HandleFunc("POST /api/auth/verify-email", authHandler.VerifyEmail)
+	mux.HandleFunc("POST /api/auth/verify/resend", authHandler.ResendVerification)
 	mux.Handle("GET /api/users/@me", auth.RequireAuth(jwt, http.HandlerFunc(usersHandler.Me)))
 	mux.Handle("PATCH /api/users/@me", auth.RequireAuth(jwt, http.HandlerFunc(usersHandler.Update)))
 	mux.Handle("GET /api/users/@me/guilds", auth.RequireAuth(jwt, http.HandlerFunc(guildsHandler.MyGuilds)))

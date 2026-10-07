@@ -3401,7 +3401,8 @@ a.attachment-name:hover {
   font-weight: 500;
 }
 
-.spin {
+.spin,
+.spin-animation {
   animation: spin 1s linear infinite;
 }
 

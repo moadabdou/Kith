@@ -13,6 +13,8 @@ import { MemberSidebar } from './components/navigation/MemberSidebar'
 import { ServerSidebar } from './components/navigation/ServerSidebar'
 import { gatewayClient } from './gateway/client'
 import { ConnectionBanner } from './components/common/ConnectionBanner'
+import { UnverifiedEmailBanner } from './components/common/UnverifiedEmailBanner'
+import { EmailVerificationModal } from './components/auth/EmailVerificationModal'
 import { AuthProvider } from './context/AuthContext'
 import { useAuth } from './context/useAuth'
 import { VoiceProvider } from './context/VoiceContext'
@@ -47,7 +49,7 @@ if (initialInvite && typeof window !== 'undefined') {
 }
 
 function Dashboard() {
-  const { user, loading, logout, updateUser } = useAuth()
+  const { user, loading, logout, updateUser, verifyEmail } = useAuth()
   const { activeVoice } = useVoice()
   const {
     onSessionReset,
@@ -77,8 +79,44 @@ function Dashboard() {
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false)
   const [isServerSettingsModalOpen, setIsServerSettingsModalOpen] = useState(false)
   const [isUserSettingsModalOpen, setIsUserSettingsModalOpen] = useState(false)
+  const [isEmailVerificationModalOpen, setIsEmailVerificationModalOpen] = useState(false)
   const [channelSettingsTarget, setChannelSettingsTarget] = useState<Channel | null>(null)
   const [inviteFeedback, setInviteFeedback] = useState<{ message: string; isError?: boolean } | null>(null)
+  const [verificationFeedback, setVerificationFeedback] = useState<{ message: string; isError?: boolean } | null>(null)
+
+  // Handle direct verification link from email: /verify?token=... or ?token=... or ?verify_token=...
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const urlParams = new URLSearchParams(window.location.search)
+    const token = urlParams.get('token') || urlParams.get('verify_token')
+    if (!token) return
+
+    verifyEmail({ token })
+      .then(() => {
+        setVerificationFeedback({ message: '🎉 Email verified successfully! Welcome to Kith.' })
+        const newUrl = window.location.pathname
+        window.history.replaceState({}, document.title, newUrl)
+        setTimeout(() => setVerificationFeedback(null), 5000)
+      })
+      .catch((err) => {
+        setVerificationFeedback({
+          message: err?.message || 'Verification link is invalid or expired.',
+          isError: true,
+        })
+        setTimeout(() => setVerificationFeedback(null), 6000)
+      })
+  }, [verifyEmail])
+
+  // Automatically prompt verification once for unverified users upon first load
+  useEffect(() => {
+    if (user && user.email_verified === false) {
+      const alreadyPrompted = sessionStorage.getItem('kith_seen_verify_prompt')
+      if (!alreadyPrompted) {
+        setIsEmailVerificationModalOpen(true)
+        sessionStorage.setItem('kith_seen_verify_prompt', 'true')
+      }
+    }
+  }, [user])
 
   const [userPresence, setUserPresence] = useState<'online' | 'idle' | 'dnd' | 'invisible'>(() => {
     try {
@@ -393,7 +431,32 @@ function Dashboard() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', width: '100vw', height: '100vh', overflow: 'hidden' }}>
       <ConnectionBanner />
+      <UnverifiedEmailBanner onOpenVerifyModal={() => setIsEmailVerificationModalOpen(true)} />
       <div className="app-container" style={{ flex: 1, minHeight: 0 }}>
+      {verificationFeedback && (
+        <div
+          role="status"
+          style={{
+            position: 'fixed',
+            top: 20,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            backgroundColor: verificationFeedback.isError ? '#da373c' : '#23a55a',
+            color: 'white',
+            padding: '10px 24px',
+            borderRadius: 8,
+            boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
+            zIndex: 99999,
+            fontWeight: 600,
+            fontSize: 14,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+          }}
+        >
+          {verificationFeedback.message}
+        </div>
+      )}
       {inviteFeedback && (
         <div
           style={{
@@ -531,6 +594,17 @@ function Dashboard() {
         onStatusChange={handlePresenceChange}
         onLogout={logout}
         onUserUpdated={updateUser}
+        onOpenVerifyModal={() => setIsEmailVerificationModalOpen(true)}
+      />
+
+      <EmailVerificationModal
+        isOpen={isEmailVerificationModalOpen}
+        onClose={() => setIsEmailVerificationModalOpen(false)}
+        email={user?.email}
+        onVerified={() => {
+          setVerificationFeedback({ message: '🎉 Email verified successfully!' })
+          setTimeout(() => setVerificationFeedback(null), 4000)
+        }}
       />
       </div>
     </div>

@@ -8,6 +8,8 @@ export interface AuthContextType {
   error: string | null
   login: (loginStr: string, passwordStr: string) => Promise<void>
   register: (username: string, email: string, passwordStr: string) => Promise<void>
+  verifyEmail: (payload: { code?: string; token?: string; email?: string }) => Promise<void>
+  resendVerification: (email: string) => Promise<{ message: string; cooldown: number }>
   logout: () => void
   clearError: () => void
   updateUser: (user: User) => void

@@ -1,4 +1,4 @@
-import type { Attachment, AuthResponse, Channel, ChannelLatest, ChannelOverwrite, GIFCategory, GIFResponse, Guild, GuildEmoji, GuildSticker, Member, Message, PresignedUpload, ReadState, Role, SearchFilters, SearchResponse, User } from './types'
+import type { Attachment, AuthResponse, Channel, ChannelLatest, ChannelOverwrite, GIFCategory, GIFResponse, Guild, GuildEmoji, GuildSticker, Member, Message, PresignedUpload, ReadState, ResendVerificationResponse, Role, SearchFilters, SearchResponse, User, VerifyEmailPayload } from './types'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api'
 
@@ -216,7 +216,8 @@ class ApiClient {
         path.startsWith('/auth/login') ||
         path.startsWith('/auth/register') ||
         path.startsWith('/auth/refresh') ||
-        path.startsWith('/auth/logout')
+        path.startsWith('/auth/logout') ||
+        path.startsWith('/auth/verify')
 
       if (response.status === 401 && !isAuthEndpoint && this.refreshToken && retryCount === 0) {
         try {
@@ -301,6 +302,28 @@ class ApiClient {
     return this.request<User>('/auth/register', {
       method: 'POST',
       body: JSON.stringify({ username, email, password }),
+    })
+  }
+
+  async verifyEmail(payload: VerifyEmailPayload): Promise<AuthResponse> {
+    const res = await this.request<AuthResponse>('/auth/verify-email', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+    if (res.token) {
+      this.setSession({
+        token: res.token,
+        refreshToken: res.refresh_token,
+        expiresIn: res.expires_in,
+      })
+    }
+    return res
+  }
+
+  async resendVerification(email: string): Promise<ResendVerificationResponse> {
+    return this.request<ResendVerificationResponse>('/auth/verify/resend', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
     })
   }
 

@@ -24,6 +24,7 @@ type UserResponse struct {
 	Username      string    `json:"username"`
 	Discriminator string    `json:"discriminator"`
 	Email         string    `json:"email"`
+	EmailVerified bool      `json:"email_verified"`
 	Avatar        *string   `json:"avatar"`
 	Banner        *string   `json:"banner"`
 	Bio           *string   `json:"bio"`
@@ -46,9 +47,9 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 	var resp UserResponse
 	var avatar, banner, bio sql.NullString
 	err := h.DB.QueryRowContext(r.Context(), `
-		SELECT id::text, username, to_char(discriminator, 'FM0000'), email, avatar, banner, bio, created_at
+		SELECT id::text, username, to_char(discriminator, 'FM0000'), email, email_verified, avatar, banner, bio, created_at
 		FROM users WHERE id = $1`, uid,
-	).Scan(&resp.ID, &resp.Username, &resp.Discriminator, &resp.Email, &avatar, &banner, &bio, &resp.CreatedAt)
+	).Scan(&resp.ID, &resp.Username, &resp.Discriminator, &resp.Email, &resp.EmailVerified, &avatar, &banner, &bio, &resp.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		errs.Write(w, errs.Unauthorized())
 		return

@@ -2,6 +2,7 @@ package auth
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/mail"
@@ -24,6 +25,7 @@ type userResponse struct {
 	Username      string    `json:"username"`
 	Discriminator string    `json:"discriminator"`
 	Email         string    `json:"email"`
+	EmailVerified bool      `json:"email_verified"`
 	CreatedAt     time.Time `json:"created_at"`
 }
 
@@ -33,6 +35,7 @@ func toUserResponse(u *User) userResponse {
 		Username:      u.Username,
 		Discriminator: fmt.Sprintf("%04d", u.Discriminator),
 		Email:         u.Email,
+		EmailVerified: u.EmailVerified,
 		CreatedAt:     u.CreatedAt,
 	}
 }
@@ -130,6 +133,78 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 		_ = h.Svc.Revoke(r.Context(), req.RefreshToken)
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// VerifyEmail handles POST /api/auth/verify-email.
+func (h *Handler) VerifyEmail(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Code  string `json:"code"`
+		Token string `json:"token"`
+		Email string `json:"email"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errs.Write(w, errs.InvalidJSON())
+		return
+	}
+
+	codeOrToken := req.Code
+	if codeOrToken == "" {
+		codeOrToken = req.Token
+	}
+
+	if codeOrToken == "" {
+		errs.Write(w, &errs.Error{Status: http.StatusBadRequest, Code: 0, Message: "Verification code or token is required"})
+		return
+	}
+
+	u, refresh, err := h.Svc.VerifyEmail(r.Context(), codeOrToken, req.Email)
+	if errors.Is(err, ErrInvalidVerification) {
+		errs.Write(w, &errs.Error{Status: http.StatusBadRequest, Code: 0, Message: "Invalid or expired verification code"})
+		return
+	}
+	if errors.Is(err, ErrMaxAttemptsExceeded) {
+		errs.Write(w, &errs.Error{Status: http.StatusTooManyRequests, Code: 0, Message: "Maximum verification attempts exceeded. Please request a new code."})
+		return
+	}
+	if err != nil {
+		errs.Write(w, errs.Internal())
+		return
+	}
+
+	h.writeTokenPair(w, http.StatusOK, u.ID, refresh, u)
+}
+
+// ResendVerification handles POST /api/auth/verify/resend.
+func (h *Handler) ResendVerification(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email string `json:"email"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errs.Write(w, errs.InvalidJSON())
+		return
+	}
+	if req.Email == "" {
+		errs.Write(w, &errs.Error{Status: http.StatusBadRequest, Code: 0, Message: "Email is required"})
+		return
+	}
+
+	cooldown, err := h.Svc.ResendVerification(r.Context(), req.Email)
+	if errors.Is(err, ErrVerificationCooldown) {
+		httpx.JSON(w, http.StatusTooManyRequests, map[string]any{
+			"message":     "Please wait before requesting another verification email",
+			"retry_after": cooldown,
+		})
+		return
+	}
+	if err != nil {
+		errs.Write(w, errs.Internal())
+		return
+	}
+
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"message":  "Verification email dispatched",
+		"cooldown": cooldown,
+	})
 }
 
 func (h *Handler) writeTokenPair(w http.ResponseWriter, status int, uid int64, refresh string, u *User) {

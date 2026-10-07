@@ -2,28 +2,186 @@ import type { Attachment, AuthResponse, Channel, ChannelLatest, ChannelOverwrite
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api'
 
+export const STORAGE_KEY_TOKEN = 'kith_token'
+export const STORAGE_KEY_REFRESH = 'kith_refresh_token'
+export const STORAGE_KEY_EXPIRES_AT = 'kith_expires_at'
+export const STORAGE_KEY_USER = 'kith_user'
+
+export interface SessionData {
+  token: string
+  refreshToken?: string | null
+  expiresIn?: number | null // in seconds
+  expiresAt?: number | null // timestamp in ms
+}
+
 class ApiClient {
   private token: string | null = null
+  private refreshToken: string | null = null
+  private expiresAt: number | null = null
+  private refreshPromise: Promise<string> | null = null
+  private authChangeListeners: Set<(token: string | null) => void> = new Set()
+  private unauthorizedListeners: Set<() => void> = new Set()
 
   constructor() {
     if (typeof localStorage !== 'undefined') {
-      this.token = localStorage.getItem('kith_token')
+      this.token = localStorage.getItem(STORAGE_KEY_TOKEN)
+      this.refreshToken = localStorage.getItem(STORAGE_KEY_REFRESH)
+      const exp = localStorage.getItem(STORAGE_KEY_EXPIRES_AT)
+      this.expiresAt = exp ? parseInt(exp, 10) : null
     }
   }
 
-  setToken(token: string | null) {
-    this.token = token
+  setSession(data: SessionData | null) {
+    if (!data || !data.token) {
+      this.clearSession()
+      return
+    }
+
+    this.token = data.token
+    if (data.refreshToken !== undefined) {
+      this.refreshToken = data.refreshToken
+    }
+    if (data.expiresIn) {
+      this.expiresAt = Date.now() + data.expiresIn * 1000
+    } else if (data.expiresAt) {
+      this.expiresAt = data.expiresAt
+    }
+
     if (typeof localStorage !== 'undefined') {
-      if (token) {
-        localStorage.setItem('kith_token', token)
+      localStorage.setItem(STORAGE_KEY_TOKEN, this.token)
+      if (this.refreshToken) {
+        localStorage.setItem(STORAGE_KEY_REFRESH, this.refreshToken)
       } else {
-        localStorage.removeItem('kith_token')
+        localStorage.removeItem(STORAGE_KEY_REFRESH)
+      }
+      if (this.expiresAt) {
+        localStorage.setItem(STORAGE_KEY_EXPIRES_AT, this.expiresAt.toString())
+      } else {
+        localStorage.removeItem(STORAGE_KEY_EXPIRES_AT)
       }
     }
+
+    this.notifyAuthChange(this.token)
+  }
+
+  setToken(token: string | null) {
+    if (token) {
+      this.setSession({ token, refreshToken: this.refreshToken, expiresAt: this.expiresAt })
+    } else {
+      this.clearSession()
+    }
+  }
+
+  clearSession() {
+    this.token = null
+    this.refreshToken = null
+    this.expiresAt = null
+    this.refreshPromise = null
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem(STORAGE_KEY_TOKEN)
+      localStorage.removeItem(STORAGE_KEY_REFRESH)
+      localStorage.removeItem(STORAGE_KEY_EXPIRES_AT)
+    }
+    this.notifyAuthChange(null)
   }
 
   getToken(): string | null {
     return this.token
+  }
+
+  getRefreshToken(): string | null {
+    return this.refreshToken
+  }
+
+  getExpiresAt(): number | null {
+    return this.expiresAt
+  }
+
+  isExpiringSoon(thresholdMs = 60_000): boolean {
+    if (!this.expiresAt) return false
+    return this.expiresAt - Date.now() < thresholdMs
+  }
+
+  onAuthChange(cb: (token: string | null) => void): () => void {
+    this.authChangeListeners.add(cb)
+    return () => {
+      this.authChangeListeners.delete(cb)
+    }
+  }
+
+  onUnauthorized(cb: () => void): () => void {
+    this.unauthorizedListeners.add(cb)
+    return () => {
+      this.unauthorizedListeners.delete(cb)
+    }
+  }
+
+  private notifyAuthChange(token: string | null) {
+    for (const cb of this.authChangeListeners) {
+      try {
+        cb(token)
+      } catch (e) {
+        console.error('[API] Auth change listener error:', e)
+      }
+    }
+  }
+
+  private notifyUnauthorized() {
+    for (const cb of this.unauthorizedListeners) {
+      try {
+        cb()
+      } catch (e) {
+        console.error('[API] Unauthorized listener error:', e)
+      }
+    }
+  }
+
+  async refreshTokens(): Promise<string> {
+    if (this.refreshPromise) {
+      return this.refreshPromise
+    }
+
+    const currentRefreshToken = this.refreshToken
+    if (!currentRefreshToken) {
+      this.clearSession()
+      this.notifyUnauthorized()
+      throw new Error('No refresh token available')
+    }
+
+    this.refreshPromise = (async () => {
+      try {
+        const response = await fetch(`${API_BASE}/auth/refresh`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify({ refresh_token: currentRefreshToken }),
+        })
+
+        if (!response.ok) {
+          this.clearSession()
+          this.notifyUnauthorized()
+          throw new Error(`Token refresh failed with status ${response.status}`)
+        }
+
+        const data: AuthResponse = await response.json()
+        this.setSession({
+          token: data.token,
+          refreshToken: data.refresh_token,
+          expiresIn: data.expires_in,
+        })
+        return data.token
+      } catch (err) {
+        this.clearSession()
+        this.notifyUnauthorized()
+        throw err
+      } finally {
+        this.refreshPromise = null
+      }
+    })()
+
+    return this.refreshPromise
   }
 
   private async request<T>(path: string, options: RequestInit = {}, retryCount = 0): Promise<T> {
@@ -54,6 +212,28 @@ class ApiClient {
     }
 
     if (!response.ok) {
+      const isAuthEndpoint =
+        path.startsWith('/auth/login') ||
+        path.startsWith('/auth/register') ||
+        path.startsWith('/auth/refresh') ||
+        path.startsWith('/auth/logout')
+
+      if (response.status === 401 && !isAuthEndpoint && this.refreshToken && retryCount === 0) {
+        try {
+          const newToken = await this.refreshTokens()
+          const retryOptions: RequestInit = {
+            ...options,
+            headers: {
+              ...((options.headers as Record<string, string>) || {}),
+              Authorization: `Bearer ${newToken}`,
+            },
+          }
+          return this.request<T>(path, retryOptions, retryCount + 1)
+        } catch {
+          // Refresh failed, continue to standard error processing
+        }
+      }
+
       let errBody: any
       try {
         errBody = await response.json()
@@ -93,8 +273,28 @@ class ApiClient {
       method: 'POST',
       body: JSON.stringify({ login: loginStr, password: passwordStr }),
     })
-    this.setToken(res.token)
+    this.setSession({
+      token: res.token,
+      refreshToken: res.refresh_token,
+      expiresIn: res.expires_in,
+    })
     return res
+  }
+
+  async logout(): Promise<void> {
+    const rf = this.refreshToken
+    if (rf) {
+      try {
+        await fetch(`${API_BASE}/auth/logout`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: rf }),
+        })
+      } catch (err) {
+        console.warn('[API] Logout request failed:', err)
+      }
+    }
+    this.clearSession()
   }
 
   async register(username: string, email: string, password: string): Promise<User> {

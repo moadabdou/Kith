@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
+import { api } from '../api'
 import { useAuth } from '../context/useAuth'
 import type {
   ChannelEventPayload,
@@ -44,8 +45,23 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
   }, [])
 
   useEffect(() => {
+    const unsubAuthFailure = gatewayClient.onAuthFailure(async () => {
+      try {
+        const newToken = await api.refreshTokens()
+        gatewayClient.connect(newToken)
+      } catch {
+        // If refresh fails, api.clearSession() handles logout
+      }
+    })
+    return unsubAuthFailure
+  }, [])
+
+  useEffect(() => {
     if (token) {
-      gatewayClient.connect(token)
+      gatewayClient.updateToken(token)
+      if (gatewayClient.getStatus() === 'disconnected') {
+        gatewayClient.connect(token)
+      }
     } else {
       gatewayClient.disconnect()
     }

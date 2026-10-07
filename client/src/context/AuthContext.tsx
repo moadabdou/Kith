@@ -12,12 +12,87 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState<boolean>(true)
   const [error, setError] = useState<string | null>(null)
 
-  const logout = useCallback(() => {
-    api.setToken(null)
+  const logout = useCallback(async () => {
+    try {
+      await api.logout()
+    } catch (err) {
+      console.warn('[Auth] Logout failed:', err)
+    }
     localStorage.removeItem('kith_user')
     setToken(null)
     setUser(null)
   }, [])
+
+  // Sync token from ApiClient when refreshed or cleared
+  useEffect(() => {
+    const unsubAuthChange = api.onAuthChange((newToken) => {
+      setToken(newToken)
+    })
+    const unsubUnauthorized = api.onUnauthorized(() => {
+      localStorage.removeItem('kith_user')
+      setToken(null)
+      setUser(null)
+    })
+    return () => {
+      unsubAuthChange()
+      unsubUnauthorized()
+    }
+  }, [])
+
+  // Proactive background renewal before access token expiration
+  useEffect(() => {
+    if (!token) return
+
+    const scheduleRenewal = () => {
+      const expiresAt = api.getExpiresAt()
+      if (!expiresAt) return null
+
+      // Target 60 seconds before expiry; floor at 5 seconds
+      const delay = Math.max(expiresAt - Date.now() - 60_000, 5_000)
+      return setTimeout(async () => {
+        try {
+          await api.refreshTokens()
+        } catch (err) {
+          console.warn('[Auth] Proactive token renewal error:', err)
+        }
+      }, delay)
+    }
+
+    const timerId = scheduleRenewal()
+    return () => {
+      if (timerId) clearTimeout(timerId)
+    }
+  }, [token])
+
+  // Multi-tab session synchronization via storage events
+  useEffect(() => {
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === 'kith_token') {
+        if (!e.newValue) {
+          setUser(null)
+          setToken(null)
+          localStorage.removeItem('kith_user')
+        } else if (e.newValue !== token) {
+          setToken(e.newValue)
+        }
+      } else if (e.key === 'kith_user') {
+        if (e.newValue) {
+          try {
+            setUser(JSON.parse(e.newValue))
+          } catch {}
+        } else {
+          setUser(null)
+        }
+      }
+    }
+
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      window.addEventListener('storage', handleStorage)
+      return () => {
+        window.removeEventListener('storage', handleStorage)
+      }
+    }
+  }, [token])
 
   useEffect(() => {
     async function verifyUser() {

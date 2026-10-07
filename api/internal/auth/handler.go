@@ -120,6 +120,18 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 	h.writeTokenPair(w, http.StatusOK, uid, newRefresh, nil)
 }
 
+// Logout handles POST /api/auth/logout. It invalidates the provided refresh token session.
+func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	if req.RefreshToken != "" {
+		_ = h.Svc.Revoke(r.Context(), req.RefreshToken)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (h *Handler) writeTokenPair(w http.ResponseWriter, status int, uid int64, refresh string, u *User) {
 	token, err := h.Svc.JWT().Issue(uid)
 	if err != nil {

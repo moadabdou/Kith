@@ -96,4 +96,16 @@ func TestRegisterLoginRefreshFlow(t *testing.T) {
 	if _, _, err := svc.Refresh(ctx, refresh2); err != ErrInvalidRefresh {
 		t.Errorf("expired refresh token: err = %v, want ErrInvalidRefresh (re-login required)", err)
 	}
+
+	// Test Revoke: active token is invalidated
+	_, refresh3, err := svc.Login(ctx, email, password)
+	if err != nil {
+		t.Fatalf("Login for revoke test: %v", err)
+	}
+	if err := svc.Revoke(ctx, refresh3); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if _, _, err := svc.Refresh(ctx, refresh3); err != ErrInvalidRefresh {
+		t.Errorf("revoked refresh token: err = %v, want ErrInvalidRefresh", err)
+	}
 }

@@ -133,6 +133,16 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (userID int6
 	return userID, newRefresh, nil
 }
 
+// Revoke deletes the session identified by refreshToken, invalidating it.
+func (s *Service) Revoke(ctx context.Context, refreshToken string) error {
+	_, err := s.db.ExecContext(ctx, `
+		DELETE FROM sessions
+		WHERE refresh_token_hash = $1`,
+		hashToken(refreshToken),
+	)
+	return err
+}
+
 func (s *Service) createSession(ctx context.Context, userID int64) (string, error) {
 	sessionID, err := s.sf.Generate()
 	if err != nil {

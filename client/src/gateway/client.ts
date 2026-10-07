@@ -91,6 +91,7 @@ export class GatewayClient {
   private listeners: Map<string, Set<GatewayEventCallback>> = new Map()
   private statusListeners: Set<(status: GatewayStatus) => void> = new Set()
   private reconnectListeners: Set<(state: ReconnectState | null) => void> = new Set()
+  private authFailureListeners: Set<() => void> = new Set()
   private explicitDisconnect = false
 
   // Reconnect backoff state
@@ -154,6 +155,13 @@ export class GatewayClient {
     callback(this.getReconnectState())
     return () => {
       this.reconnectListeners.delete(callback)
+    }
+  }
+
+  public onAuthFailure(callback: () => void): () => void {
+    this.authFailureListeners.add(callback)
+    return () => {
+      this.authFailureListeners.delete(callback)
     }
   }
 
@@ -473,6 +481,13 @@ export class GatewayClient {
         this.lastSeq = null
         this.token = null
         this.setStatus('disconnected')
+        for (const cb of this.authFailureListeners) {
+          try {
+            cb()
+          } catch (err) {
+            console.error('[Gateway] auth failure listener error:', err)
+          }
+        }
         return
       }
 
@@ -485,6 +500,14 @@ export class GatewayClient {
       // Start exponential backoff reconnect
       this.scheduleReconnect()
     }
+  }
+
+  /**
+   * Updates the authentication token dynamically (e.g. after a token refresh).
+   * Does not interrupt an active connection, but ensures future handshakes or reconnects use the fresh token.
+   */
+  public updateToken(newToken: string) {
+    this.token = newToken
   }
 
   /**

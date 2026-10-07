@@ -251,18 +251,37 @@ describe('Gateway Client Reconnection & RESUME (#26)', () => {
   })
 
   describe('Fatal Auth & Explicit Disconnect', () => {
-    it('does not reconnect on 4004 Authentication Failed', () => {
+    it('does not reconnect on 4004 Authentication Failed and notifies onAuthFailure', () => {
       const client = new GatewayClient()
+      const onAuthFail = vi.fn()
+      client.onAuthFailure(onAuthFail)
+
       client.connect('bad-token')
       const ws = MockWebSocket.instances[0]
 
       ws.close(4004, 'Authentication failed')
 
       expect(client.getStatus()).toBe('disconnected')
+      expect(onAuthFail).toHaveBeenCalledTimes(1)
       vi.advanceTimersByTime(60000)
 
       // No new WebSocket instances created
       expect(MockWebSocket.instances.length).toBe(1)
+    })
+
+    it('updateToken updates token used for subsequent reconnects', () => {
+      const client = new GatewayClient()
+      client.connect('initial-token')
+      const ws1 = MockWebSocket.instances[0]
+
+      client.updateToken('refreshed-token')
+      ws1.close(1006, 'Abnormal closure')
+      client.reconnectNow()
+
+      const ws2 = MockWebSocket.instances[1]
+      ws2.receiveJson({ op: 10, d: { heartbeat_interval: 30000 } })
+      const identifyFrame = JSON.parse(ws2.sentData[0])
+      expect(identifyFrame.d.token).toBe('refreshed-token')
     })
 
     it('does not reconnect when disconnect() is explicitly called', () => {

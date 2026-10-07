@@ -16,7 +16,9 @@ import { ConnectionBanner } from './components/common/ConnectionBanner'
 import { AuthProvider } from './context/AuthContext'
 import { useAuth } from './context/useAuth'
 import { VoiceProvider } from './context/VoiceContext'
+import { useVoice } from './context/useVoice'
 import { VoiceChannelView } from './components/voice/VoiceChannelView'
+import { VoicePipMiniPlayer } from './components/voice/VoicePipMiniPlayer'
 import { GatewayProvider } from './gateway/GatewayContext'
 import { useGateway } from './gateway/useGateway'
 import type { Channel, Guild } from './types'
@@ -46,6 +48,7 @@ if (initialInvite && typeof window !== 'undefined') {
 
 function Dashboard() {
   const { user, loading, logout, updateUser } = useAuth()
+  const { activeVoice } = useVoice()
   const {
     onSessionReset,
     subscribeToGuildUpdates,
@@ -62,6 +65,11 @@ function Dashboard() {
   const [mentionState, setMentionState] = useState<MentionCountState>(EMPTY_MENTION_STATE)
   // Pending jump-to-mention request from a sidebar badge click.
   const [mentionJump, setMentionJump] = useState<{ channelId: string; messageId: string } | null>(null)
+
+  const handleReturnToVoice = useCallback((guildId: string, channelId: string) => {
+    setSelectedGuildId(guildId)
+    setSelectedChannelId(channelId)
+  }, [])
 
   const [isGuildModalOpen, setIsGuildModalOpen] = useState(false)
   const [isChannelModalOpen, setIsChannelModalOpen] = useState(false)
@@ -375,6 +383,13 @@ function Dashboard() {
   const currentGuild = guilds.find((g) => g.id === selectedGuildId) ?? null
   const currentChannel = channels.find((c) => c.id === selectedChannelId) ?? null
 
+  const isFloatingPipVisible =
+    Boolean(activeVoice) &&
+    (selectedChannelId !== activeVoice?.channelId ||
+      selectedGuildId !== activeVoice?.guildId ||
+      !currentChannel ||
+      Number(currentChannel.type) !== 2)
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', width: '100vw', height: '100vh', overflow: 'hidden' }}>
       <ConnectionBanner />
@@ -451,6 +466,15 @@ function Dashboard() {
       {/* 240px Member Sidebar (right of chat). Keyed by guild so switching
           guilds remounts it with fresh state instead of hand-rolled resets. */}
       <MemberSidebar key={selectedGuildId ?? 'none'} guildId={selectedGuildId} guild={currentGuild} />
+
+      {/* Floating Picture-in-Picture Voice Mini-Player (#128) */}
+      {isFloatingPipVisible && (
+        <VoicePipMiniPlayer
+          currentGuild={currentGuild}
+          channels={channels}
+          onReturnToVoice={handleReturnToVoice}
+        />
+      )}
 
       {/* Modals */}
       <CreateGuildModal

@@ -82,7 +82,11 @@ export const DeleteMessageModal: React.FC<DeleteMessageModalProps> = ({
           )}
           <div className="delete-modal-preview-inner">
             <div className="user-avatar" style={{ width: 40, height: 40, fontSize: 16 }}>
-              {authorInitials}
+              {message.author?.avatar ? (
+                <img src={message.author.avatar} alt={message.author.username} className="user-avatar-img" />
+              ) : (
+                authorInitials
+              )}
             </div>
             <div className="delete-modal-preview-content">
               <div className="delete-modal-preview-meta">

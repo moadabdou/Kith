@@ -767,6 +767,7 @@ export function ChannelSidebar({
                           : member?.nick || member?.user?.username || `User #${vs.user_id.slice(-4)}`
                         const initials = displayName.substring(0, 2).toUpperCase()
                         const speaking = speakingUsers.has(vs.user_id)
+                        const avatarUrl = isSelf ? (user?.avatar ?? null) : (member?.user?.avatar ?? null)
 
                         return (
                           <div
@@ -778,7 +779,11 @@ export function ChannelSidebar({
                                 className={`voice-member-avatar ${speaking ? 'speaking' : ''}`}
                                 title={speaking ? `${displayName} is speaking` : displayName}
                               >
-                                {initials}
+                                {avatarUrl ? (
+                                  <img src={avatarUrl} alt={displayName} className="voice-member-avatar-img" />
+                                ) : (
+                                  initials
+                                )}
                               </div>
                               <span
                                 className="voice-member-name"
@@ -826,13 +831,41 @@ export function ChannelSidebar({
         {/* Presence Quick Popover */}
         {isPresenceMenuOpen && (
           <div className="user-presence-popover">
+            <div className="user-presence-popover-header">
+              <div className="user-avatar-wrap" style={{ width: 34, height: 34 }}>
+                <div className="user-avatar" style={{ width: 34, height: 34, fontSize: 13 }}>
+                  {user?.avatar ? (
+                    <img src={user.avatar} alt={user.username} className="user-avatar-img" />
+                  ) : (
+                    user?.username?.substring(0, 2).toUpperCase() ?? 'U'
+                  )}
+                </div>
+                <span
+                  className="user-presence-dot"
+                  style={{
+                    backgroundColor:
+                      PRESENCE_OPTIONS.find((p) => p.id === presenceStatus)?.color ||
+                      'var(--presence-online, #23a55a)',
+                  }}
+                />
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-header)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {user?.username}
+                </span>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                  {PRESENCE_OPTIONS.find((p) => p.id === presenceStatus)?.label}
+                </span>
+              </div>
+            </div>
             <div
               style={{
-                padding: '6px 8px 4px',
-                fontSize: 11,
+                padding: '4px 8px 2px',
+                fontSize: 10,
                 fontWeight: 700,
                 textTransform: 'uppercase',
                 color: 'var(--text-muted)',
+                letterSpacing: '0.04em',
               }}
             >
               Set Status

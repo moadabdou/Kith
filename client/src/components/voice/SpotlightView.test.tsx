@@ -61,6 +61,30 @@ describe('SpotlightView (manual spotlight, never automatic)', () => {
     expect(html).toContain('BO')
   })
 
+  it('renders user profile avatar image when avatarUrl is provided', () => {
+    const html = renderToString(
+      <SpotlightView
+        spotlight={{
+          userId: 'bob',
+          displayName: 'Bob',
+          avatarUrl: 'https://example.com/bob.png',
+          speaking: true,
+          isSelf: false,
+          stream: null,
+          kind: 'camera',
+        }}
+        participants={baseParticipants}
+        onBackToGrid={() => {}}
+      />
+    )
+
+    expect(html).toContain('src="https://example.com/bob.png"')
+    expect(html).toContain('voice-participant-avatar-img')
+    expect(html).toContain('speaking')
+    expect(html).toContain('No video')
+    expect(html).not.toContain('>BO<')
+  })
+
   it('renders the resolved quality label and layer pill', () => {
     const html = renderToString(
       <SpotlightView

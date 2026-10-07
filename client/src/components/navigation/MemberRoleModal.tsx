@@ -115,7 +115,11 @@ export function MemberRoleModal({
         <div className="modal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <div className="member-avatar" style={{ width: 36, height: 36, fontSize: 14 }}>
-              {initialsOf(name)}
+              {member.user.avatar ? (
+                <img src={member.user.avatar} alt={name} className="member-avatar-img" />
+              ) : (
+                initialsOf(name)
+              )}
             </div>
             <div>
               <div style={{ fontWeight: 700, fontSize: 16, color: 'var(--text-header)' }}>{name}</div>

@@ -5,6 +5,7 @@ import { isBenignPlayAbort, isTrackLive } from '../../lib/spotlight'
 export interface VideoTileProps {
   userId: string
   displayName: string
+  avatarUrl?: string | null
   isSelf: boolean
   stream: MediaStream | null
   speaking: boolean
@@ -25,6 +26,7 @@ export interface VideoTileProps {
 export function VideoTile({
   userId,
   displayName,
+  avatarUrl,
   isSelf,
   stream,
   speaking,
@@ -102,9 +104,17 @@ export function VideoTile({
 
       {!hasVideoTrack && (
         <div className="video-tile-fallback">
-          <div className={`voice-participant-avatar ${speaking ? 'speaking' : ''}`}>
-            {initials}
-          </div>
+          {avatarUrl ? (
+            <img
+              src={avatarUrl}
+              alt={displayName}
+              className={`voice-participant-avatar-img ${speaking ? 'speaking' : ''}`}
+            />
+          ) : (
+            <div className={`voice-participant-avatar ${speaking ? 'speaking' : ''}`}>
+              {initials}
+            </div>
+          )}
         </div>
       )}
 

@@ -725,7 +725,11 @@ export function MessageInput({
                         acceptMention(s)
                       }}
                     >
-                      <div className="mention-suggest-avatar">{initials}</div>
+                      {m?.avatar ? (
+                        <img src={m.avatar} alt={displayName} className="mention-suggest-avatar-img" />
+                      ) : (
+                        <div className="mention-suggest-avatar">{initials}</div>
+                      )}
                       <div className="mention-suggest-info">
                         <span className="mention-suggest-name">{displayName}</span>
                         <span className="mention-suggest-handle">@{username}</span>

@@ -177,9 +177,12 @@ export function VoiceChannelView({ currentGuild, channel }: VoiceChannelViewProp
       statsFpsFor(isSelf, stream),
     )
 
+    const avatarUrl = isSelf ? (user?.avatar ?? null) : (member?.user?.avatar ?? null)
+
     return {
       userId: vs.user_id,
       displayName,
+      avatarUrl,
       isSelf,
       stream,
       speaking,
@@ -225,9 +228,11 @@ export function VoiceChannelView({ currentGuild, channel }: VoiceChannelViewProp
         return {
           userId: spotlightBase.userId,
           displayName: spotlightBase.displayName,
+          avatarUrl: spotlightBase.avatarUrl,
           isSelf: spotlightBase.isSelf,
           stream: resolved.stream,
           kind: resolved.kind,
+          speaking: spotlightBase.speaking,
           qualityLabel: resolved.stream ? quality.label : null,
           qualityLayer: quality.layer,
           qualityDetail: quality.detail,

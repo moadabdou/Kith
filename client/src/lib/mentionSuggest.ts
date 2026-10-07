@@ -19,6 +19,7 @@ export interface SuggestMember {
   id: string
   username: string
   nick?: string | null
+  avatar?: string | null
 }
 
 export interface SuggestRole {

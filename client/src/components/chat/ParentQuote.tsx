@@ -39,7 +39,11 @@ export function ParentQuote({ replyToId, referencedMessage, onJump }: ParentQuot
       ) : (
         <div className="reply-quote-body">
           <div className="reply-quote-avatar">
-            {referencedMessage.author?.username?.substring(0, 1).toUpperCase() || '?'}
+            {referencedMessage.author?.avatar ? (
+              <img src={referencedMessage.author.avatar} alt="" className="reply-quote-avatar-img" />
+            ) : (
+              referencedMessage.author?.username?.substring(0, 1).toUpperCase() || '?'
+            )}
           </div>
           <span className="reply-quote-username">
             @{referencedMessage.author?.username || 'Unknown'}

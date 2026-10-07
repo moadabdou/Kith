@@ -289,8 +289,9 @@ export function ChatArea({ currentGuild, currentChannel, channels = [], guilds =
         id: m.user.id,
         username: m.user.username,
         nick: m.nick,
+        avatar: m.user.avatar ?? (user && m.user.id === user.id ? user.avatar : null),
       })),
-    [guildMembers],
+    [guildMembers, user],
   )
   const mentionRoles = useMemo(
     () => guildRoles.map((r) => ({ id: r.id, name: r.name, mentionable: r.mentionable })),

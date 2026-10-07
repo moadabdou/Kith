@@ -11,9 +11,11 @@ import {
 export interface SpotlightTarget {
   userId: string
   displayName: string
+  avatarUrl?: string | null
   isSelf: boolean
   stream: MediaStream | null
   kind: SpotlightKind
+  speaking?: boolean
   qualityLabel?: string | null
   qualityLayer?: 'f' | 'h' | 'q' | null
   qualityDetail?: string | null
@@ -177,9 +179,21 @@ export function SpotlightView({
 
         {!hasLiveTrack && (
           <div className="screenshare-ended-fallback">
-            <div className="voice-participant-avatar">
-              {spotlight.displayName.substring(0, 2).toUpperCase()}
-            </div>
+            {spotlight.avatarUrl ? (
+              <img
+                src={spotlight.avatarUrl}
+                alt={spotlight.displayName}
+                className={`voice-participant-avatar-img ${spotlight.speaking ? 'speaking' : ''}`}
+                style={{ width: 96, height: 96 }}
+              />
+            ) : (
+              <div
+                className={`voice-participant-avatar ${spotlight.speaking ? 'speaking' : ''}`}
+                style={{ width: 96, height: 96, fontSize: 36 }}
+              >
+                {spotlight.displayName.substring(0, 2).toUpperCase()}
+              </div>
+            )}
             <span className="screenshare-ended-text">
               {spotlight.stream ? 'Stream ended' : 'No video'}
             </span>

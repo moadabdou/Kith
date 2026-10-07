@@ -184,7 +184,11 @@ export function PinnedMessagesDrawer({
                 {/* Pin Card Header */}
                 <div className="pinned-item-header">
                   <div className="user-avatar" style={{ width: 32, height: 32, fontSize: 13 }}>
-                    {pin.author?.username?.substring(0, 2).toUpperCase() ?? 'U'}
+                    {pin.author?.avatar ? (
+                      <img src={pin.author.avatar} alt={pin.author.username} className="user-avatar-img" />
+                    ) : (
+                      pin.author?.username?.substring(0, 2).toUpperCase() ?? 'U'
+                    )}
                   </div>
                   <div className="pinned-item-meta">
                     <span className="pinned-item-author">{pin.author?.username || 'Unknown'}</span>

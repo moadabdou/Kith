@@ -335,6 +335,7 @@ export function MemberSidebar({ guildId, guild }: MemberSidebarProps) {
                   const nameColor = memberNameColor(member, roles)
                   const isOffline = status === 'offline' || status === 'invisible'
                   const name = displayName(member)
+                  const memberAvatar = (user && member.user.id === user.id) ? (user.avatar ?? member.user.avatar) : member.user.avatar
                   return (
                     <div
                       key={member.user.id}
@@ -352,8 +353,8 @@ export function MemberSidebar({ guildId, guild }: MemberSidebarProps) {
                     >
                       <div className="member-avatar-wrap">
                         <div className="member-avatar">
-                          {member.user.avatar ? (
-                            <img src={member.user.avatar} alt={name} className="member-avatar-img" />
+                          {memberAvatar ? (
+                            <img src={memberAvatar} alt={name} className="member-avatar-img" />
                           ) : (
                             initialsOf(name)
                           )}

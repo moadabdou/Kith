@@ -124,6 +124,21 @@ describe('VideoTile Component', () => {
     )
     expect(html).not.toContain('voice-badge quality')
   })
+
+  it('renders custom avatar image when avatarUrl is provided', () => {
+    const html = renderToString(
+      <VideoTile
+        userId="user-custom"
+        displayName="Dave"
+        avatarUrl="https://example.com/avatar.jpg"
+        isSelf={false}
+        stream={null}
+        speaking={true}
+      />
+    )
+    expect(html).toContain('voice-participant-avatar-img speaking')
+    expect(html).toContain('src="https://example.com/avatar.jpg"')
+  })
 })
 
 describe('VideoGrid Component', () => {

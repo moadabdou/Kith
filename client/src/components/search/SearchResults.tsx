@@ -251,7 +251,11 @@ export function SearchResults({
                   value: m.user.id,
                   label: displayName,
                   sublabel: `@${m.user.username}`,
-                  icon: <span className="search-dropdown-avatar-fallback">{initials}</span>,
+                  icon: m.user.avatar ? (
+                    <img src={m.user.avatar} alt={displayName} className="search-dropdown-avatar" />
+                  ) : (
+                    <span className="search-dropdown-avatar-fallback">{initials}</span>
+                  ),
                 }
               }),
             ]}
@@ -384,10 +388,15 @@ export function SearchResults({
                     const authorMember = members.find((m) => m.user.id === msg.author?.id)
                     const authorColor = authorMember ? memberNameColor(authorMember, roles) : null
                     const authorName = authorMember?.nick || msg.author?.username || 'Unknown'
+                    const authorAvatar = msg.author?.avatar || authorMember?.user?.avatar || null
                     return (
                       <div className="search-result-author-row">
                         <div className="user-avatar" style={{ width: 28, height: 28, fontSize: 12 }}>
-                          {msg.author?.username?.substring(0, 2).toUpperCase() ?? 'U'}
+                          {authorAvatar ? (
+                            <img src={authorAvatar} alt={authorName} className="user-avatar-img" />
+                          ) : (
+                            msg.author?.username?.substring(0, 2).toUpperCase() ?? 'U'
+                          )}
                         </div>
                         <span
                           className="search-result-author"

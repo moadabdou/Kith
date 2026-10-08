@@ -58,9 +58,9 @@ func main() {
 	port := getEnv("PORT", "5000")
 	jwtSecret := getEnv("JWT_SECRET", "dev-jwt-secret-change-me")
 	natsURL := getEnv("NATS_URL", "nats://127.0.0.1:4222")
-	udpMin := getEnvUint16("UDP_PORT_MIN", 50000)
-	udpMax := getEnvUint16("UDP_PORT_MAX", 50020)
-	natIPsRaw := getEnv("NAT_1TO1_IPS", "")
+	udpMin := getEnvUint16("SFU_PORT_MIN", getEnvUint16("UDP_PORT_MIN", 50000))
+	udpMax := getEnvUint16("SFU_PORT_MAX", getEnvUint16("UDP_PORT_MAX", 50200))
+	natIPsRaw := getEnv("SFU_PUBLIC_IP", getEnv("NAT_1TO1_IPS", ""))
 	stunServer := getEnv("STUN_SERVER", "")
 
 	var natIPs []string

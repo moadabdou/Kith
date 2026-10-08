@@ -389,6 +389,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
+	mux.HandleFunc("GET /api/healthz", handleHealthz)
 	mux.HandleFunc("GET /readyz", readyHandler(db))
 	mux.Handle("GET /metrics", promhttp.Handler())
 	mux.HandleFunc("GET /api/ping", handlePing)

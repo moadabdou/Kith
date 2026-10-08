@@ -3,23 +3,23 @@ name: kith
 services:
   postgres:
     image: postgres:17-alpine
-    # Issue #88: default max_connections=100 is smaller than our pools
-    # (2× gateway + 2× API×25). 200 headroom for pools + admin/psql +
-    # migrations. Data persists in pgdata across the restart this needs.
-    command: postgres -c max_connections=200
+    command: postgres -c max_connections=150 -c shared_buffers=512MB -c effective_cache_size=1536MB -c maintenance_work_mem=128MB -c work_mem=16MB
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-discord}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-discord}
-      POSTGRES_DB: ${POSTGRES_DB:-discord}
-    ports:
-      - "127.0.0.1:5432:5432"
+      POSTGRES_USER: ${POSTGRES_USER:-kith_prod}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kith_prod}
+      POSTGRES_DB: ${POSTGRES_DB:-kith_prod}
     volumes:
       - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
       timeout: 3s
       retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 1024M
 
   migrate:
     image: migrate/migrate:v4.18.3
@@ -27,66 +27,60 @@ services:
       - -path
       - /migrations
       - -database
-      - postgres://${POSTGRES_USER:-discord}:${POSTGRES_PASSWORD:-discord}@postgres:5432/${POSTGRES_DB:-discord}?sslmode=disable
+      - postgres://${POSTGRES_USER:-kith_prod}:${POSTGRES_PASSWORD:-kith_prod}@postgres:5432/${POSTGRES_DB:-kith_prod}?sslmode=disable
       - up
     volumes:
       - ./api/migrations:/migrations:ro
     depends_on:
       postgres:
         condition: service_healthy
-
-  seed:
-    image: postgres:17-alpine
-    command:
-      - psql
-      - postgres://${POSTGRES_USER:-discord}:${POSTGRES_PASSWORD:-discord}@postgres:5432/${POSTGRES_DB:-discord}?sslmode=disable
-      - -v
-      - ON_ERROR_STOP=1
-      - -f
-      - /seed.sql
-    volumes:
-      - ./api/db/seed.sql:/seed.sql:ro
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
+    restart: "no"
 
   redis:
     image: redis:7-alpine
-    command: redis-server --appendonly yes
-    ports:
-      - "127.0.0.1:6379:6379"
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     volumes:
       - redisdata:/data
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 384M
 
   nats:
     image: nats:2.10-alpine
     command: ["--js", "-m", "8222"]
-    ports:
-      - "127.0.0.1:4222:4222"
-      - "127.0.0.1:8222:8222"
+    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8222/healthz"]
       interval: 5s
       timeout: 3s
       retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 384M
 
   scylla:
     image: scylladb/scylla:6.2
-    command: --smp 1 --memory 1G --overprovisioned 1
-    ports:
-      - "127.0.0.1:9042:9042"
+    command: --smp 1 --memory 2.5G --reserve-memory 512M --overprovisioned 1
     volumes:
       - scylladata:/var/lib/scylla
+    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "cqlsh -e 'DESCRIBE KEYSPACES'"]
       interval: 10s
       timeout: 5s
       retries: 15
+    deploy:
+      resources:
+        limits:
+          memory: 3500M
 
   scylla-init:
     image: scylladb/scylla:6.2
@@ -102,31 +96,72 @@ services:
   meilisearch:
     image: getmeili/meilisearch:v1.12
     environment:
-      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-dev-master-key}
-      MEILI_ENV: development
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-change-me-prod-meili-master-key}
+      MEILI_ENV: ${MEILI_ENV:-production}
       MEILI_EXPERIMENTAL_ENABLE_METRICS: "true"
-    ports:
-      - "127.0.0.1:7700:7700"
     volumes:
       - meilidata:/meili_data
+    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:7700/health"]
       interval: 5s
       timeout: 3s
       retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  minio:
+    image: cgr.dev/chainguard/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-kith_admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-kithpassword123}
+    volumes:
+      - miniodata:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/bin/bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9000"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  minio-init:
+    image: cgr.dev/chainguard/minio:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: >
+      /bin/bash -c "
+      mc alias set local http://minio:9000 $${MINIO_ROOT_USER:-kith_admin} $${MINIO_ROOT_PASSWORD:-kithpassword123};
+      mc mb --ignore-existing local/attachments;
+      mc mb --ignore-existing local/avatars;
+      mc mb --ignore-existing local/emojis;
+      mc mb --ignore-existing local/stickers;
+      mc anonymous set public local/attachments;
+      mc anonymous set download local/avatars;
+      mc anonymous set download local/emojis;
+      mc anonymous set download local/stickers;
+      exit 0;
+      "
 
   api:
     build:
       context: ./api
-      network: host
       args:
         HTTP_PROXY: ${HTTP_PROXY:-}
         HTTPS_PROXY: ${HTTPS_PROXY:-}
         NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
     environment:
-      PORT: ${API_PORT:-8080}
+      PORT: 8080
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      DATABASE_URL: postgres://${POSTGRES_USER:-discord}:${POSTGRES_PASSWORD:-discord}@postgres:5432/${POSTGRES_DB:-discord}?sslmode=disable
+      DATABASE_URL: postgres://${POSTGRES_USER:-kith_prod}:${POSTGRES_PASSWORD:-kith_prod}@postgres:5432/${POSTGRES_DB:-kith_prod}?sslmode=disable
       SNOWFLAKE_NODE_ID: ${SNOWFLAKE_NODE_ID:-1}
       JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me}
       EVENTS_BUS: ${EVENTS_BUS:-nats}
@@ -137,103 +172,30 @@ services:
       SCYLLA_CONSISTENCY: ${SCYLLA_CONSISTENCY:-ONE}
       MESSAGE_STORE: ${MESSAGE_STORE:-scylla}
       MESSAGES_STORE_MODE: ${MESSAGES_STORE_MODE:-scylla_only}
-      API_MSG_MAX_INFLIGHT: ${API_MSG_MAX_INFLIGHT:-50}
+      API_MSG_MAX_INFLIGHT: ${API_MSG_MAX_INFLIGHT:-100}
       KLIPY_API_KEY: ${KLIPY_API_KEY:-}
       OUTBOUND_PROXY_URL: ${OUTBOUND_PROXY_URL:-}
       PG_POOL_MAX_OPEN_CONNS: ${PG_POOL_MAX_OPEN_CONNS:-25}
       PG_POOL_MAX_IDLE_CONNS: ${PG_POOL_MAX_IDLE_CONNS:-25}
       PG_POOL_MAX_LIFETIME_SEC: ${PG_POOL_MAX_LIFETIME_SEC:-300}
-      PPROF_PORT: ${PPROF_PORT:-6060}
       MEILISEARCH_URL: ${MEILISEARCH_URL:-http://meilisearch:7700}
-      MEILISEARCH_KEY: ${MEILI_MASTER_KEY:-dev-master-key}
+      MEILISEARCH_KEY: ${MEILI_MASTER_KEY:-change-me-prod-meili-master-key}
       SEARCH_INDEXER_ENABLED: ${SEARCH_INDEXER_ENABLED:-true}
       S3_ENDPOINT: ${S3_ENDPOINT:-minio:9000}
-      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-kithadmin}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-kith_admin}
       S3_SECRET_KEY: ${S3_SECRET_KEY:-kithpassword123}
       S3_BUCKET_ATTACHMENTS: ${S3_BUCKET_ATTACHMENTS:-attachments}
       S3_BUCKET_AVATARS: ${S3_BUCKET_AVATARS:-avatars}
       S3_USE_SSL: ${S3_USE_SSL:-false}
-      S3_PUBLIC_URL: ${S3_PUBLIC_URL:-http://localhost}
-      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-localhost:9000}
-      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-26214400}
-      SMTP_HOST: ${SMTP_HOST:-}
-      SMTP_PORT: ${SMTP_PORT:-587}
-      SMTP_USER: ${SMTP_USER:-}
-      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
-      SMTP_PASS: ${SMTP_PASS:-}
-      SMTP_FROM: ${SMTP_FROM:-}
-      APP_URL: ${APP_URL:-http://localhost:5173}
+      S3_PUBLIC_URL: ${S3_PUBLIC_URL:-https://kith.moadabdou.me}
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-kith.moadabdou.me}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-52428800}
+      APP_URL: ${APP_URL:-https://kith.moadabdou.me}
+      GOMEMLIMIT: ${GOMEMLIMIT:-1GiB}
+      GOGC: ${GOGC:-100}
     ports:
-      - "127.0.0.1:8080:8080"
-      - "127.0.0.1:6060:6060"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
-      redis:
-        condition: service_healthy
-      nats:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:${API_PORT:-8080}/healthz"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
-  api-2:
-    build:
-      context: ./api
-      network: host
-      args:
-        HTTP_PROXY: ${HTTP_PROXY:-}
-        HTTPS_PROXY: ${HTTPS_PROXY:-}
-        NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
-    environment:
-      PORT: 8080
-      LOG_LEVEL: ${LOG_LEVEL:-info}
-      DATABASE_URL: postgres://${POSTGRES_USER:-discord}:${POSTGRES_PASSWORD:-discord}@postgres:5432/${POSTGRES_DB:-discord}?sslmode=disable
-      SNOWFLAKE_NODE_ID: ${SNOWFLAKE_NODE_ID_2:-2}
-      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me}
-      EVENTS_BUS: ${EVENTS_BUS:-nats}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
-      NATS_URL: ${NATS_URL:-nats://nats:4222}
-      SCYLLA_HOSTS: ${SCYLLA_HOSTS:-scylla:9042}
-      SCYLLA_KEYSPACE: ${SCYLLA_KEYSPACE:-kith}
-      SCYLLA_CONSISTENCY: ${SCYLLA_CONSISTENCY:-ONE}
-      MESSAGE_STORE: ${MESSAGE_STORE:-scylla}
-      MESSAGES_STORE_MODE: ${MESSAGES_STORE_MODE:-scylla_only}
-      API_MSG_MAX_INFLIGHT: ${API_MSG_MAX_INFLIGHT:-50}
-      KLIPY_API_KEY: ${KLIPY_API_KEY:-}
-      OUTBOUND_PROXY_URL: ${OUTBOUND_PROXY_URL:-}
-      PG_POOL_MAX_OPEN_CONNS: ${PG_POOL_MAX_OPEN_CONNS:-25}
-      PG_POOL_MAX_IDLE_CONNS: ${PG_POOL_MAX_IDLE_CONNS:-25}
-      PG_POOL_MAX_LIFETIME_SEC: ${PG_POOL_MAX_LIFETIME_SEC:-300}
-      PPROF_PORT: 6061
-      MEILISEARCH_URL: ${MEILISEARCH_URL:-http://meilisearch:7700}
-      MEILISEARCH_KEY: ${MEILI_MASTER_KEY:-dev-master-key}
-      SEARCH_INDEXER_ENABLED: "false"
-      S3_ENDPOINT: ${S3_ENDPOINT:-minio:9000}
-      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-kithadmin}
-      S3_SECRET_KEY: ${S3_SECRET_KEY:-kithpassword123}
-      S3_BUCKET_ATTACHMENTS: ${S3_BUCKET_ATTACHMENTS:-attachments}
-      S3_BUCKET_AVATARS: ${S3_BUCKET_AVATARS:-avatars}
-      S3_USE_SSL: ${S3_USE_SSL:-false}
-      S3_PUBLIC_URL: ${S3_PUBLIC_URL:-http://localhost}
-      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-localhost:9000}
-      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-26214400}
-      SMTP_HOST: ${SMTP_HOST:-}
-      SMTP_PORT: ${SMTP_PORT:-587}
-      SMTP_USER: ${SMTP_USER:-}
-      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
-      SMTP_PASS: ${SMTP_PASS:-}
-      SMTP_FROM: ${SMTP_FROM:-}
-      APP_URL: ${APP_URL:-http://localhost:5173}
-    ports:
-      - "127.0.0.1:${API2_PORT:-8081}:8080"
-      - "127.0.0.1:${API2_PPROF_PORT:-6061}:6061"
+      - "127.0.0.1:${API_PORT:-8082}:8080"
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
@@ -250,41 +212,101 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 1280M
+
+  api-2:
+    build:
+      context: ./api
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
+    environment:
+      PORT: 8080
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DATABASE_URL: postgres://${POSTGRES_USER:-kith_prod}:${POSTGRES_PASSWORD:-kith_prod}@postgres:5432/${POSTGRES_DB:-kith_prod}?sslmode=disable
+      SNOWFLAKE_NODE_ID: ${SNOWFLAKE_NODE_ID_2:-2}
+      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me}
+      EVENTS_BUS: ${EVENTS_BUS:-nats}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      NATS_URL: ${NATS_URL:-nats://nats:4222}
+      SCYLLA_HOSTS: ${SCYLLA_HOSTS:-scylla:9042}
+      SCYLLA_KEYSPACE: ${SCYLLA_KEYSPACE:-kith}
+      SCYLLA_CONSISTENCY: ${SCYLLA_CONSISTENCY:-ONE}
+      MESSAGE_STORE: ${MESSAGE_STORE:-scylla}
+      MESSAGES_STORE_MODE: ${MESSAGES_STORE_MODE:-scylla_only}
+      API_MSG_MAX_INFLIGHT: ${API_MSG_MAX_INFLIGHT:-100}
+      KLIPY_API_KEY: ${KLIPY_API_KEY:-}
+      OUTBOUND_PROXY_URL: ${OUTBOUND_PROXY_URL:-}
+      PG_POOL_MAX_OPEN_CONNS: ${PG_POOL_MAX_OPEN_CONNS:-25}
+      PG_POOL_MAX_IDLE_CONNS: ${PG_POOL_MAX_IDLE_CONNS:-25}
+      PG_POOL_MAX_LIFETIME_SEC: ${PG_POOL_MAX_LIFETIME_SEC:-300}
+      MEILISEARCH_URL: ${MEILISEARCH_URL:-http://meilisearch:7700}
+      MEILISEARCH_KEY: ${MEILI_MASTER_KEY:-change-me-prod-meili-master-key}
+      SEARCH_INDEXER_ENABLED: "false"
+      S3_ENDPOINT: ${S3_ENDPOINT:-minio:9000}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-kith_admin}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-kithpassword123}
+      S3_BUCKET_ATTACHMENTS: ${S3_BUCKET_ATTACHMENTS:-attachments}
+      S3_BUCKET_AVATARS: ${S3_BUCKET_AVATARS:-avatars}
+      S3_USE_SSL: ${S3_USE_SSL:-false}
+      S3_PUBLIC_URL: ${S3_PUBLIC_URL:-https://kith.moadabdou.me}
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-kith.moadabdou.me}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-52428800}
+      APP_URL: ${APP_URL:-https://kith.moadabdou.me}
+      GOMEMLIMIT: ${GOMEMLIMIT:-1GiB}
+      GOGC: ${GOGC:-100}
+    ports:
+      - "127.0.0.1:${API2_PORT:-8083}:8080"
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 1280M
 
   gateway:
     build:
       context: .
       dockerfile: ./gateway/Dockerfile
-      network: host
+      target: prod
       args:
         HTTP_PROXY: ${HTTP_PROXY:-}
         HTTPS_PROXY: ${HTTPS_PROXY:-}
         NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
-    # Issue #88 Step 3: BEAM needs FD headroom per connection (socket +
-    # session + monitors). Docker default here is 2048, which emfile-crashed
-    # Bandit acceptors at ~2k conns/node. 65536 covers the 50k army with margin.
     ulimits:
       nofile:
         soft: 65536
         hard: 65536
     environment:
-      PORT: ${GATEWAY_PORT:-4000}
-      CHAOS_ENABLED: ${CHAOS_ENABLED:-true}
+      PORT: 4000
+      CHAOS_ENABLED: ${CHAOS_ENABLED:-false}
       BUS_TYPE: ${BUS_TYPE:-nats}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       NATS_URL: ${NATS_URL:-nats://nats:4222}
-      DATABASE_URL: postgres://${POSTGRES_USER:-discord}:${POSTGRES_PASSWORD:-discord}@postgres:5432/${POSTGRES_DB:-discord}?sslmode=disable
+      DATABASE_URL: postgres://${POSTGRES_USER:-kith_prod}:${POSTGRES_PASSWORD:-kith_prod}@postgres:5432/${POSTGRES_DB:-kith_prod}?sslmode=disable
       JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me}
-      ERLANG_COOKIE: ${ERLANG_COOKIE:-dev-cluster-cookie}
-      # Phase 7d (Issue #87): channel-assigned SFU pool. Comma-separated
-      # WS endpoints; gateway hashes channel_id -> one of them. Service
-      # names (not 127.0.0.1): the gateway's out-of-band health poller runs
-      # INSIDE this container, where 127.0.0.1 is itself — `sfu`/`sfu-2`
-      # resolve over the compose network. Browsers rewrite these hosts to
-      # the page hostname (sfu-client.ts); host-network drivers map them to
-      # 127.0.0.1. Unset = legacy single endpoint (127.0.0.1:5000).
+      ERLANG_COOKIE: ${ERLANG_COOKIE:-prod-cluster-cookie}
+      ERL_FLAGS: ${ERL_FLAGS:-+MBas 1024}
       VOICE_SFU_POOL: ${VOICE_SFU_POOL:-sfu:5000,sfu-2:5001}
-      # Observation override (default/spec is 10 min, plan/05 §1)
       PRESENCE_IDLE_THRESHOLD_MS: ${PRESENCE_IDLE_THRESHOLD_MS:-120000}
     networks:
       default:
@@ -301,34 +323,38 @@ services:
     ports:
       - "127.0.0.1:4000:4000"
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:${GATEWAY_PORT:-4000}/healthz"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:4000/healthz"]
       interval: 5s
       timeout: 3s
       retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 1280M
 
   gateway-2:
     build:
       context: .
       dockerfile: ./gateway/Dockerfile
-      network: host
+      target: prod
       args:
         HTTP_PROXY: ${HTTP_PROXY:-}
         HTTPS_PROXY: ${HTTPS_PROXY:-}
         NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
-    # Same FD headroom as gateway (see above): emfile wall at ~2k conns/node.
     ulimits:
       nofile:
         soft: 65536
         hard: 65536
     environment:
       PORT: 4000
-      CHAOS_ENABLED: ${CHAOS_ENABLED:-true}
+      CHAOS_ENABLED: ${CHAOS_ENABLED:-false}
       BUS_TYPE: ${BUS_TYPE:-nats}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       NATS_URL: ${NATS_URL:-nats://nats:4222}
-      DATABASE_URL: postgres://${POSTGRES_USER:-discord}:${POSTGRES_PASSWORD:-discord}@postgres:5432/${POSTGRES_DB:-discord}?sslmode=disable
+      DATABASE_URL: postgres://${POSTGRES_USER:-kith_prod}:${POSTGRES_PASSWORD:-kith_prod}@postgres:5432/${POSTGRES_DB:-kith_prod}?sslmode=disable
       JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me}
-      ERLANG_COOKIE: ${ERLANG_COOKIE:-dev-cluster-cookie}
+      ERLANG_COOKIE: ${ERLANG_COOKIE:-prod-cluster-cookie}
+      ERL_FLAGS: ${ERL_FLAGS:-+MBas 1024}
       VOICE_SFU_POOL: ${VOICE_SFU_POOL:-sfu:5000,sfu-2:5001}
       PRESENCE_IDLE_THRESHOLD_MS: ${PRESENCE_IDLE_THRESHOLD_MS:-120000}
     networks:
@@ -344,54 +370,53 @@ services:
         condition: service_healthy
     restart: unless-stopped
     ports:
-      - "127.0.0.1:${GATEWAY2_PORT:-4001}:4000"
+      - "127.0.0.1:4001:4000"
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:4000/healthz"]
       interval: 5s
       timeout: 3s
       retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 1280M
 
   client:
     build:
       context: ./client
-      target: dev
-      network: host
+      target: prod
       args:
-        HTTP_PROXY: ${HTTP_PROXY:-}
-        HTTPS_PROXY: ${HTTPS_PROXY:-}
-        NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
-    environment:
-      VITE_API_BASE: /api
-      # Observation override — must match the gateway's PRESENCE_IDLE_THRESHOLD_MS
-      VITE_IDLE_THRESHOLD_MS: ${PRESENCE_IDLE_THRESHOLD_MS:-120000}
-    volumes:
-      - ./client/src:/app/src
-      - ./client/public:/app/public
-      - ./client/index.html:/app/index.html
+        VITE_API_BASE: ${VITE_API_BASE:-/api}
+        VITE_GATEWAY_WS: ${VITE_GATEWAY_WS:-wss://kith.moadabdou.me/ws}
+        VITE_IDLE_THRESHOLD_MS: ${PRESENCE_IDLE_THRESHOLD_MS:-120000}
     ports:
-      - "127.0.0.1:5173:5173"
+      - "127.0.0.1:5173:80"
+    restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:5173/"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:80/healthz"]
       interval: 5s
       timeout: 3s
       retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 128M
 
   sfu:
     build:
       context: ./sfu
-      network: host
       args:
         HTTP_PROXY: ${HTTP_PROXY:-}
         HTTPS_PROXY: ${HTTPS_PROXY:-}
         NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
     environment:
-      PORT: ${SFU_PORT:-5000}
-      LOG_LEVEL: ${SFU_LOG_LEVEL:-debug}
+      PORT: 5000
+      LOG_LEVEL: ${SFU_LOG_LEVEL:-warn}
       UDP_PORT_MIN: ${SFU_UDP_PORT_MIN:-50000}
       UDP_PORT_MAX: ${SFU_UDP_PORT_MAX:-50200}
       JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me}
       STUN_SERVER: ${STUN_SERVER:-}
-      NAT_1TO1_IPS: ${NAT_1TO1_IPS:-127.0.0.1}
+      NAT_1TO1_IPS: ${NAT_1TO1_IPS:-51.170.129.228}
       NATS_URL: ${NATS_URL:-nats://nats:4222}
       SFU_PION_LOG: ${SFU_PION_LOG:-warn}
     cap_add:
@@ -404,33 +429,30 @@ services:
       nats:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:${SFU_PORT:-5000}/healthz"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:5000/healthz"]
       interval: 5s
       timeout: 3s
       retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
-  # Phase 7d (Issue #87): second SFU for channel-assigned pooling. Disjoint
-  # UDP range + WS port; the gateway hashes channel_id -> endpoint
-  # (VOICE_SFU_POOL) so a channel never splits across instances.
-  # NOTE: plan/10 specifies UDP 40000-40100 while compose uses 50000+; the
-  # ranges here stay consistent with the existing sfu service — reconciling
-  # with plan/10 (firewall + deploy docs) is a separate deploy task.
   sfu-2:
     build:
       context: ./sfu
-      network: host
       args:
         HTTP_PROXY: ${HTTP_PROXY:-}
         HTTPS_PROXY: ${HTTPS_PROXY:-}
         NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
     environment:
-      PORT: ${SFU2_PORT:-5001}
-      LOG_LEVEL: ${SFU_LOG_LEVEL:-debug}
+      PORT: 5001
+      LOG_LEVEL: ${SFU_LOG_LEVEL:-warn}
       UDP_PORT_MIN: ${SFU2_UDP_PORT_MIN:-50300}
       UDP_PORT_MAX: ${SFU2_UDP_PORT_MAX:-50320}
       JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me}
       STUN_SERVER: ${STUN_SERVER:-}
-      NAT_1TO1_IPS: ${NAT_1TO1_IPS:-127.0.0.1}
+      NAT_1TO1_IPS: ${NAT_1TO1_IPS:-51.170.129.228}
       NATS_URL: ${NATS_URL:-nats://nats:4222}
       SFU_PION_LOG: ${SFU_PION_LOG:-warn}
     cap_add:
@@ -443,117 +465,31 @@ services:
       nats:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:${SFU2_PORT:-5001}/healthz"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:5001/healthz"]
       interval: 5s
       timeout: 3s
       retries: 10
-
-  caddy:
-    build:
-      context: ./deploy/caddy
-      network: host
-    image: kith-caddy:latest
-    ports:
-      - "80:80"
-    volumes:
-      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
-    depends_on:
-      api:
-        condition: service_healthy
-      api-2:
-        condition: service_healthy
-      client:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:80/"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
-  prometheus:
-    image: prom/prometheus:v3.7.2
-    volumes:
-      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./deploy/prometheus/rules.yml:/etc/prometheus/rules.yml:ro
-    ports:
-      - "127.0.0.1:9090:9090"
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9090/-/ready"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
-  grafana:
-    image: grafana/grafana:12.1.1
-    environment:
-      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
-    volumes:
-      - ./deploy/provisioning/grafana/datasources:/etc/grafana/provisioning/datasources:ro
-      - ./deploy/provisioning/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
-      - grafana-data:/var/lib/grafana
-    ports:
-      - "127.0.0.1:3000:3000"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fs -o /dev/null http://127.0.0.1:3000/api/health"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
-  minio:
-    image: cgr.dev/chainguard/minio:latest
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-kithadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-kithpassword123}
-    ports:
-      - "127.0.0.1:9000:9000"
-      - "127.0.0.1:9001:9001"
-    volumes:
-      - miniodata:/data
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "/bin/bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9000"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
-  minio-init:
-    image: cgr.dev/chainguard/minio:latest
-    depends_on:
-      minio:
-        condition: service_healthy
-    entrypoint: >
-      /bin/bash -c "
-      mc alias set local http://minio:9000 $${MINIO_ROOT_USER:-kithadmin} $${MINIO_ROOT_PASSWORD:-kithpassword123};
-      mc mb --ignore-existing local/attachments;
-      mc mb --ignore-existing local/avatars;
-      mc mb --ignore-existing local/emojis;
-      mc mb --ignore-existing local/stickers;
-      mc anonymous set public local/attachments;
-      mc anonymous set download local/avatars;
-      mc anonymous set download local/emojis;
-      mc anonymous set download local/stickers;
-      exit 0;
-      "
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
   media-worker:
     build:
       context: ./media-worker
-      network: host
     environment:
-      RUST_LOG: ${RUST_LOG:-info,media_worker=debug}
-      DATABASE_URL: postgres://${POSTGRES_USER:-discord}:${POSTGRES_PASSWORD:-discord}@postgres:5432/${POSTGRES_DB:-discord}?sslmode=disable
+      RUST_LOG: ${RUST_LOG:-info}
+      DATABASE_URL: postgres://${POSTGRES_USER:-kith_prod}:${POSTGRES_PASSWORD:-kith_prod}@postgres:5432/${POSTGRES_DB:-kith_prod}?sslmode=disable
       NATS_URL: ${NATS_URL:-nats://nats:4222}
       NATS_STREAM: ${NATS_STREAM:-KITH_MEDIA}
       NATS_SUBJECT: ${NATS_SUBJECT:-kith.media.upload}
       NATS_DURABLE: ${NATS_DURABLE:-media-worker-group}
       S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
-      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-kithadmin}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-kith_admin}
       S3_SECRET_KEY: ${S3_SECRET_KEY:-kithpassword123}
       S3_BUCKET_ATTACHMENTS: ${S3_BUCKET_ATTACHMENTS:-attachments}
-      S3_PUBLIC_URL: ${S3_PUBLIC_URL:-http://localhost}
-      RAYON_NUM_THREADS: ${RAYON_NUM_THREADS:-4}
+      S3_PUBLIC_URL: ${S3_PUBLIC_URL:-https://kith.moadabdou.me}
+      RAYON_NUM_THREADS: ${RAYON_NUM_THREADS:-2}
     depends_on:
       postgres:
         condition: service_healthy
@@ -562,21 +498,24 @@ services:
       minio:
         condition: service_healthy
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
   read-states:
     build:
       context: ./read-states
-      network: host
       args:
         HTTP_PROXY: ${HTTP_PROXY:-}
         HTTPS_PROXY: ${HTTPS_PROXY:-}
         NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
     environment:
-      PORT: ${READ_STATES_PORT:-8085}
+      PORT: 8085
       LOG_LEVEL: ${LOG_LEVEL:-info}
       SCYLLA_HOSTS: ${SCYLLA_HOSTS:-scylla:9042}
       SCYLLA_KEYSPACE: ${SCYLLA_KEYSPACE:-kith}
-      DATABASE_URL: postgres://${POSTGRES_USER:-discord}:${POSTGRES_PASSWORD:-discord}@postgres:5432/${POSTGRES_DB:-discord}?sslmode=disable
+      DATABASE_URL: postgres://${POSTGRES_USER:-kith_prod}:${POSTGRES_PASSWORD:-kith_prod}@postgres:5432/${POSTGRES_DB:-kith_prod}?sslmode=disable
       NATS_URL: ${NATS_URL:-nats://nats:4222}
       JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me}
     ports:
@@ -594,10 +533,38 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  caddy:
+    profiles:
+      - caddy-edge
+    build:
+      context: ./deploy/caddy
+    image: kith-caddy:latest
+    ports:
+      - "${CADDY_HTTP_PORT:-8088}:80"
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      api:
+        condition: service_healthy
+      client:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:80/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 128M
 
 volumes:
   pgdata:
-  grafana-data:
   redisdata:
   scylladata:
   meilidata:

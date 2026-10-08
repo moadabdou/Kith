@@ -44,4 +44,4 @@ EXPOSE 4000
 # dials "<basename>@<resolved-ip>". Cookie shared via ERLANG_COOKIE env.
 # net_ticktime 10s: node-failure detection in ~10s instead of OTP's 60s
 # default — the kill/SIGSTOP drills (and any real failover) need it.
-CMD ["sh", "-c", "exec elixir --name \"gateway@$(hostname -i)\" --cookie \"${ERLANG_COOKIE:-dev-cluster-cookie}\" --erl \"-kernel net_ticktime 10\" -S mix run --no-halt"]
+CMD ["sh", "-c", "exec elixir --name \"gateway@$(hostname -i)\" --cookie \"${ERLANG_COOKIE:-dev-cluster-cookie}\" --erl \"-kernel net_ticktime 10 ${ERL_FLAGS:-}\" -S mix run --no-halt"]

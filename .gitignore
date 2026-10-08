@@ -1,6 +1,7 @@
 .env
 .env.*
 !.env.example
+!.env.prod.example
 
 node_modules/
 dist/
@@ -31,6 +32,7 @@ erl_crash.dump
 # Rust artifacts
 /media-worker/target/
 /media-worker/.cargo_cache/
+/read-states/target/
 
 # Binaries and local builds
 /bin/

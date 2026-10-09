@@ -1496,10 +1496,10 @@ export class SfuClient {
         }
       }
       // Screen-only degradation pin: 'maintain-resolution' on screen,
-      // explicit reset to default ('') on cam so the preference can't leak
-      // across switches on the shared sender.
-      const wantDegradation = source === 'screen' ? 'maintain-resolution' : ''
-      if ((params.degradationPreference ?? '') !== wantDegradation) {
+      // reset to browser default ('balanced') on cam so the preference can't leak
+      // across switches on the shared sender (' ' is an invalid RTCDegradationPreference enum in WebRTC).
+      const wantDegradation = source === 'screen' ? 'maintain-resolution' : 'balanced'
+      if (params.degradationPreference !== wantDegradation) {
         params.degradationPreference = wantDegradation
         changed = true
       }

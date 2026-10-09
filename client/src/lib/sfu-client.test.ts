@@ -119,7 +119,7 @@ describe('SfuClient', () => {
     // Sender parameters are stateful (mirrors a real sender): setParameters
     // applies, getParameters reflects.
     const senderParams: any = {
-      degradationPreference: '',
+      degradationPreference: 'balanced',
       encodings: [
         { rid: 'f', active: true },
         { rid: 'h', active: true },
@@ -701,7 +701,7 @@ describe('SfuClient', () => {
     expect(mockVideoSender.setParameters).toHaveBeenCalledTimes(1)
     const camParams = mockVideoSender.setParameters.mock.calls[0][0]
     expect(camParams.encodings.every((e: any) => e.active !== false)).toBe(true)
-    expect(camParams.degradationPreference ?? '').toBe('')
+    expect(camParams.degradationPreference).toBe('balanced')
     expect(mockPc.createOffer).not.toHaveBeenCalled()
 
     client.disconnect()

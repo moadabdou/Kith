@@ -201,9 +201,6 @@ func (s *MinIOStorage) PresignedGetURL(ctx context.Context, bucket, key string, 
 
 func (s *MinIOStorage) PublicURL(bucket, key string) string {
 	key = strings.TrimPrefix(key, "/")
-	if bucket != "" && strings.HasPrefix(key, bucket+"/") {
-		return fmt.Sprintf("%s/%s", s.publicURL, key)
-	}
 	if bucket == "" {
 		return fmt.Sprintf("%s/%s", s.publicURL, key)
 	}

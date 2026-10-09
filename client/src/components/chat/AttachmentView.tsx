@@ -9,8 +9,16 @@ interface AttachmentViewProps {
   channelId: string
 }
 
+function normalizeMediaUrl(url: string | undefined): string {
+  if (!url) return ''
+  if (url.includes('/attachments/') && !url.includes('/attachments/attachments/')) {
+    return url.replace('/attachments/', '/attachments/attachments/')
+  }
+  return url
+}
+
 function srcOf(a: Attachment): string {
-  return a.proxy_url || a.url
+  return normalizeMediaUrl(a.proxy_url || a.url)
 }
 
 function constrainedStyle(a: Attachment): CSSProperties | undefined {
@@ -92,7 +100,10 @@ export function AttachmentView({ attachment, channelId }: AttachmentViewProps) {
       .getAttachment(channelId, current.id)
       .then((fresh) => {
         const next = srcOf(fresh)
-        if (next && next !== src) setSrc(next)
+        if (next) {
+          const sep = next.includes('?') ? '&' : '?'
+          setSrc(`${next}${sep}_retry=${Date.now()}`)
+        }
       })
       .catch(() => {})
   }

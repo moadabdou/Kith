@@ -40,7 +40,7 @@ export function AttachmentView({ attachment, channelId }: AttachmentViewProps) {
 
     let cancelled = false
     let timer: ReturnType<typeof setTimeout>
-    const delays = [2000, 5000]
+    const delays = [2000, 3000, 5000, 5000, 10000]
     let attempt = 0
 
     const check = () => {

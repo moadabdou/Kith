@@ -209,7 +209,11 @@ $COMPOSE up -d --build client
 wait_healthy "frontend client (port 5173)" "http://127.0.0.1:5173/" 30 || log_fail "client failed to start"
 log_pass "Frontend client bundle refreshed"
 
-log_step "[Deploy Phase 7] Post-Deploy Smoke Health Checks"
+log_step "[Deploy Phase 7] Ensuring auxiliary workers (media-worker & read-states)"
+$COMPOSE up -d media-worker read-states
+log_pass "Auxiliary background workers active"
+
+log_step "[Deploy Phase 8] Post-Deploy Smoke Health Checks"
 log_info "Checking API health endpoints:"
 curl -s -f http://127.0.0.1:8082/healthz >/dev/null && log_pass "api (port 8082) healthy"
 curl -s -f http://127.0.0.1:8083/healthz >/dev/null && log_pass "api-2 (port 8083) healthy"

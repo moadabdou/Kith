@@ -217,3 +217,91 @@ func (c *MeiliClient) Search(ctx context.Context, index string, q SearchQuery) (
 	}
 	return &res, nil
 }
+
+// IndexSettings holds index configuration settings.
+type IndexSettings struct {
+	FilterableAttributes []string `json:"filterableAttributes,omitempty"`
+	SortableAttributes   []string `json:"sortableAttributes,omitempty"`
+	SearchableAttributes []string `json:"searchableAttributes,omitempty"`
+}
+
+// EnsureIndex ensures an index with primaryKey exists.
+func (c *MeiliClient) EnsureIndex(ctx context.Context, index, primaryKey string) error {
+	url := fmt.Sprintf("%s/indexes/%s", c.baseURL, index)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err == nil {
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			return nil
+		}
+	}
+
+	payload, _ := json.Marshal(map[string]string{
+		"uid":        index,
+		"primaryKey": primaryKey,
+	})
+	createReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s/indexes", c.baseURL), bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	createReq.Header.Set("Content-Type", "application/json")
+	if c.apiKey != "" {
+		createReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	createResp, err := c.httpClient.Do(createReq)
+	if err != nil {
+		return fmt.Errorf("meilisearch: create index: %w", err)
+	}
+	defer createResp.Body.Close()
+	if (createResp.StatusCode >= 200 && createResp.StatusCode < 300) || createResp.StatusCode == http.StatusConflict {
+		return nil
+	}
+	b, _ := io.ReadAll(createResp.Body)
+	return fmt.Errorf("meilisearch: create index failed (%d): %s", createResp.StatusCode, string(b))
+}
+
+// EnsureSettings updates index settings.
+func (c *MeiliClient) EnsureSettings(ctx context.Context, index string, settings IndexSettings) error {
+	body, err := json.Marshal(settings)
+	if err != nil {
+		return err
+	}
+	url := fmt.Sprintf("%s/indexes/%s/settings", c.baseURL, index)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, url, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("meilisearch: patch settings: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("meilisearch: patch settings failed (%d): %s", resp.StatusCode, string(b))
+	}
+	return nil
+}
+
+// EnsureSchema initializes the messages index and all required attributes.
+func (c *MeiliClient) EnsureSchema(ctx context.Context, index string) error {
+	if err := c.EnsureIndex(ctx, index, "id"); err != nil {
+		return err
+	}
+	return c.EnsureSettings(ctx, index, IndexSettings{
+		FilterableAttributes: []string{"guild_id", "channel_id", "author_id", "timestamp"},
+		SortableAttributes:   []string{"timestamp"},
+		SearchableAttributes: []string{"content"},
+	})
+}

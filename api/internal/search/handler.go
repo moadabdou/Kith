@@ -139,6 +139,7 @@ func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := h.Svc.SearchGuildMessages(ctx, userID, guildID, params)
 	if err != nil {
+		slog.Error("search messages failed", "guild_id", guildID, "query", q, "error", err)
 		switch {
 		case errors.Is(err, ErrQueryRequired):
 			errs.Write(w, errs.FormBody("Invalid Form Body: query parameter 'q' is required"))

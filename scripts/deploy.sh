@@ -145,6 +145,11 @@ command -v docker >/dev/null 2>&1 || log_fail "docker is required"
 $COMPOSE config --quiet || log_fail "compose.prod.yml configuration invalid"
 log_pass "Docker compose configuration valid"
 
+log_info "Ensuring Meilisearch search cluster is active..."
+$COMPOSE up -d meilisearch
+wait_healthy "meilisearch (port 7700)" "http://127.0.0.1:7700/health" 30 || log_fail "meilisearch failed to start"
+log_pass "Meilisearch search cluster healthy"
+
 log_step "[Deploy Phase 2] Running PostgreSQL database schema migrations"
 $COMPOSE run --rm migrate
 log_pass "Database migrations applied cleanly"
@@ -212,8 +217,8 @@ $COMPOSE up -d --build client
 wait_healthy "frontend client (port 5173)" "http://127.0.0.1:5173/" 30 || log_fail "client failed to start"
 log_pass "Frontend client bundle refreshed"
 
-log_step "[Deploy Phase 7] Ensuring auxiliary workers (media-worker & read-states)"
-$COMPOSE up -d media-worker read-states
+log_step "[Deploy Phase 7] Ensuring auxiliary workers (meilisearch, media-worker & read-states)"
+$COMPOSE up -d meilisearch media-worker read-states
 log_pass "Auxiliary background workers active"
 
 log_step "[Deploy Phase 8] Post-Deploy Smoke Health Checks"
@@ -243,5 +248,8 @@ done
 log_info "Checking SFU WebRTC signaling health:"
 curl -s -f http://127.0.0.1:5000/healthz >/dev/null && log_pass "sfu-1 (port 5000) healthy"
 curl -s -f http://127.0.0.1:5001/healthz >/dev/null && log_pass "sfu-2 (port 5001) healthy"
+
+log_info "Checking Search engine health:"
+curl -s -f http://127.0.0.1:7700/health >/dev/null && log_pass "meilisearch (port 7700) healthy"
 
 log_pass "All post-deploy smoke health checks passed successfully!"

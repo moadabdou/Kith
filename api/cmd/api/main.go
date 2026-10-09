@@ -348,6 +348,20 @@ func main() {
 	var meiliClient *search.MeiliClient
 	if meiliURL != "" {
 		meiliClient = search.NewMeiliClient(meiliURL, meiliKey)
+		go func() {
+			for attempt := 1; attempt <= 15; attempt++ {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				err := meiliClient.EnsureSchema(ctx, search.DefaultIndexName)
+				cancel()
+				if err == nil {
+					slog.Info("meilisearch schema verified and configured", "index", search.DefaultIndexName)
+					return
+				}
+				slog.Warn("meilisearch schema init pending, retrying...", "attempt", attempt, "error", err)
+				time.Sleep(2 * time.Second)
+			}
+			slog.Error("failed to initialize meilisearch schema after retries")
+		}()
 	}
 
 	searchOpts := []search.ServiceOption{

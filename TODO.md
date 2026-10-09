@@ -48,10 +48,11 @@
 
 ## 4. Message Search Returns 500 Internal Server Error
 - **Symptom**: Searching for messages (`/api/guilds/{id}/messages/search?q=nice&limit=25&offset=0`) fails with HTTP 500 (`Internal Server Error`) and displays "0 Results / No Results Found".
-- [ ] **Action Items**:
-  - [ ] Inspect `api/internal/search/` handler and Elasticsearch/PostgreSQL/Scylla search query execution.
-  - [ ] Verify search backend connection and permissions on production (`kith-api-1` / Elasticsearch / Postgres).
-  - [ ] Fix query execution or error handling and add automated test coverage.
+- [x] **Action Items**:
+  - [x] Inspect `api/internal/search/` handler and Meilisearch query execution.
+  - [x] Verify search backend connection and permissions on production (`kith-api-1` / Meilisearch / Postgres / Scylla).
+  - [x] Fix query execution, add self-healing schema initialization to `MeiliClient`, and add automated test coverage.
+  - [x] Add `meilisearch` to `compose.prod.yml` dependencies, loopback port binding, and `deploy.sh` pipeline.
 
 ---
 

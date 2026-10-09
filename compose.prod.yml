@@ -85,7 +85,7 @@ services:
   scylla-init:
     image: scylladb/scylla:6.2
     entrypoint: ["/bin/sh", "-c"]
-    command: ["cqlsh scylla 9042 -f /cql/001_create_messages.cql && cqlsh scylla 9042 -f /cql/002_create_read_states.cql && cqlsh scylla 9042 -f /cql/003_create_reactions.cql && cqlsh scylla 9042 -f /cql/004_create_pinned_messages.cql"]
+    command: ["cqlsh scylla 9042 -f /cql/001_create_messages.cql && cqlsh scylla 9042 -f /cql/002_create_read_states.cql && cqlsh scylla 9042 -f /cql/003_create_reactions.cql && cqlsh scylla 9042 -f /cql/004_create_pinned_messages.cql && (cqlsh scylla 9042 -f /cql/005_add_stickers_to_messages.cql || true) && cqlsh scylla 9042 -f /cql/006_create_mention_index.cql"]
     volumes:
       - ./api/cql:/cql:ro
     depends_on:
@@ -139,15 +139,20 @@ services:
       minio:
         condition: service_healthy
     restart: "no"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-kith_admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-kithpassword123}
     entrypoint: >
       /bin/bash -c "
       mc alias set local http://minio:9000 $${MINIO_ROOT_USER:-kith_admin} $${MINIO_ROOT_PASSWORD:-kithpassword123};
       mc mb --ignore-existing local/attachments;
       mc mb --ignore-existing local/avatars;
+      mc mb --ignore-existing local/kith-attachments;
+      mc mb --ignore-existing local/kith-avatars;
       mc mb --ignore-existing local/emojis;
       mc mb --ignore-existing local/stickers;
-      mc anonymous set public local/attachments;
       mc anonymous set download local/avatars;
+      mc anonymous set download local/kith-avatars;
       mc anonymous set download local/emojis;
       mc anonymous set download local/stickers;
       exit 0;

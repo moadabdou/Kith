@@ -46,7 +46,7 @@ defmodule Gateway.Guild.Members do
   # Keyset pagination on (joined_at, user_id) — same ordering as the REST
   # ListMembers query. Roles aggregated per member; NULL when roleless.
   @batch_sql """
-  SELECT m.user_id, u.username, to_char(u.discriminator, 'FM0000'),
+  SELECT m.user_id, u.username, to_char(u.discriminator, 'FM0000'), u.avatar,
          m.nickname, m.joined_at,
          coalesce(array_agg(mr.role_id::text ORDER BY mr.role_id) FILTER (WHERE mr.role_id IS NOT NULL), '{}')
   FROM members m
@@ -55,7 +55,7 @@ defmodule Gateway.Guild.Members do
   WHERE m.guild_id = $1
     AND u.username ILIKE $2 ESCAPE '\\'
     AND ($3::timestamptz IS NULL OR (m.joined_at, m.user_id) > ($3::timestamptz, $4::bigint))
-  GROUP BY m.user_id, u.username, u.discriminator, m.nickname, m.joined_at
+  GROUP BY m.user_id, u.username, u.discriminator, u.avatar, m.nickname, m.joined_at
   ORDER BY m.joined_at, m.user_id
   LIMIT $5
   """
@@ -215,12 +215,13 @@ defmodule Gateway.Guild.Members do
     }
   end
 
-  defp build_member([user_id, username, discriminator, nickname, joined_at, roles]) do
+  defp build_member([user_id, username, discriminator, avatar, nickname, joined_at, roles]) do
     %{
       "user" => %{
         "id" => to_string(user_id),
         "username" => username,
-        "discriminator" => discriminator
+        "discriminator" => discriminator,
+        "avatar" => avatar
       },
       "roles" => roles || [],
       "nick" => nickname,
@@ -275,7 +276,7 @@ defmodule Gateway.Guild.Members do
   defp cursor_from([]), do: nil
 
   defp cursor_from(rows) do
-    [user_id, _username, _disc, _nick, joined_at, _roles] = List.last(rows)
+    [user_id, _username, _disc, _avatar, _nick, joined_at, _roles] = List.last(rows)
     {joined_at, user_id}
   end
 

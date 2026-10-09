@@ -47,9 +47,11 @@ defmodule Gateway.Guild.MembersTest do
     @users
     |> Enum.with_index()
     |> Enum.each(fn {{uid, username, disc}, i} ->
+      avatar = if username == "alice", do: "https://example.com/alice.png", else: nil
+
       exec(
-        "INSERT INTO users (id, username, discriminator, email, password_hash) VALUES ($1, $2, $3, $4, 'x') ON CONFLICT DO NOTHING",
-        [uid, username, disc, "member#{i}@members.test"]
+        "INSERT INTO users (id, username, discriminator, email, password_hash, avatar) VALUES ($1, $2, $3, $4, 'x', $5) ON CONFLICT DO NOTHING",
+        [uid, username, disc, "member#{i}@members.test", avatar]
       )
     end)
 
@@ -142,16 +144,18 @@ defmodule Gateway.Guild.MembersTest do
     assert seqs == Enum.sort(seqs)
     assert length(Enum.uniq(seqs)) == 3
 
-    # Full member shape: alice carries role + nick; bob carries neither
+    # Full member shape: alice carries role + nick + avatar; bob carries neither
     alice = Enum.at(payload(Enum.at(chunks, 0))["members"], 0)
     assert alice["user"]["id"] == to_string(elem(Enum.at(@users, 0), 0))
     assert alice["user"]["discriminator"] == "0001"
+    assert alice["user"]["avatar"] == "https://example.com/alice.png"
     assert alice["roles"] == [to_string(@role_id)]
     assert alice["nick"] == "Ali"
     assert String.contains?(alice["joined_at"], "T")
 
     bob = Enum.at(payload(Enum.at(chunks, 1))["members"], 0)
     assert bob["user"]["username"] == "bob"
+    assert bob["user"]["avatar"] == nil
     assert bob["roles"] == []
     assert bob["nick"] == nil
   end

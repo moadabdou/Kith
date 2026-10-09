@@ -51,4 +51,10 @@ bench-search-cliff:
 init-meilisearch:
 	./scripts/init_meilisearch.sh
 
-.PHONY: migrate-up migrate-down migrate-force psql cqlsh scylla-status gateway-test smoke chaos-phase0 chaos-phase9-reactions bench-messages-setup bench-messages-load bench-search-cliff init-meilisearch
+deploy:
+	@./scripts/deploy.sh
+
+backup:
+	@./scripts/backup.sh
+
+.PHONY: migrate-up migrate-down migrate-force psql cqlsh scylla-status gateway-test smoke chaos-phase0 chaos-phase9-reactions bench-messages-setup bench-messages-load bench-search-cliff init-meilisearch deploy backup

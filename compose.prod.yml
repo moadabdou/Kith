@@ -322,7 +322,7 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-kith_prod}:${POSTGRES_PASSWORD:-kith_prod}@postgres:5432/${POSTGRES_DB:-kith_prod}?sslmode=disable
       JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me}
       ERLANG_COOKIE: ${ERLANG_COOKIE:-prod-cluster-cookie}
-      ERL_FLAGS: ${ERL_FLAGS:-+MBas 1024}
+      ERL_FLAGS: ${ERL_FLAGS:-}
       VOICE_SFU_POOL: ${VOICE_SFU_POOL:-sfu:5000,sfu-2:5001}
       PRESENCE_IDLE_THRESHOLD_MS: ${PRESENCE_IDLE_THRESHOLD_MS:-120000}
     networks:
@@ -371,7 +371,7 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-kith_prod}:${POSTGRES_PASSWORD:-kith_prod}@postgres:5432/${POSTGRES_DB:-kith_prod}?sslmode=disable
       JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me}
       ERLANG_COOKIE: ${ERLANG_COOKIE:-prod-cluster-cookie}
-      ERL_FLAGS: ${ERL_FLAGS:-+MBas 1024}
+      ERL_FLAGS: ${ERL_FLAGS:-}
       VOICE_SFU_POOL: ${VOICE_SFU_POOL:-sfu:5000,sfu-2:5001}
       PRESENCE_IDLE_THRESHOLD_MS: ${PRESENCE_IDLE_THRESHOLD_MS:-120000}
     networks:

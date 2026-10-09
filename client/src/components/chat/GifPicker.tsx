@@ -222,8 +222,8 @@ export function GifPicker({ onSelectGif, onClose, position }: GifPickerProps) {
       <div className="gif-picker-body" ref={scrollContainerRef}>
         {loading && gifs.length === 0 ? (
           <div className="gif-skeletons">
-            {Array.from({ length: 8 }).map((_, i) => (
-              <div key={i} className="gif-skeleton-card" />
+            {[140, 180, 120, 160, 190, 130, 170, 150].map((h, i) => (
+              <div key={i} className="gif-skeleton-card" style={{ height: `${h}px` }} />
             ))}
           </div>
         ) : gifs.length === 0 ? (
@@ -235,32 +235,14 @@ export function GifPicker({ onSelectGif, onClose, position }: GifPickerProps) {
         ) : (
           <div className="gif-masonry-grid">
             {gifs.map((gif, idx) => (
-              <div
+              <GifPickerCard
                 key={`${gif.id}-${idx}`}
-                className="gif-card"
-                onClick={() => {
-                  onSelectGif(gif.url)
+                gif={gif}
+                onSelect={(url) => {
+                  onSelectGif(url)
                   onClose()
                 }}
-                tabIndex={0}
-                role="button"
-                aria-label={gif.title || 'Animated GIF'}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault()
-                    onSelectGif(gif.url)
-                    onClose()
-                  }
-                }}
-              >
-                <img
-                  src={gif.preview_url || gif.url}
-                  alt={gif.title || 'GIF'}
-                  className="gif-img"
-                  loading="lazy"
-                />
-                {gif.title && <div className="gif-overlay">{gif.title}</div>}
-              </div>
+              />
             ))}
           </div>
         )}
@@ -275,6 +257,52 @@ export function GifPicker({ onSelectGif, onClose, position }: GifPickerProps) {
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+interface GifPickerCardProps {
+  gif: GIFItem
+  onSelect: (url: string) => void
+}
+
+function GifPickerCard({ gif, onSelect }: GifPickerCardProps) {
+  const [loaded, setLoaded] = useState(false)
+
+  // Calculate bounded aspect ratio to eliminate masonry layout jump
+  const ratio =
+    gif.width && gif.height
+      ? Math.max(0.65, Math.min(2.2, gif.width / gif.height))
+      : 16 / 9
+
+  return (
+    <div
+      className={`gif-card ${loaded ? 'loaded' : 'loading'}`}
+      style={{ aspectRatio: `${ratio}` }}
+      onClick={() => onSelect(gif.url)}
+      tabIndex={0}
+      role="button"
+      aria-label={gif.title || 'Animated GIF'}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onSelect(gif.url)
+        }
+      }}
+    >
+      {!loaded && (
+        <div className="gif-card-placeholder">
+          <div className="gif-card-shimmer" />
+        </div>
+      )}
+      <img
+        src={gif.preview_url || gif.url}
+        alt={gif.title || 'GIF'}
+        className={`gif-img ${loaded ? 'loaded' : ''}`}
+        loading="lazy"
+        onLoad={() => setLoaded(true)}
+      />
+      {gif.title && <div className="gif-overlay">{gif.title}</div>}
     </div>
   )
 }

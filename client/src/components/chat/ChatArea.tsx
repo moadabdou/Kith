@@ -23,6 +23,7 @@ import type { Channel, Guild, GuildEmoji, GuildSticker, Member, Message, Role, S
 import { SearchBar } from '../search/SearchBar'
 import { SearchResults } from '../search/SearchResults'
 import { AttachmentView } from './AttachmentView'
+import { ChatGifEmbed } from './ChatGifEmbed'
 import { extractGifUrls, stripGifUrls } from '../../lib/gifs'
 import { DeleteMessageModal } from './DeleteMessageModal'
 import { MessageInput } from './MessageInput'
@@ -1878,20 +1879,15 @@ export function ChatArea({
                         return (
                           <div className="message-gif-embeds">
                             {gifUrls.map((url, idx) => (
-                              <div key={idx} className="chat-gif-embed">
-                                <a href={url} target="_blank" rel="noopener noreferrer">
-                                  <img
-                                    src={url}
-                                    alt="GIF"
-                                    loading="lazy"
-                                    onLoad={() => {
-                                      if (isAtBottomRef.current || Date.now() < userJustSentRef.current) {
-                                        scrollToBottom(false)
-                                      }
-                                    }}
-                                  />
-                                </a>
-                              </div>
+                              <ChatGifEmbed
+                                key={idx}
+                                url={url}
+                                onMediaLoad={() => {
+                                  if (isAtBottomRef.current || Date.now() < userJustSentRef.current) {
+                                    scrollToBottom(false)
+                                  }
+                                }}
+                              />
                             ))}
                           </div>
                         )

@@ -2077,6 +2077,14 @@ body {
   column-count: 2;
   column-gap: 8px;
 }
+@keyframes gifShimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
 
 .gif-card {
   position: relative;
@@ -2087,6 +2095,20 @@ body {
   break-inside: avoid;
   background: var(--bg-secondary, #2f3136);
   transition: transform 0.15s ease, box-shadow 0.15s ease;
+  width: 100%;
+}
+
+.gif-card-placeholder {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.03) 25%,
+    rgba(255, 255, 255, 0.08) 50%,
+    rgba(255, 255, 255, 0.03) 75%
+  );
+  background-size: 200% 100%;
+  animation: gifShimmer 1.8s infinite linear;
 }
 
 .gif-card:hover {
@@ -2100,9 +2122,16 @@ body {
 
 .gif-img {
   width: 100%;
+  height: 100%;
   display: block;
   object-fit: cover;
   border-radius: 6px;
+  opacity: 0;
+  transition: opacity 0.2s ease-in-out;
+}
+
+.gif-img.loaded {
+  opacity: 1;
 }
 
 .gif-overlay {
@@ -2135,8 +2164,14 @@ body {
   height: 120px;
   margin-bottom: 8px;
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.06);
-  animation: pulse 1.5s infinite ease-in-out;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.03) 25%,
+    rgba(255, 255, 255, 0.07) 50%,
+    rgba(255, 255, 255, 0.03) 75%
+  );
+  background-size: 200% 100%;
+  animation: gifShimmer 1.8s infinite linear;
   break-inside: avoid;
 }
 
@@ -2168,7 +2203,7 @@ body {
 .chat-gif-embed {
   margin-top: 4px;
   width: fit-content;
-  max-width: fit-content;
+  max-width: 400px;
   align-self: flex-start;
   border-radius: 8px;
   overflow: hidden;
@@ -2187,7 +2222,49 @@ body {
   text-decoration: none;
 }
 
-.chat-gif-embed img {
+.chat-gif-placeholder {
+  width: 320px;
+  max-width: 100%;
+  height: 200px;
+  aspect-ratio: 16 / 9;
+  border-radius: 8px;
+  background: var(--bg-secondary, #2f3136);
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: flex-end;
+  padding: 8px;
+}
+
+.chat-gif-placeholder-shimmer {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.02) 25%,
+    rgba(255, 255, 255, 0.07) 50%,
+    rgba(255, 255, 255, 0.02) 75%
+  );
+  background-size: 200% 100%;
+  animation: gifShimmer 1.8s infinite linear;
+}
+
+.chat-gif-badge {
+  position: absolute;
+  bottom: 8px;
+  left: 8px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.65);
+  color: #ffffff;
+  backdrop-filter: blur(4px);
+  z-index: 2;
+}
+
+.chat-gif-img {
   display: block;
   max-width: 400px;
   max-height: 320px;
@@ -2196,10 +2273,42 @@ body {
   object-fit: contain;
   border-radius: 8px;
   background: transparent;
+  transition: opacity 0.2s ease-in-out;
+}
+
+.chat-gif-img.loading {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.chat-gif-img.loaded {
+  opacity: 1;
+}
+
+.chat-gif-error {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--text-muted, #949ba4);
+  font-size: 12px;
+}
+
+.chat-gif-error-link {
+  color: var(--brand-500, #5865f2);
+  text-decoration: underline;
+  margin-left: 4px;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .chat-gif-embed img {
+  .chat-gif-img,
+  .gif-skeleton-card,
+  .chat-gif-placeholder-shimmer,
+  .gif-card-placeholder {
     animation-play-state: paused !important;
   }
 }

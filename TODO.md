@@ -58,14 +58,14 @@
 
 ## 5. GIF Picker and Chat Loading Placeholders
 - **Symptom**: GIFs in both the GIF picker modal and within chat messages pop in abruptly without a skeleton or loading placeholder while downloading.
-- [ ] **Action Items**:
-  - [ ] **GIF Picker**: Add a shimmer / skeleton placeholder or blurred preview box for GIF items while images/previews load.
-  - [ ] **Chat Messages**: Add a loading skeleton / aspect-ratio placeholder for inline GIF messages so layout does not jump and user gets visual feedback while the GIF loads.
+- [x] **Action Items**:
+  - [x] **GIF Picker**: Add a shimmer / skeleton placeholder with aspect-ratio preservation for GIF items while previews load.
+  - [x] **Chat Messages**: Add a loading skeleton / aspect-ratio placeholder for inline GIF messages so layout does not jump and user gets visual feedback while the GIF loads.
 
 ---
 
 ## 6. Client Build & Deployment Cache Verification
 - **Symptom**: Console logs show `index-CH-Ka5SH.js` throwing `TypeError: Failed to read the 'degradationPreference' property... The provided value '' is not a valid enum value`, indicating the browser is still loading an older bundle from before commit `94c2b0f`.
-- [ ] **Action Items**:
-  - [ ] Ensure deployment script rebuilds and deploys frontend assets with cache-busting headers or service worker eviction.
-  - [ ] Confirm clients load the latest bundle containing the `'balanced'` degradation preference fix.
+- [x] **Action Items**:
+  - [x] Ensure deployment script rebuilds and deploys frontend assets with cache-busting headers or service worker eviction.
+  - [x] Confirm clients load the latest bundle containing the `'balanced'` degradation preference fix.

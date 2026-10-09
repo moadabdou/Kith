@@ -152,7 +152,8 @@ log_pass "Database migrations applied cleanly"
 log_step "[Deploy Phase 3] Rolling Deploy Go API Cluster (api & api-2)"
 # 1. Build new API images
 log_info "Building Go API container image..."
-$COMPOSE build api api-2
+$COMPOSE build api
+docker tag kith-api:latest kith-api-2:latest 2>/dev/null || true
 
 # 2. Ensure api-2 (port 8083) is active to handle traffic during api recreate
 log_info "Bringing up api-2 (port 8083)..."
@@ -173,7 +174,8 @@ log_pass "Go API cluster rolling update complete (api & api-2 healthy)"
 log_step "[Deploy Phase 4] Rolling Deploy Elixir Gateway Cluster (gateway & gateway-2)"
 # 1. Build new Gateway images
 log_info "Building Elixir Gateway container image..."
-$COMPOSE build gateway gateway-2
+$COMPOSE build gateway
+docker tag kith-gateway:latest kith-gateway-2:latest 2>/dev/null || true
 
 # 2. Ensure gateway-2 (port 4001) is active
 log_info "Bringing up gateway-2 (port 4001)..."
@@ -193,7 +195,8 @@ log_pass "Elixir Gateway cluster rolling update complete (gateway & gateway-2 he
 
 log_step "[Deploy Phase 5] Rolling Deploy SFU Cluster (sfu & sfu-2)"
 log_info "Building SFU container image..."
-$COMPOSE build sfu sfu-2
+$COMPOSE build sfu
+docker tag kith-sfu:latest kith-sfu-2:latest 2>/dev/null || true
 
 log_info "Recreating sfu-2 (port 5001)..."
 $COMPOSE up -d --force-recreate sfu-2

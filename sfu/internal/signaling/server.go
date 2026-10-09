@@ -299,6 +299,9 @@ func (s *Server) handleSession(ctx context.Context, conn *websocket.Conn) {
 				})
 			}
 
+		case "ping":
+			_ = writeJSON(Message{Type: "pong"})
+
 		case "leave":
 			isExplicitLeave = true
 			return

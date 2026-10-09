@@ -24,10 +24,16 @@ type subscriberEntry struct {
 }
 
 type peerEntry struct {
-	peer                 *peer.Peer
-	renegotiate          RenegotiateCallback
-	renegotiationPending bool
+	peer                  *peer.Peer
+	renegotiate           RenegotiateCallback
+	renegotiationPending  bool
+	renegotiationTimer    *time.Timer
+	renegotiationAttempts int
 }
+
+// RenegotiationTimeout is the maximum duration to wait for a subscriber to answer a downstream renegotiation offer.
+// Exposed as a package variable so unit tests can override with shorter durations.
+var RenegotiationTimeout = 5 * time.Second
 
 // Router coordinates audio routing between publishers and subscribers within a room.
 type Router struct {
@@ -422,6 +428,11 @@ func (r *Router) AddPeer(p *peer.Peer, renegotiate RenegotiateCallback) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	if existing, exists := r.peers[p.UserID]; exists && existing != nil && existing.renegotiationTimer != nil {
+		existing.renegotiationTimer.Stop()
+		existing.renegotiationTimer = nil
+	}
+
 	r.peers[p.UserID] = &peerEntry{
 		peer:        p,
 		renegotiate: renegotiate,
@@ -508,6 +519,10 @@ func (r *Router) RemovePeer(userID string) {
 		delete(r.subscribers, userID)
 	}
 
+	if entry, ok := r.peers[userID]; ok && entry != nil && entry.renegotiationTimer != nil {
+		entry.renegotiationTimer.Stop()
+		entry.renegotiationTimer = nil
+	}
 	delete(r.peers, userID)
 	r.mu.Unlock()
 
@@ -980,6 +995,17 @@ func (r *Router) TriggerRenegotiation(userID string) {
 		return
 	}
 
+	r.mu.Lock()
+	if entry, ok := r.peers[userID]; ok && entry != nil {
+		if entry.renegotiationTimer != nil {
+			entry.renegotiationTimer.Stop()
+		}
+		entry.renegotiationTimer = time.AfterFunc(RenegotiationTimeout, func() {
+			r.handleRenegotiationTimeout(userID)
+		})
+	}
+	r.mu.Unlock()
+
 	slog.Info("Sending downstream renegotiation offer to subscriber", "user_id", userID)
 	cb(*offer)
 }
@@ -988,13 +1014,85 @@ func (r *Router) TriggerRenegotiation(userID string) {
 func (r *Router) OnSignalingStateStable(userID string) {
 	r.mu.Lock()
 	entry, ok := r.peers[userID]
-	if !ok || entry == nil || !entry.renegotiationPending {
+	if !ok || entry == nil {
+		r.mu.Unlock()
+		return
+	}
+
+	if entry.renegotiationTimer != nil {
+		entry.renegotiationTimer.Stop()
+		entry.renegotiationTimer = nil
+	}
+	entry.renegotiationAttempts = 0
+
+	if !entry.renegotiationPending {
 		r.mu.Unlock()
 		return
 	}
 	r.mu.Unlock()
 
 	r.TriggerRenegotiation(userID)
+}
+
+func (r *Router) handleRenegotiationTimeout(userID string) {
+	r.mu.Lock()
+	entry, ok := r.peers[userID]
+	if !ok || entry == nil || entry.peer == nil || entry.peer.PC == nil {
+		r.mu.Unlock()
+		return
+	}
+
+	state := entry.peer.PC.SignalingState()
+	if state != webrtc.SignalingStateHaveLocalOffer {
+		if entry.renegotiationTimer != nil {
+			entry.renegotiationTimer.Stop()
+			entry.renegotiationTimer = nil
+		}
+		r.mu.Unlock()
+		return
+	}
+
+	entry.renegotiationAttempts++
+	attempts := entry.renegotiationAttempts
+	cb := entry.renegotiate
+	p := entry.peer
+	r.mu.Unlock()
+
+	slog.Warn("Renegotiation answer timed out for subscriber",
+		"user_id", userID,
+		"state", state.String(),
+		"attempt", attempts,
+	)
+
+	// Attempt 1: Re-transmit the pending offer over WebSocket in case the offer/answer was dropped
+	if attempts <= 1 && cb != nil {
+		pending := p.PC.PendingLocalDescription()
+		if pending != nil {
+			slog.Info("Re-transmitting pending renegotiation offer to subscriber", "user_id", userID)
+			r.mu.Lock()
+			if e, exists := r.peers[userID]; exists && e != nil {
+				if e.renegotiationTimer != nil {
+					e.renegotiationTimer.Stop()
+				}
+				e.renegotiationTimer = time.AfterFunc(RenegotiationTimeout, func() {
+					r.handleRenegotiationTimeout(userID)
+				})
+			}
+			r.mu.Unlock()
+
+			cleanOffer := *pending
+			cleanOffer.SDP = peer.SanitizeSDPOffer(cleanOffer.SDP)
+			cb(cleanOffer)
+			return
+		}
+	}
+
+	// Attempts exhausted (> 1): subscriber is unresponsive and wedged in HaveLocalOffer.
+	// Close the wedged peer to unwedge router resources and force client reconnection.
+	slog.Error("Subscriber renegotiation unwedge: closing unresponsive peer connection",
+		"user_id", userID,
+	)
+	_ = p.Close()
 }
 
 // Close terminates all publisher uplinks and subscriber downlinks in the router.
@@ -1016,5 +1114,12 @@ func (r *Router) Close() {
 		}
 	}
 	r.subscribers = make(map[string]map[string]*subscriberEntry)
+
+	for _, entry := range r.peers {
+		if entry != nil && entry.renegotiationTimer != nil {
+			entry.renegotiationTimer.Stop()
+			entry.renegotiationTimer = nil
+		}
+	}
 	r.peers = make(map[string]*peerEntry)
 }

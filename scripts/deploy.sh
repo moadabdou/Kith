@@ -191,12 +191,25 @@ $COMPOSE up -d --force-recreate gateway-2
 wait_healthy "backup gateway-2 (port 4001)" "http://127.0.0.1:4001/healthz" 45 || log_fail "backup gateway-2 failed to restart"
 log_pass "Elixir Gateway cluster rolling update complete (gateway & gateway-2 healthy)"
 
-log_step "[Deploy Phase 5] Refreshing static frontend client bundle"
+log_step "[Deploy Phase 5] Rolling Deploy SFU Cluster (sfu & sfu-2)"
+log_info "Building SFU container image..."
+$COMPOSE build sfu sfu-2
+
+log_info "Recreating sfu-2 (port 5001)..."
+$COMPOSE up -d --force-recreate sfu-2
+wait_healthy "backup sfu-2 (port 5001)" "http://127.0.0.1:5001/healthz" 30 || log_fail "sfu-2 failed to restart"
+
+log_info "Recreating primary sfu (port 5000)..."
+$COMPOSE up -d --force-recreate sfu
+wait_healthy "primary sfu (port 5000)" "http://127.0.0.1:5000/healthz" 30 || log_fail "primary sfu failed to restart"
+log_pass "SFU cluster rolling update complete (sfu & sfu-2 healthy)"
+
+log_step "[Deploy Phase 6] Refreshing static frontend client bundle"
 $COMPOSE up -d --build client
 wait_healthy "frontend client (port 5173)" "http://127.0.0.1:5173/" 30 || log_fail "client failed to start"
 log_pass "Frontend client bundle refreshed"
 
-log_step "[Deploy Phase 6] Post-Deploy Smoke Health Checks"
+log_step "[Deploy Phase 7] Post-Deploy Smoke Health Checks"
 log_info "Checking API health endpoints:"
 curl -s -f http://127.0.0.1:8082/healthz >/dev/null && log_pass "api (port 8082) healthy"
 curl -s -f http://127.0.0.1:8083/healthz >/dev/null && log_pass "api-2 (port 8083) healthy"

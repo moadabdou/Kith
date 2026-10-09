@@ -339,6 +339,75 @@ func TestRouter_PostponedRenegotiation(t *testing.T) {
 	}
 }
 
+func TestRouter_RenegotiationSafetyTimeout_RetransmitAndUnwedge(t *testing.T) {
+	origTimeout := RenegotiationTimeout
+	RenegotiationTimeout = 50 * time.Millisecond
+	defer func() { RenegotiationTimeout = origTimeout }()
+
+	api, err := peer.CreateAPI(peer.Config{})
+	if err != nil {
+		t.Fatalf("failed to create api: %v", err)
+	}
+
+	p, err := peer.NewPeer(api, webrtc.Configuration{}, "user_timeout", "sess_timeout", "chan_timeout", "guild_timeout")
+	if err != nil {
+		t.Fatalf("failed to create peer: %v", err)
+	}
+	defer p.Close()
+	go func() {
+		for range p.Candidates {
+		}
+	}()
+
+	r := NewRouter("chan_timeout")
+	defer r.Close()
+
+	renegChan := make(chan webrtc.SessionDescription, 5)
+	r.AddPeer(p, func(offer webrtc.SessionDescription) {
+		renegChan <- offer
+	})
+
+	// Add a track to subscriber to allow creating an offer
+	track, _ := webrtc.NewTrackLocalStaticRTP(
+		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus}, "audio", "stream",
+	)
+	_, _ = p.AddTrack(track)
+
+	// Trigger renegotiation
+	r.TriggerRenegotiation("user_timeout")
+
+	// 1. Initial offer should be received
+	select {
+	case <-renegChan:
+		// Received initial offer
+	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("timed out waiting for initial renegotiation offer")
+	}
+
+	// 2. Peer is in HaveLocalOffer
+	if p.PC.SignalingState() != webrtc.SignalingStateHaveLocalOffer {
+		t.Fatalf("expected state HaveLocalOffer, got %s", p.PC.SignalingState())
+	}
+
+	// 3. Since subscriber does not answer, timeout should fire and retransmit offer (attempt 1)
+	select {
+	case <-renegChan:
+		// Received retransmitted offer
+	case <-time.After(300 * time.Millisecond):
+		t.Fatalf("timed out waiting for retransmitted renegotiation offer")
+	}
+
+	// 4. Since subscriber still does not answer, attempts exhaust and peer is closed to unwedge
+	select {
+	case <-time.After(300 * time.Millisecond):
+		// Give time for final timeout to trigger close
+	}
+
+	if p.PC.SignalingState() != webrtc.SignalingStateClosed {
+		t.Errorf("expected wedged peer to be closed, got signaling state %s", p.PC.SignalingState())
+	}
+}
+
 func TestRouter_RejoinAndForward(t *testing.T) {
 	api, err := peer.CreateAPI(peer.Config{})
 	if err != nil {

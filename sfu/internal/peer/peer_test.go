@@ -142,3 +142,100 @@ func TestPeer_WriteRTCP(t *testing.T) {
 		t.Errorf("expected error writing RTCP to closed peer, got nil")
 	}
 }
+
+func TestSanitizeSDPOffer(t *testing.T) {
+	inputSDP := "v=0\r\n" +
+		"o=- 12345 2 IN IP4 127.0.0.1\r\n" +
+		"s=-\r\n" +
+		"t=0 0\r\n" +
+		"m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n" +
+		"a=mid:0\r\n" +
+		"a=msid:kith-stream-alice kith-track-alice-audio\r\n" +
+		"a=msid:kith-stream-alice kith-track-alice-audio\r\n" + // duplicate in audio section
+		"m=video 9 UDP/TLS/RTP/SAVPF 96\r\n" +
+		"a=mid:1\r\n" +
+		"a=msid:kith-stream-alice kith-track-alice-video\r\n" +
+		"a=msid:kith-stream-alice kith-track-alice-video\r\n" // duplicate in video section
+
+	sanitized := SanitizeSDPOffer(inputSDP)
+
+	// In the sanitized SDP, each duplicate line should appear exactly once
+	audioCount := strings.Count(sanitized, "a=msid:kith-stream-alice kith-track-alice-audio")
+	if audioCount != 1 {
+		t.Errorf("expected 1 audio msid line, got %d. Output:\n%s", audioCount, sanitized)
+	}
+
+	videoCount := strings.Count(sanitized, "a=msid:kith-stream-alice kith-track-alice-video")
+	if videoCount != 1 {
+		t.Errorf("expected 1 video msid line, got %d. Output:\n%s", videoCount, sanitized)
+	}
+
+	// Test cross-section deduplication with inactive section
+	crossSectionSDP := "v=0\r\n" +
+		"m=video 9 UDP/TLS/RTP/SAVPF 96\r\n" +
+		"a=mid:1\r\n" +
+		"a=inactive\r\n" +
+		"a=msid:kith-stream-alice kith-track-alice-video\r\n" +
+		"m=video 9 UDP/TLS/RTP/SAVPF 96\r\n" +
+		"a=mid:2\r\n" +
+		"a=sendrecv\r\n" +
+		"a=msid:kith-stream-alice kith-track-alice-video\r\n"
+
+	sanitizedCross := SanitizeSDPOffer(crossSectionSDP)
+	if strings.Count(sanitizedCross, "a=msid:kith-stream-alice kith-track-alice-video") != 1 {
+		t.Errorf("expected exactly 1 msid across sections, got %d. Output:\n%s",
+			strings.Count(sanitizedCross, "a=msid:kith-stream-alice kith-track-alice-video"), sanitizedCross)
+	}
+	if strings.Contains(sanitizedCross, "a=inactive\r\na=msid") {
+		t.Errorf("inactive section should not contain a=msid")
+	}
+
+	// Test track-ID duplication across differing stream prefixes
+	differingStreamSDP := "v=0\r\n" +
+		"m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n" +
+		"a=mid:0\r\n" +
+		"a=sendrecv\r\n" +
+		"a=msid:stream-A track-123\r\n" +
+		"m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n" +
+		"a=mid:1\r\n" +
+		"a=sendrecv\r\n" +
+		"a=msid:stream-B track-123\r\n"
+
+	sanitizedDiff := SanitizeSDPOffer(differingStreamSDP)
+	if strings.Count(sanitizedDiff, "track-123") != 1 {
+		t.Errorf("expected track-123 to appear only once despite differing stream prefixes, got:\n%s", sanitizedDiff)
+	}
+}
+
+func TestPionRenegotiationDuplicateMsid(t *testing.T) {
+	api, _ := CreateAPI(Config{})
+	pc, _ := api.NewPeerConnection(webrtc.Configuration{})
+	defer pc.Close()
+
+	track1, _ := webrtc.NewTrackLocalStaticRTP(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8}, "track-video", "stream-video")
+	sender, _ := pc.AddTrack(track1)
+	offer1, _ := pc.CreateOffer(nil)
+	_ = pc.SetLocalDescription(offer1)
+
+	// In WebRTC Unified Plan, to simulate an answer we change direction to recvonly/inactive
+	answerSdp := strings.ReplaceAll(offer1.SDP, "a=sendrecv", "a=recvonly")
+	_ = pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: answerSdp})
+
+	// Remove track
+	_ = pc.RemoveTrack(sender)
+	offer2, _ := pc.CreateOffer(nil)
+	_ = pc.SetLocalDescription(offer2)
+	answer2Sdp := strings.ReplaceAll(offer2.SDP, "a=sendrecv", "a=recvonly")
+	_ = pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: answer2Sdp})
+
+	// Add track again!
+	track2, _ := webrtc.NewTrackLocalStaticRTP(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8}, "track-video", "stream-video")
+	_, err := pc.AddTrack(track2)
+	if err != nil {
+		t.Logf("AddTrack error: %v", err)
+	}
+	offer3, _ := pc.CreateOffer(nil)
+	t.Logf("Offer3 SDP:\n%s", offer3.SDP)
+}
+
+

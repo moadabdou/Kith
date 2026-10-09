@@ -193,6 +193,99 @@ export function parseScreenMidsFromSdp(sdp: string): Map<string, string> {
   return result
 }
 
+/**
+ * Strips duplicate a=msid lines across media sections in the SDP session.
+ * Chromium's HasDuplicateMsidLines checks the ENTIRE SessionDescription:
+ * duplicate (stream_id, track_id) pairs across media sections throw:
+ * "Failed to parse SessionDescription. Duplicate a=msid lines detected".
+ * Inactive sections (a=inactive or port 0) must not carry a=msid.
+ */
+export function sanitizeSdpOffer(sdp: string): string {
+  if (!sdp || !sdp.includes('a=msid:')) return sdp
+
+  const lines = sdp.split(/\r?\n/)
+  const sections: string[][] = []
+  let current: string[] = []
+
+  for (const line of lines) {
+    if (line.startsWith('m=')) {
+      if (current.length > 0) sections.push(current)
+      current = [line]
+    } else {
+      current.push(line)
+    }
+  }
+  if (current.length > 0) sections.push(current)
+
+  const seenMsids = new Set<string>()
+  const seenTrackIds = new Set<string>()
+  const cleanedSections: string[][] = []
+  let hadModifications = false
+
+  for (const s of sections) {
+    if (s.length === 0) continue
+    const isMedia = s[0].startsWith('m=')
+    if (!isMedia) {
+      cleanedSections.push(s)
+      continue
+    }
+
+    const fields = s[0].trim().split(/\s+/)
+    const isPortZero = fields.length >= 2 && fields[1] === '0'
+    const isInactive = isPortZero || s.some((l) => l.startsWith('a=inactive'))
+
+    const newSectionLines: string[] = []
+    for (const l of s) {
+      if (l.startsWith('a=msid:')) {
+        if (isInactive) {
+          hadModifications = true
+          continue
+        }
+
+        // RFC 8830: a=msid:<id> [<appdata>] where <id> is stream ID and <appdata> is track ID
+        const val = l.substring('a=msid:'.length).trim()
+        const tokens = val.split(/\s+/).filter(Boolean)
+        if (tokens.length === 0) {
+          hadModifications = true
+          continue
+        }
+
+        const msidKey = tokens.join(' ')
+        if (seenMsids.has(msidKey)) {
+          hadModifications = true
+          continue
+        }
+
+        // WebRTC Chromium HasDuplicateMsidLines: a track ID cannot be duplicated across m-sections
+        if (tokens.length >= 2) {
+          const trackId = tokens[1]
+          if (seenTrackIds.has(trackId)) {
+            hadModifications = true
+            continue
+          }
+          seenTrackIds.add(trackId)
+        }
+
+        seenMsids.add(msidKey)
+      }
+      newSectionLines.push(l)
+    }
+    cleanedSections.push(newSectionLines)
+  }
+
+  if (!hadModifications) return sdp
+
+  const delim = sdp.includes('\r\n') ? '\r\n' : '\n'
+  const hasTrailingCrlf = sdp.endsWith('\r\n')
+  const hasTrailingLf = !hasTrailingCrlf && sdp.endsWith('\n')
+
+  let res = cleanedSections.map((s) => s.join(delim)).join(delim)
+  if (hasTrailingCrlf && !res.endsWith('\r\n')) res += '\r\n'
+  else if (hasTrailingLf && !res.endsWith('\n')) res += '\n'
+  return res
+}
+
+
 export interface VideoSendEncoding {
   rid?: string
   maxBitrate?: number
@@ -246,7 +339,9 @@ export class SfuClient {
   // latest wins (R2).
   private pendingOffer: string | null = null
   private pendingOfferAttempts = 0
-  private static readonly MAX_OFFER_ATTEMPTS = 5
+  private pendingOfferFlushTimer: ReturnType<typeof setTimeout> | null = null
+  private static readonly MAX_OFFER_ATTEMPTS = 40
+  private pingInterval: ReturnType<typeof setInterval> | null = null
   // Bounded safety-net retries for a rejected join offer (glare). Toggles
   // never offer, so this counter should stay at 0 in practice.
   private offerRetryAttempts = 0
@@ -327,6 +422,13 @@ export class SfuClient {
             await this.publishLocalAudio()
           }
 
+          if (this.pingInterval) clearInterval(this.pingInterval)
+          this.pingInterval = setInterval(() => {
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+              this.sendWsMessage({ type: 'ping' })
+            }
+          }, 25000)
+
           if (!resolved) {
             resolved = true
             resolve()
@@ -358,8 +460,12 @@ export class SfuClient {
       }
 
       this.ws.onclose = () => {
+        if (this.pingInterval) {
+          clearInterval(this.pingInterval)
+          this.pingInterval = null
+        }
         if (!this.isClosed) {
-          this.options.onConnectionStateChange?.('disconnected')
+          this.options.onConnectionStateChange?.('failed')
           this.cleanup()
         }
       }
@@ -560,6 +666,9 @@ export class SfuClient {
             sdp: msg.sdp,
           })
           await this.drainPendingCandidates()
+          if (this.pendingOffer && this.pc.signalingState === 'stable') {
+            this.flushPendingOffer()
+          }
         }
         break
 
@@ -613,6 +722,12 @@ export class SfuClient {
             // entries (S3: stopping cam must not touch the screen index).
             for (const [mid, entry] of this.midIndex) {
               if (entry.uid === msg.user_id && entry.kind !== 'screen') this.midIndex.delete(mid)
+            }
+            for (const [trackId, info] of this.remoteTrackKind) {
+              if (info.uid === msg.user_id && info.kind !== 'screen') {
+                this.remoteTrackKind.delete(trackId)
+                this.remoteStreamByTrack.delete(trackId)
+              }
             }
           }
         }
@@ -759,10 +874,11 @@ export class SfuClient {
       return
     }
 
+    const cleanSdp = sanitizeSdpOffer(sdp)
     try {
       await this.pc.setRemoteDescription({
         type: 'offer',
-        sdp,
+        sdp: cleanSdp,
       })
     } catch (err: any) {
       if (err?.name === 'InvalidStateError') {
@@ -784,9 +900,19 @@ export class SfuClient {
 
     this.attachTransceiverTracks()
     this.pendingOfferAttempts = 0
+
+    // If another downstream offer was stashed while this negotiation was settling, flush it now.
+    if (this.pendingOffer && (!this.pc.signalingState || this.pc.signalingState === 'stable')) {
+      this.flushPendingOffer()
+    }
   }
 
   private stashDownstreamOffer(sdp: string): void {
+    if (this.pendingOfferFlushTimer) {
+      clearTimeout(this.pendingOfferFlushTimer)
+      this.pendingOfferFlushTimer = null
+    }
+
     this.pendingOffer = sdp
     this.pendingOfferAttempts += 1
     if (this.pendingOfferAttempts > SfuClient.MAX_OFFER_ATTEMPTS) {
@@ -795,10 +921,23 @@ export class SfuClient {
       this.options.onError?.(
         new Error('[SfuClient] Dropping downstream offer: PC never returned to stable'),
       )
+      return
     }
+
+    // Fallback timer: ensure the stashed offer is flushed even if no DOM signalingstatechange
+    // event fires (e.g. rapid back-to-back offers or transition finished before/during stash).
+    this.pendingOfferFlushTimer = setTimeout(() => {
+      this.pendingOfferFlushTimer = null
+      this.flushPendingOffer()
+    }, 50)
   }
 
   private flushPendingOffer(): void {
+    if (this.pendingOfferFlushTimer) {
+      clearTimeout(this.pendingOfferFlushTimer)
+      this.pendingOfferFlushTimer = null
+    }
+
     if (
       !this.pendingOffer ||
       this.isClosed ||
@@ -808,7 +947,15 @@ export class SfuClient {
     ) {
       return
     }
-    if (this.pc.signalingState && this.pc.signalingState !== 'stable') return
+    if (this.pc.signalingState && this.pc.signalingState !== 'stable') {
+      if (this.pendingOfferAttempts < SfuClient.MAX_OFFER_ATTEMPTS) {
+        this.pendingOfferFlushTimer = setTimeout(() => {
+          this.pendingOfferFlushTimer = null
+          this.flushPendingOffer()
+        }, 50)
+      }
+      return
+    }
     const sdp = this.pendingOffer
     this.pendingOffer = null
     this.enqueue(() => this.applyDownstreamOffer(sdp)).catch((err) => {
@@ -820,6 +967,13 @@ export class SfuClient {
   private attachTransceiverTracks(): void {
     if (!this.pc || typeof document === 'undefined') return
     for (const transceiver of this.pc.getTransceivers()) {
+      if (
+        transceiver.currentDirection === 'inactive' ||
+        transceiver.currentDirection === 'stopped' ||
+        transceiver.direction === 'inactive'
+      ) {
+        continue
+      }
       const track = transceiver.receiver?.track
       if (track && track.readyState === 'live') {
         // Skip tracks already classified via ontrack (dedupe).
@@ -1742,6 +1896,16 @@ export class SfuClient {
     this.hasConnected = false
     this.joinAcked = false
     this.offerRetryAttempts = 0
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval)
+      this.pingInterval = null
+    }
+    if (this.pendingOfferFlushTimer) {
+      clearTimeout(this.pendingOfferFlushTimer)
+      this.pendingOfferFlushTimer = null
+    }
+    this.pendingOffer = null
+    this.pendingOfferAttempts = 0
     if (this.vadCleanup) {
       this.vadCleanup()
       this.vadCleanup = null

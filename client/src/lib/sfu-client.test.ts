@@ -4,6 +4,7 @@ import {
   SfuClient,
   resolveSfuWsUrl,
   parseScreenMidsFromSdp,
+  sanitizeSdpOffer,
   STATS_POLL_INTERVAL_MS,
 } from './sfu-client'
 
@@ -1798,6 +1799,55 @@ describe('SfuClient', () => {
     client.disconnect()
   })
 
+  // Issue 1: rapid back-to-back downstream offers (initial offer + layer switch)
+  // Offer 2 arrives while PC is in transition/stashed, and finishes without
+  // another signalingstatechange event. Fallback timer flushes offer 2 and sends answer.
+  it('rapid back-to-back downstream offers flush via fallback timer without orphan (Issue 1)', async () => {
+    mockPc.signalingState = 'stable'
+
+    const client = new SfuClient({
+      endpoint: '127.0.0.1:5000',
+      token: 'jwt-token-123',
+      channelId: 'voice-chan-1',
+    })
+    await client.connect()
+    await mockWs.onmessage({ data: JSON.stringify({ type: 'joined', channel_id: 'voice-chan-1' }) })
+
+    mockPc.setRemoteDescription.mockClear()
+    mockWs.send.mockClear()
+
+    // 1. First offer arrives and starts applying
+    const offer1 = 'v=0 downstream-offer-1'
+    await mockWs.onmessage({ data: JSON.stringify({ type: 'offer', sdp: offer1 }) })
+
+    expect(mockPc.setRemoteDescription).toHaveBeenCalledWith({ type: 'offer', sdp: offer1 })
+    expect(mockWs.send.mock.calls.some((c: any) => String(c[0]).includes('"answer"'))).toBe(true)
+
+    // 2. Second offer (e.g. layer switch) arrives right after, but PC hits non-stable
+    mockWs.send.mockClear()
+    const offer2 = 'v=0 downstream-offer-2-layer-switch'
+
+    // Simulate PC temporarily non-stable (e.g. transitioning)
+    mockPc.signalingState = 'have-remote-offer'
+    await mockWs.onmessage({ data: JSON.stringify({ type: 'offer', sdp: offer2 }) })
+
+    // Stashed in pendingOffer
+    expect((client as any).pendingOffer).toBe(offer2)
+
+    // Now PC returns to stable WITHOUT firing a DOM signalingstatechange event
+    mockPc.signalingState = 'stable'
+
+    // Wait for the fallback timer (50ms) to fire
+    await new Promise((r) => setTimeout(r, 80))
+
+    // Offer 2 must have flushed and answered automatically
+    expect(mockPc.setRemoteDescription).toHaveBeenCalledWith({ type: 'offer', sdp: offer2 })
+    expect(mockWs.send.mock.calls.some((c: any) => String(c[0]).includes('"answer"'))).toBe(true)
+    expect((client as any).pendingOffer).toBeNull()
+
+    client.disconnect()
+  })
+
   // Negotiate-once: enabling video never waits for the join-ack and never
   // offers — replaceTrack is local, and kind signals need no handshake.
   // (E2E-found: instant screen-share right after channel open.)
@@ -2483,5 +2533,48 @@ describe('SfuClient', () => {
     expect(client.isCameraActive()).toBe(true)
 
     client.disconnect()
+  })
+
+  describe('sanitizeSdpOffer', () => {
+    it('deduplicates duplicate a=msid lines within the same media section', () => {
+      const input = [
+        'v=0',
+        'm=audio 9 UDP/TLS/RTP/SAVPF 111',
+        'a=mid:0',
+        'a=msid:stream1 track1',
+        'a=msid:stream1 track1',
+        'm=video 9 UDP/TLS/RTP/SAVPF 96',
+        'a=mid:1',
+        'a=msid:stream1 track2',
+        'a=msid:stream1 track2',
+      ].join('\r\n')
+
+      const sanitized = sanitizeSdpOffer(input)
+      const countAudio = (sanitized.match(/a=msid:stream1 track1/g) || []).length
+      const countVideo = (sanitized.match(/a=msid:stream1 track2/g) || []).length
+
+      expect(countAudio).toBe(1)
+      expect(countVideo).toBe(1)
+    })
+
+    it('strips a=msid from inactive media sections and deduplicates across active media sections', () => {
+      const input = [
+        'v=0',
+        'm=video 9 UDP/TLS/RTP/SAVPF 96',
+        'a=mid:1',
+        'a=inactive',
+        'a=msid:stream1 track2',
+        'm=video 9 UDP/TLS/RTP/SAVPF 96',
+        'a=mid:2',
+        'a=sendrecv',
+        'a=msid:stream1 track2',
+      ].join('\r\n')
+
+      const sanitized = sanitizeSdpOffer(input)
+      const count = (sanitized.match(/a=msid:stream1 track2/g) || []).length
+      expect(count).toBe(1)
+      expect(sanitized).toContain('a=mid:2\r\na=sendrecv\r\na=msid:stream1 track2')
+      expect(sanitized).not.toContain('a=inactive\r\na=msid:stream1 track2')
+    })
   })
 })

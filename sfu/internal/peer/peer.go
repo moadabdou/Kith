@@ -239,6 +239,104 @@ func (p *Peer) RemoveTrack(sender *webrtc.RTPSender) error {
 	return p.PC.RemoveTrack(sender)
 }
 
+// SanitizeSDPOffer removes duplicate a=msid lines across the entire SDP session.
+// In WebRTC RFC 8830 and Chromium's HasDuplicateMsidLines, duplicate msid identifiers
+// across media sections cause setRemoteDescription to fail with "Duplicate a=msid lines detected".
+// Inactive media sections (a=inactive or port 0) must not carry a=msid lines.
+func SanitizeSDPOffer(sdp string) string {
+	if !strings.Contains(sdp, "a=msid:") {
+		return sdp
+	}
+
+	lines := strings.Split(sdp, "\n")
+	var sections [][]string
+	var current []string
+
+	for _, rawLine := range lines {
+		line := strings.TrimRight(rawLine, "\r")
+		if strings.HasPrefix(line, "m=") {
+			if len(current) > 0 {
+				sections = append(sections, current)
+			}
+			current = []string{line}
+		} else {
+			current = append(current, line)
+		}
+	}
+	if len(current) > 0 {
+		sections = append(sections, current)
+	}
+
+	seenMsids := make(map[string]bool)
+	seenTrackIDs := make(map[string]bool)
+	var cleanedLines []string
+
+	for _, s := range sections {
+		if len(s) == 0 {
+			continue
+		}
+		isMedia := strings.HasPrefix(s[0], "m=")
+		if !isMedia {
+			cleanedLines = append(cleanedLines, s...)
+			continue
+		}
+
+		isInactive := false
+		for _, l := range s {
+			if strings.HasPrefix(l, "a=inactive") {
+				isInactive = true
+				break
+			}
+		}
+		fields := strings.Fields(s[0])
+		if len(fields) >= 2 && fields[1] == "0" {
+			isInactive = true
+		}
+
+		for _, l := range s {
+			if strings.HasPrefix(l, "a=msid:") {
+				if isInactive {
+					continue
+				}
+
+				// RFC 8830: a=msid:<id> [<appdata>] where <id> is stream ID and <appdata> is track ID
+				val := strings.TrimSpace(strings.TrimPrefix(l, "a=msid:"))
+				tokens := strings.Fields(val)
+				if len(tokens) == 0 {
+					continue
+				}
+
+				// Check exact msid token value
+				msidKey := strings.Join(tokens, " ")
+				if seenMsids[msidKey] {
+					continue
+				}
+
+				// In WebRTC / Chromium HasDuplicateMsidLines and RFC 8830:
+				// If a track ID is specified (tokens[1]), it identifies the media stream track.
+				// A track ID must not be bound to multiple active m-sections in the same session.
+				if len(tokens) >= 2 {
+					trackID := tokens[1]
+					if seenTrackIDs[trackID] {
+						continue
+					}
+					seenTrackIDs[trackID] = true
+				}
+
+				seenMsids[msidKey] = true
+			}
+			cleanedLines = append(cleanedLines, l)
+		}
+	}
+
+	delim := "\r\n"
+	res := strings.Join(cleanedLines, delim)
+	if !strings.HasSuffix(res, delim) {
+		res += delim
+	}
+	return res
+}
+
 // CreateOffer generates an SDP offer for server-initiated renegotiation (e.g. adding downlinks).
 func (p *Peer) CreateOffer() (*webrtc.SessionDescription, error) {
 	p.mu.Lock()
@@ -256,6 +354,7 @@ func (p *Peer) CreateOffer() (*webrtc.SessionDescription, error) {
 		return nil, fmt.Errorf("failed to set local description: %w", err)
 	}
 
+	offer.SDP = SanitizeSDPOffer(offer.SDP)
 	return &offer, nil
 }
 

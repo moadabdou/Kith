@@ -57,6 +57,14 @@ export function resolveSfuWsUrl(endpoint: string): string {
   }
 
   const protocol = isHttps ? 'wss:' : 'ws:'
+
+  // When served over HTTPS in production (e.g. Cloudflare / reverse proxy on port 443),
+  // non-standard ports (5000, 5001) cannot be accessed directly. Route via path-based reverse proxy on 443.
+  if (isHttps && typeof window !== 'undefined' && window.location?.protocol === 'https:') {
+    const sfuPath = port === '5001' || parts[0] === 'sfu-2' ? '/sfu-2/ws' : '/sfu/ws'
+    return `${protocol}//${host}${sfuPath}`
+  }
+
   return `${protocol}//${host}:${port}/ws`
 }
 

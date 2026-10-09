@@ -200,6 +200,11 @@ services:
       APP_URL: ${APP_URL:-https://kith.moadabdou.me}
       GOMEMLIMIT: ${GOMEMLIMIT:-1GiB}
       GOGC: ${GOGC:-100}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
     ports:
       - "${API_PORT:-8082}:8080"
     restart: unless-stopped
@@ -266,6 +271,11 @@ services:
       APP_URL: ${APP_URL:-https://kith.moadabdou.me}
       GOMEMLIMIT: ${GOMEMLIMIT:-1GiB}
       GOGC: ${GOGC:-100}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
     ports:
       - "${API2_PORT:-8083}:8080"
     restart: unless-stopped
@@ -432,7 +442,7 @@ services:
     cap_add:
       - NET_ADMIN
     ports:
-      - "127.0.0.1:5000:5000"
+      - "${SFU_PORT:-5000}:5000"
       - "50000-50200:50000-50200/udp"
     restart: unless-stopped
     depends_on:
@@ -471,7 +481,7 @@ services:
     cap_add:
       - NET_ADMIN
     ports:
-      - "127.0.0.1:5001:5001"
+      - "${SFU2_PORT:-5001}:5001"
       - "50300-50320:50300-50320/udp"
     restart: unless-stopped
     depends_on:

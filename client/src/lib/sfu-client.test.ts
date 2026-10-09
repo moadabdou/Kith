@@ -44,6 +44,22 @@ describe('resolveSfuWsUrl', () => {
 
     vi.unstubAllGlobals()
   })
+
+  it('routes through path-based reverse proxy on HTTPS without port', () => {
+    vi.stubGlobal('window', {
+      location: {
+        hostname: 'kith.moadabdou.me',
+        protocol: 'https:',
+      },
+    })
+
+    expect(resolveSfuWsUrl('sfu:5000')).toBe('wss://kith.moadabdou.me/sfu/ws')
+    expect(resolveSfuWsUrl('sfu-2:5001')).toBe('wss://kith.moadabdou.me/sfu-2/ws')
+    expect(resolveSfuWsUrl('127.0.0.1:5000')).toBe('wss://kith.moadabdou.me/sfu/ws')
+    expect(resolveSfuWsUrl('127.0.0.1:5001')).toBe('wss://kith.moadabdou.me/sfu-2/ws')
+
+    vi.unstubAllGlobals()
+  })
 })
 
 describe('SfuClient', () => {

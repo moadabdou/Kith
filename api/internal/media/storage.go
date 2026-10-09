@@ -70,9 +70,15 @@ func NewMinIOStorage(cfg StorageConfig) (*MinIOStorage, error) {
 
 	var publicClient *minio.Client
 	if pub := normalizeEndpoint(cfg.PublicEndpoint); pub != "" && pub != cfg.Endpoint {
+		publicSecure := cfg.UseSSL
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(cfg.PublicURL)), "https://") ||
+			strings.HasPrefix(strings.ToLower(strings.TrimSpace(cfg.PublicEndpoint)), "https://") {
+			publicSecure = true
+		}
+
 		publicClient, err = minio.New(pub, &minio.Options{
 			Creds:  credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
-			Secure: cfg.UseSSL,
+			Secure: publicSecure,
 			Region: minioRegion,
 		})
 		if err != nil {

@@ -41,6 +41,34 @@ func TestPresignedPutURLUsesPublicEndpoint(t *testing.T) {
 	}
 }
 
+func TestPresignedPutURLUsesHttpsWhenPublicURLIsHttps(t *testing.T) {
+	st, err := NewMinIOStorage(StorageConfig{
+		Endpoint:       "minio:9000",
+		UseSSL:         false, // internal Docker is HTTP
+		AccessKey:      "kithadmin",
+		SecretKey:      "kithpassword123",
+		PublicEndpoint: "kith.moadabdou.me",
+		PublicURL:      "https://kith.moadabdou.me",
+	})
+	if err != nil {
+		t.Fatalf("NewMinIOStorage: %v", err)
+	}
+	u, err := st.PresignedPutURL(context.Background(), "attachments", "attachments/1/2/staged.png", time.Hour)
+	if err != nil {
+		t.Fatalf("PresignedPutURL: %v", err)
+	}
+	parsed, err := url.Parse(u)
+	if err != nil {
+		t.Fatalf("parse presigned url: %v", err)
+	}
+	if parsed.Scheme != "https" {
+		t.Fatalf("presigned scheme = %q, want https (url %s)", parsed.Scheme, u)
+	}
+	if parsed.Host != "kith.moadabdou.me" {
+		t.Fatalf("presigned host = %q, want kith.moadabdou.me (url %s)", parsed.Host, u)
+	}
+}
+
 func TestPresignedPutURLFallsBackWithoutPublicEndpoint(t *testing.T) {
 	st, err := NewMinIOStorage(StorageConfig{
 		Endpoint:  "localhost:9000",

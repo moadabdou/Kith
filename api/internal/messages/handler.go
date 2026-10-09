@@ -3,6 +3,7 @@ package messages
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/url"
 
@@ -74,6 +75,7 @@ func (h *Handler) writeErr(w http.ResponseWriter, err error) {
 			Message: "Maximum number of pins reached (50)",
 		})
 	default:
+		slog.Error("messages handler internal error", "error", err)
 		errs.Write(w, errs.Internal())
 	}
 }
